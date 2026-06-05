@@ -53,7 +53,6 @@ st.markdown('''
     .trend-title { font-size: 1.1rem; color: #888; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px;}
     .trend-status { font-size: 1.3rem; font-weight: 900; }
     
-    /* 微調籌碼表 CSS，適應三格一排的較窄空間 */
     .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; margin-top: 2px;}
     .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal;}
     .chip-table td { padding: 4px 2px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 1rem;}
@@ -100,6 +99,7 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "18
 if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330"])
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
+if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
 
 @st.cache_data(ttl=1800)
 def fetch_twse_top_50():
@@ -204,11 +204,9 @@ def analyze_today(df, ticker_number):
 
 def generate_mock_chips_html(df):
     recent_5 = df.tail(5).iloc[::-1]
-    # 縮短表頭字眼以適應1/3寬度
     html = "<table class='chip-table'><tr><th>日期</th><th>外資</th><th>投信</th></tr>"
     for date, row in recent_5.iterrows():
         d_str = date.strftime("%m/%d")
-        
         change = row['Close'] - row['Open']
         base_vol = row['Volume'] / 1000
         fi_buy = int(change * 200 + (base_vol * 0.08)) 
@@ -292,14 +290,28 @@ if st.session_state.page == "home":
         st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
         
-    st.markdown("<h3 style='margin-top: 15px;'>🔍 快速搜尋個股</h3>", unsafe_allow_html=True)
-    search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
+    # 需求2：戰術搜尋模式切換按鈕
+    st.markdown("<h3 style='margin-top: 15px;'>🎯 戰術掃描：一鍵尋找買點</h3>", unsafe_allow_html=True)
+    
+    btn_col1, btn_col2 = st.columns(2)
+    if btn_col1.button("✅ 搜尋【適合買進】標的", use_container_width=True):
+        st.session_state.filter_buy_only = True
+        st.rerun()
+    if btn_col2.button("📋 顯示全部熱門名單", use_container_width=True):
+        st.session_state.filter_buy_only = False
+        st.rerun()
+        
+    search_val = st.text_input("隱藏標籤2", placeholder="手動輸入代號看解析 (如: 2330)", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
         st.session_state.page = "analysis"
         st.rerun()
 
-    st.markdown("<h3 style='margin-top: 20px;'>📡 今日黃金坑榜單 (超賣前 10 名)</h3>", unsafe_allow_html=True)
+    if st.session_state.filter_buy_only:
+        st.markdown("<h3 style='margin-top: 20px; color: #00cc00;'>🎯 今日符合【極佳買點】標的</h3>", unsafe_allow_html=True)
+    else:
+        st.markdown("<h3 style='margin-top: 20px;'>📡 今日黃金坑榜單 (超賣前 10 名)</h3>", unsafe_allow_html=True)
+        
     scan_results = []
     with st.spinner('智慧雷達掃描中...'):
         for stock in st.session_state.custom_pool:
@@ -308,12 +320,19 @@ if st.session_state.page == "home":
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
-        df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
-        df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
-        st.session_state.nav_pool = df_top10_j['ticker_raw'].tolist()
+        # 根據模式決定顯示名單
+        if st.session_state.filter_buy_only:
+            df_display = df_results[df_results['訊號'] == True]
+            if df_display.empty:
+                st.info("💡 今日雷達池中，暫無同時符合「多頭回檔」與「極度超賣」的極佳買點標的，建議保持耐心觀望！")
+        else:
+            df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
+            df_display = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
-        for _, row in df_top10_j.iterrows():
+        st.session_state.nav_pool = df_display['ticker_raw'].tolist()
+        
+        for _, row in df_display.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
                 star_icon = "⭐ 移除自選" if is_fav else "☆ 加入自選"
@@ -403,9 +422,7 @@ elif st.session_state.page == "analysis":
         
         st.subheader("📊 技術與籌碼參數")
         
-        # 需求1：改為「一行三格，共兩行」 (3x2 排版)
         row1_col1, row1_col2, row1_col3 = st.columns(3)
-        
         with row1_col1.container(border=True):
             st.markdown("#### 🔹 均線(MA)")
             st.markdown(f"* 5T ➜ **`{data['5MA']}`**")
@@ -425,7 +442,6 @@ elif st.session_state.page == "analysis":
             st.markdown(f"* J ➜ **`{data['J值']}`**")
 
         row2_col1, row2_col2, row2_col3 = st.columns(3)
-        
         with row2_col1.container(border=True):
             st.markdown("#### 🔹 RSI & 布林")
             rsi_status = "超賣" if data['RSI'] < 30 else "超買" if data['RSI'] > 70 else "中性"
