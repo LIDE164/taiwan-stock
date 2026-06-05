@@ -38,6 +38,19 @@ st.markdown('''
     }
     
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
+    
+    /* 解析頁面股價凍結置頂 */
+    .sticky-header {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background-color: rgba(26, 28, 36, 0.95);
+        padding: 10px 0;
+        border-bottom: 1px solid #333;
+        backdrop-filter: blur(5px);
+        margin-top: -15px;
+        margin-bottom: 15px;
+    }
 </style>
 ''', unsafe_allow_html=True)
 
@@ -136,6 +149,7 @@ def analyze_today(df, ticker_number):
     prev = df.iloc[-2]
     c_name = STOCK_NAMES.get(ticker_number, "")
     
+    # 判斷是否符合買黑黃金坑
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
     
@@ -193,19 +207,6 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
-# 統一共用大盤看板模組
-def render_index_board():
-    now = datetime.now()
-    twii_df = get_stock_data("^TWII")
-    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
-    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
-    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
-    
-    with st.container(border=True):
-        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數看板 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
-
 # ==========================================
 # 2. 畫面路由 (SPA 導航控制)
 # ==========================================
@@ -214,7 +215,16 @@ def render_index_board():
 if st.session_state.page == "home":
     st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
     
-    render_index_board()
+    # 大盤看板
+    now = datetime.now()
+    twii_df = get_stock_data("^TWII")
+    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
+    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
+    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
+    with st.container(border=True):
+        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
         
     st.markdown("<h3 style='margin-top: 15px;'>🔍 快速搜尋個股</h3>", unsafe_allow_html=True)
     search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
@@ -235,7 +245,6 @@ if st.session_state.page == "home":
         df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
         df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
-        # 需求1&2：完美條列卡片、股價放大與紅漲綠跌色調 (安全版不跑版)
         for _, row in df_top10_j.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
@@ -243,10 +252,8 @@ if st.session_state.page == "home":
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
-                # 第一行：名稱與代號
                 st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
                 
-                # 第二行：立體紅綠股價區塊
                 st.markdown(f'''
                 <div style="background-color: #1a1c24; padding: 12px; border-radius: 8px; border: 1px solid #333; text-align: center; margin: 10px 0;">
                     <span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{row['收盤價']}</span>
@@ -254,10 +261,8 @@ if st.session_state.page == "home":
                 </div>
                 ''', unsafe_allow_html=True)
                 
-                # 第三行：J值動態
                 st.markdown(f"📊 當前動態 ➜ **J值:** `{row['J值']}`")
                 
-                # 第四行：按鈕 (原生 columns 安全堆疊)
                 btn_c1, btn_c2 = st.columns(2)
                 if btn_c1.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
                     if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
@@ -277,23 +282,47 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = STOCK_NAMES.get(target, "")
     
-    # 返回按鈕置頂
-    if st.button("⬅ 返回監控總機首頁", key="back_btn", use_container_width=True):
-        st.session_state.page = "home"
-        st.rerun()
-        
-    st.markdown("<br>", unsafe_allow_html=True)
-    render_index_board() 
-    
     if df_chart is not None:
         data = analyze_today(df_chart, target)
-        
-        # 標題現價整合
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        st.markdown(f"<h2 style='text-align: center; margin-bottom:0;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin-top:0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
+        # 凍結在頁面頂部的標題與股價
+        st.markdown(f'''
+        <div class="sticky-header">
+            <h2 style='text-align: center; margin: 0; padding-bottom: 5px;'>🎯 {target} {clean_name}</h2>
+            <h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin: 0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>
+        </div>
+        ''', unsafe_allow_html=True)
+        
+        # 需求1：實作切換 上一支 / 首頁 / 下一支 的導航列
+        nav_pool = st.session_state.custom_pool
+        if target in nav_pool and len(nav_pool) > 1:
+            idx = nav_pool.index(target)
+            prev_stock = nav_pool[(idx - 1) % len(nav_pool)]
+            next_stock = nav_pool[(idx + 1) % len(nav_pool)]
+        else:
+            # 如果是從搜尋來的，不在掃描池內，預設給池子的頭尾
+            prev_stock = nav_pool[-1] if nav_pool else ""
+            next_stock = nav_pool[0] if nav_pool else ""
+
+        c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
+        with c_nav1:
+            if prev_stock and st.button(f"⬅ {prev_stock}", use_container_width=True):
+                st.session_state.current_stock = prev_stock
+                st.rerun()
+        with c_nav2:
+            if st.button("🏠 首頁", use_container_width=True):
+                st.session_state.page = "home"
+                st.rerun()
+        with c_nav3:
+            if next_stock and st.button(f"{next_stock} ➡", use_container_width=True):
+                st.session_state.current_stock = next_stock
+                st.rerun()
+            
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # 戰術判定框
         if data['訊號']:
             st.success("✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌破 5 日線，且 KDJ 極度超賣。符合買黑黃金坑條件！")
         else:
@@ -304,29 +333,33 @@ elif st.session_state.page == "analysis":
             else:
                 st.info("⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區，建議耐心等待。")
         
-        # 需求1修正：解析頁面方塊全改用原生 border 卡片堆疊，絕對不跑版
         st.subheader("📊 技術指標參數")
         
-        with st.container(border=True):
-            st.markdown("#### 🔹 均線體系 (Moving Average)")
-            st.markdown(f"* 5T 短線均線 ➜ **`{data['5MA']}`**")
-            st.markdown(f"* 10T 觀察均線 ➜ **`{data['10MA']}`**")
-            st.markdown(f"* 20T 月線生命線 ➜ **`{data['20MA']}`**")
+        row1_col1, row1_col2 = st.columns(2)
+        with row1_col1.container(border=True):
+            st.markdown("#### 🔹 均線 (MA)")
+            st.markdown(f"* 5T ➜ **`{data['5MA']}`**")
+            st.markdown(f"* 10T ➜ **`{data['10MA']}`**")
+            st.markdown(f"* 20T ➜ **`{data['20MA']}`**")
             
-        with st.container(border=True):
-            st.markdown("#### 🔹 指數量能 (MACD)")
-            st.markdown(f"* DIF 快線波段 ➜ **`{data['MACD']}`**")
-            st.markdown(f"* OSC 能量多空柱 ➜ **`{data['MACD柱']}`**")
+        with row1_col2.container(border=True):
+            st.markdown("#### 🔹 動能 (MACD)")
+            st.markdown(f"* DIF ➜ **`{data['MACD']}`**")
+            st.markdown(f"* OSC ➜ **`{data['MACD柱']}`**")
+            st.markdown("<br>", unsafe_allow_html=True) 
             
-        with st.container(border=True):
+        row2_col1, row2_col2 = st.columns(2)
+        with row2_col1.container(border=True):
             st.markdown("#### 🔹 隨機指標 (KDJ)")
-            st.markdown(f"* K 值趨勢 ➜ **`{data['K']}`**")
-            st.markdown(f"* D 值慢速線 ➜ **`{data['D']}`**")
-            st.markdown(f"* J 值敏銳轉折 ➜ **`{data['J值']}`**")
+            st.markdown(f"* K ➜ **`{data['K']}`**")
+            st.markdown(f"* D ➜ **`{data['D']}`**")
+            st.markdown(f"* J ➜ **`{data['J值']}`**")
             
-        with st.container(border=True):
-            st.markdown("#### 🔹 市場能量狀態")
-            st.markdown(f"* 當日最新成交量 ➜ **`{data['成交量']} 張`**")
+        with row2_col2.container(border=True):
+            st.markdown("#### 🔹 市場熱度")
+            st.markdown(f"* 成交量 ➜")
+            st.markdown(f"**`{data['成交量']} 張`**")
+            st.markdown("<br>", unsafe_allow_html=True) 
 
         fig = draw_professional_chart(df_chart, target, data['收盤價'])
         st.plotly_chart(fig, use_container_width=True)
@@ -334,7 +367,6 @@ elif st.session_state.page == "analysis":
         
         st.divider()
 
-        # 需求1修正：多空判定也改用原生安全卡片
         st.subheader("📈 三級多空趨勢判定")
         t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
         t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
