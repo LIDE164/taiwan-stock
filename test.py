@@ -38,19 +38,6 @@ st.markdown('''
     }
     
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
-    
-    /* 需求2: 解析頁面股價凍結置頂 */
-    .sticky-header {
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        background-color: rgba(26, 28, 36, 0.95);
-        padding: 10px 0;
-        border-bottom: 1px solid #333;
-        backdrop-filter: blur(5px);
-        margin-top: -15px; /* 消除預設間距 */
-        margin-bottom: 15px;
-    }
 </style>
 ''', unsafe_allow_html=True)
 
@@ -206,6 +193,7 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
+# 統一共用大盤看板模組
 def render_index_board():
     now = datetime.now()
     twii_df = get_stock_data("^TWII")
@@ -247,6 +235,7 @@ if st.session_state.page == "home":
         df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
         df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
+        # 需求1&2：完美條列卡片、股價放大與紅漲綠跌色調 (安全版不跑版)
         for _, row in df_top10_j.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
@@ -254,8 +243,10 @@ if st.session_state.page == "home":
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
+                # 第一行：名稱與代號
                 st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
                 
+                # 第二行：立體紅綠股價區塊
                 st.markdown(f'''
                 <div style="background-color: #1a1c24; padding: 12px; border-radius: 8px; border: 1px solid #333; text-align: center; margin: 10px 0;">
                     <span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{row['收盤價']}</span>
@@ -263,8 +254,10 @@ if st.session_state.page == "home":
                 </div>
                 ''', unsafe_allow_html=True)
                 
+                # 第三行：J值動態
                 st.markdown(f"📊 當前動態 ➜ **J值:** `{row['J值']}`")
                 
+                # 第四行：按鈕 (原生 columns 安全堆疊)
                 btn_c1, btn_c2 = st.columns(2)
                 if btn_c1.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
                     if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
@@ -284,26 +277,22 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = STOCK_NAMES.get(target, "")
     
+    # 返回按鈕置頂
+    if st.button("⬅ 返回監控總機首頁", key="back_btn", use_container_width=True):
+        st.session_state.page = "home"
+        st.rerun()
+        
+    st.markdown("<br>", unsafe_allow_html=True)
+    render_index_board() 
+    
     if df_chart is not None:
         data = analyze_today(df_chart, target)
+        
+        # 標題現價整合
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        
-        # 需求2：將標題與股價合併，並套用 sticky-header CSS 讓它凍結在頁面頂部
-        st.markdown(f'''
-        <div class="sticky-header">
-            <h2 style='text-align: center; margin: 0; padding-bottom: 5px;'>🎯 {target} {clean_name}</h2>
-            <h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin: 0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>
-        </div>
-        ''', unsafe_allow_html=True)
-        
-        # 返回按鈕放在凍結區塊的正下方
-        if st.button("⬅ 返回監控總機首頁", key="back_btn", use_container_width=True):
-            st.session_state.page = "home"
-            st.rerun()
-            
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_index_board() 
+        st.markdown(f"<h2 style='text-align: center; margin-bottom:0;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin-top:0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         if data['訊號']:
             st.success("✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌破 5 日線，且 KDJ 極度超賣。符合買黑黃金坑條件！")
@@ -315,34 +304,29 @@ elif st.session_state.page == "analysis":
             else:
                 st.info("⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區，建議耐心等待。")
         
+        # 需求1修正：解析頁面方塊全改用原生 border 卡片堆疊，絕對不跑版
         st.subheader("📊 技術指標參數")
         
-        # 需求1：使用 st.columns(2) 來讓四個方塊變成「一行兩格，共兩行」
-        row1_col1, row1_col2 = st.columns(2)
-        with row1_col1.container(border=True):
-            st.markdown("#### 🔹 均線 (MA)")
-            st.markdown(f"* 5T ➜ **`{data['5MA']}`**")
-            st.markdown(f"* 10T ➜ **`{data['10MA']}`**")
-            st.markdown(f"* 20T ➜ **`{data['20MA']}`**")
+        with st.container(border=True):
+            st.markdown("#### 🔹 均線體系 (Moving Average)")
+            st.markdown(f"* 5T 短線均線 ➜ **`{data['5MA']}`**")
+            st.markdown(f"* 10T 觀察均線 ➜ **`{data['10MA']}`**")
+            st.markdown(f"* 20T 月線生命線 ➜ **`{data['20MA']}`**")
             
-        with row1_col2.container(border=True):
-            st.markdown("#### 🔹 動能 (MACD)")
-            st.markdown(f"* DIF ➜ **`{data['MACD']}`**")
-            st.markdown(f"* OSC ➜ **`{data['MACD柱']}`**")
-            st.markdown("<br>", unsafe_allow_html=True) # 補齊高度
+        with st.container(border=True):
+            st.markdown("#### 🔹 指數量能 (MACD)")
+            st.markdown(f"* DIF 快線波段 ➜ **`{data['MACD']}`**")
+            st.markdown(f"* OSC 能量多空柱 ➜ **`{data['MACD柱']}`**")
             
-        row2_col1, row2_col2 = st.columns(2)
-        with row2_col1.container(border=True):
+        with st.container(border=True):
             st.markdown("#### 🔹 隨機指標 (KDJ)")
-            st.markdown(f"* K ➜ **`{data['K']}`**")
-            st.markdown(f"* D ➜ **`{data['D']}`**")
-            st.markdown(f"* J ➜ **`{data['J值']}`**")
+            st.markdown(f"* K 值趨勢 ➜ **`{data['K']}`**")
+            st.markdown(f"* D 值慢速線 ➜ **`{data['D']}`**")
+            st.markdown(f"* J 值敏銳轉折 ➜ **`{data['J值']}`**")
             
-        with row2_col2.container(border=True):
-            st.markdown("#### 🔹 市場熱度")
-            st.markdown(f"* 成交量 ➜")
-            st.markdown(f"**`{data['成交量']} 張`**")
-            st.markdown("<br>", unsafe_allow_html=True) # 補齊高度
+        with st.container(border=True):
+            st.markdown("#### 🔹 市場能量狀態")
+            st.markdown(f"* 當日最新成交量 ➜ **`{data['成交量']} 張`**")
 
         fig = draw_professional_chart(df_chart, target, data['收盤價'])
         st.plotly_chart(fig, use_container_width=True)
@@ -350,6 +334,7 @@ elif st.session_state.page == "analysis":
         
         st.divider()
 
+        # 需求1修正：多空判定也改用原生安全卡片
         st.subheader("📈 三級多空趨勢判定")
         t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
         t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
