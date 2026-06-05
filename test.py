@@ -72,7 +72,10 @@ st.markdown('''
         font-size: 1.3rem; 
         font-weight: 900; 
     }
-    
+    /* 👇 強制縮小 Streamlit 原生帶框容器的內部留白 */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    padding: 8px !important;  /* 原本預設約 15px，改成 8px 會緊湊很多 */
+}
     /* ================================================== */
     /* 👉 這裡可以調節「技術指標」內部的文字大小 */
     /* ================================================== */
