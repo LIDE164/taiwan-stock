@@ -1,11 +1,13 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
+import re
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -52,7 +54,7 @@ st.markdown('''
         margin-bottom: 15px;
     }
     
-    /* 需求3: 多空趨勢的單行三格方塊設計 */
+    /* 多空趨勢的單行三格方塊設計 */
     .trend-box {
         background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
         padding: 15px 10px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
@@ -60,7 +62,7 @@ st.markdown('''
     .trend-title { font-size: 1.1rem; color: #888; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px;}
     .trend-status { font-size: 1.3rem; font-weight: 900; }
     
-    /* 需求1: 星星按鈕微調，讓它能跟名稱放在一起 */
+    /* 星星按鈕微調，讓它能跟名稱放在一起 */
     .star-btn {
         background: transparent; border: none; color: #ffcc00; font-size: 1.5rem; 
         cursor: pointer; padding: 0; margin-left: 8px;
@@ -68,6 +70,7 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
+# 內建基礎股票池
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "3231": "緯創", "2356": "英業達", "3008": "大立光", "2324": "仁寶", "1802": "台玻",
@@ -94,16 +97,42 @@ def load_json(file_path, default_data):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f)
 
+# 狀態初始化
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "1802"
 if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330"])
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
+if 'dynamic_names' not in st.session_state: st.session_state.dynamic_names = {}
 
-# ─── 側邊欄自選股控制 ───
+# 合併內建名單與動態抓取的名單
+CURRENT_STOCK_NAMES = {**STOCK_NAMES, **st.session_state.dynamic_names}
+
+# ─── 自動抓取 TWSE 證交所 API ───
+@st.cache_data(ttl=1800) # 快取 30 分鐘，避免過度頻繁請求被阻擋
+def fetch_twse_top_50():
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        res = requests.get(url, timeout=10)
+        data = res.json()
+        df = pd.DataFrame(data)
+        
+        # 將成交量轉為數值格式
+        df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
+        
+        # 僅保留一般個股 (代號為4位純數字，排除權證、ETF等)
+        df_stocks = df[df['Code'].str.match(r'^\d{4}$')]
+        
+        # 依成交量排序，取前 50 名
+        top_50 = df_stocks.sort_values(by='TradeVolume', ascending=False).head(50)
+        return top_50[['Code', 'Name']].to_dict('records')
+    except Exception as e:
+        return []
+
+# ─── 側邊欄控制 ───
 st.sidebar.title("⭐ 我的自選股清單")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
-        fav_name = STOCK_NAMES.get(fav, fav)
+        fav_name = CURRENT_STOCK_NAMES.get(fav, fav)
         if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
             st.session_state.page = "analysis"
@@ -113,10 +142,23 @@ else:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 自動抓取熱門股 pool", use_container_width=True):
-    st.session_state.custom_pool = list(STOCK_NAMES.keys())
-    save_json(POOL_FILE, st.session_state.custom_pool)
-    st.rerun()
+
+# 全新升級的自動抓取功能
+if st.sidebar.button("🔄 自動抓取當日成交量前 50 名", use_container_width=True):
+    with st.spinner("連線證交所抓取最新數據中..."):
+        top_stocks = fetch_twse_top_50()
+        if top_stocks:
+            new_pool = []
+            for item in top_stocks:
+                st.session_state.dynamic_names[item['Code']] = item['Name']
+                new_pool.append(item['Code'])
+            
+            st.session_state.custom_pool = new_pool
+            save_json(POOL_FILE, st.session_state.custom_pool)
+            st.sidebar.success("✅ 已更新為當日成交量前 50 名！")
+            st.rerun()
+        else:
+            st.sidebar.error("❌ 抓取失敗，請稍後再試。")
 
 pool_input = st.sidebar.text_area("自訂股票池代號 (逗號分隔)", value=",".join(st.session_state.custom_pool), height=150)
 if st.sidebar.button("💾 儲存更新池", use_container_width=True):
@@ -161,7 +203,7 @@ def analyze_today(df, ticker_number):
     if df is None: return None
     today = df.iloc[-1]
     prev = df.iloc[-2]
-    c_name = STOCK_NAMES.get(ticker_number, "")
+    c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
     
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
@@ -268,7 +310,6 @@ if st.session_state.page == "home":
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
-                # 需求1：把星號按鈕跟名稱放在同一行，並靠右對齊按鈕
                 c_title, c_star = st.columns([8, 2])
                 with c_title:
                     st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
@@ -298,7 +339,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
-    clean_name = STOCK_NAMES.get(target, "")
+    clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
     if df_chart is not None:
         data = analyze_today(df_chart, target)
@@ -384,7 +425,6 @@ elif st.session_state.page == "analysis":
         
         st.divider()
 
-        # 需求3：白話文敘述的三級多空趨勢判定 (一行三個文字方塊)
         st.subheader("📈 三級多空趨勢判定")
         
         t_short_text = "強勢格局" if data['收盤價'] > data['5MA'] else "短線弱勢"
