@@ -8,117 +8,16 @@ import json
 import os
 
 # ==========================================
-# 0. 系統初始化與自訂 CSS 視覺強化
+# 0. 系統初始化 (完全移除危險的排版 CSS)
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
+# 只保留最基礎的隱藏選單與按鈕美化，絕不干擾預設排版
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* 需求3：左上角側欄箭頭旁加上文字 */
-    [data-testid="collapsedControl"] {
-        border: 1px solid #444 !important;
-        border-radius: 8px !important;
-        background-color: #1a1c24 !important;
-        padding: 5px 12px !important;
-        display: flex !important;
-        align-items: center !important;
-        width: auto !important;
-        transition: 0.3s;
-    }
-    [data-testid="collapsedControl"]::after {
-        content: " ⭐ 我的自選股";
-        font-size: 1.1rem;
-        font-weight: bold;
-        color: #ffcc00;
-        margin-left: 8px;
-    }
-
-    /* 統一按鈕外觀 */
-    .stButton button p { font-size: 1.2rem !important; font-weight: bold !important; margin: 0 !important; }
-    .stButton button { padding: 8px 0px !important; border-radius: 8px !important; min-height: 40px !important; }
-    
-    /* 需求2：大盤資訊看板 (首頁與解析頁共用，保證一樣巨大) */
-    .index-board {
-        text-align: center; background: #1a1c24; padding: 15px;
-        border-radius: 10px; margin-bottom: 20px; border: 1px solid #2b2e3b;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-
-    /* 需求1：專屬設定！將所有 st.columns 轉換為精美的單行條列卡片 */
-    [data-testid="stHorizontalBlock"] {
-        background-color: #1a1c24;
-        border-radius: 10px;
-        padding: 10px 15px;
-        margin-bottom: 12px;
-        border: 1px solid #2b2e3b;
-        align-items: center !important; /* 確保內容垂直置中 */
-        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-    }
-
-    /* 需求3：股票代號立體文字方塊 (Badge) */
-    .stock-badge {
-        background-color: #2b3040; padding: 4px 8px; border-radius: 6px;
-        font-size: 1.4rem; font-weight: 900; color: #ffffff;
-        border: 1px solid #444c66; display: inline-block; margin-bottom: 3px;
-    }
-    .stock-name { font-size: 1rem; color: #aaaaaa; font-weight: bold; }
-    .price-text { font-size: 1.6rem; font-weight: 900; }
-    .change-text { font-size: 1.1rem; font-weight: bold; margin-top: 2px; }
-    
-    /* 解析頁面：網格系統 (純 HTML，不與 st.columns 衝突) */
-    .metric-box {
-        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
-        padding: 12px; font-size: 1.2rem; line-height: 1.6; color: #e0e0e0;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3); text-align: center;
-    }
-    .metric-title { font-size: 1.1rem; color: #888; margin-bottom: 5px; font-weight: bold; text-align: center; }
-    
-    .tech-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 15px; }
-    .trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    
-    .tech-box {
-        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
-        padding: 12px 15px; font-size: 1.2rem; line-height: 1.8; color: #cccccc;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3); text-align: left;
-    }
-    .tech-title { 
-        font-size: 1.1rem; color: #888; margin-bottom: 8px; font-weight: bold; 
-        text-align: center; border-bottom: 1px solid #333; padding-bottom: 5px;
-    }
-    .val-highlight { color: #00ffcc; font-weight: bold; margin-left: 5px; } 
-
-    /* ======== 手機版專屬優化 ======== */
-    @media (max-width: 768px) {
-        /* 需求1：強制手機上的卡片維持「單行橫向排列」，絕對不換行疊加！ */
-        [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            padding: 8px 6px !important;
-        }
-        [data-testid="column"] {
-            width: auto !important;
-            flex: 1 1 0px !important;
-            min-width: 0 !important;
-            padding: 0 4px !important;
-        }
-        
-        /* 手機版條列內容微調，完美塞入單行 */
-        .stock-badge { font-size: 1.1rem; padding: 2px 6px; margin-bottom: 2px; }
-        .stock-name { font-size: 0.85rem; }
-        .price-text { font-size: 1.3rem; }
-        .change-text { font-size: 0.85rem; margin-top: 0px; }
-        .stButton button p { font-size: 1rem !important; }
-        .stButton button { min-height: 36px !important; padding: 0 !important; }
-        
-        /* 解析頁面網格適配 */
-        .tech-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .tech-box { font-size: 1rem !important; padding: 10px !important; }
-        .trend-grid { gap: 6px; }
-        .metric-box { font-size: 1rem !important; padding: 10px !important; }
-    }
+    .stButton button { font-weight: bold !important; border-radius: 8px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -158,7 +57,7 @@ st.sidebar.title("⭐ 我的自選股")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
         fav_name = STOCK_NAMES.get(fav, fav)
-        if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}"):
+        if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
             st.session_state.page = "analysis"
             st.rerun()
@@ -172,8 +71,7 @@ if st.sidebar.button("🔄 自動抓取市場熱門股", use_container_width=Tru
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.rerun()
 
-st.sidebar.markdown("<div style='font-size:1rem; color:gray;'>手動微調代號 (請用逗號分隔)：</div>", unsafe_allow_html=True)
-pool_input = st.sidebar.text_area("隱藏標籤", value=",".join(st.session_state.custom_pool), height=150, label_visibility="collapsed")
+pool_input = st.sidebar.text_area("手動微調代號 (逗號分隔)", value=",".join(st.session_state.custom_pool), height=150)
 if st.sidebar.button("💾 儲存手動更新", use_container_width=True):
     new_pool = [x.strip() for x in pool_input.split(",") if x.strip()]
     st.session_state.custom_pool = new_pool
@@ -275,43 +173,32 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
-# 需求2：共用大盤資訊看板模組 (首頁與解析頁完全一致)
-def render_index_board():
-    now = datetime.now()
-    twii_df = get_stock_data("^TWII")
-    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
-    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
-    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
-    
-    st.markdown(
-        f"<div class='index-board'>"
-        f"<span style='color: #a0a0a0; font-size: 1.4rem;'>加權指數 </span>"
-        f"<strong style='color: {twii_color}; font-size: 2.2rem;'>{twii_close:,.2f} ({twii_change:,.2f})</strong><br>"
-        f"<span style='color: #666; font-size: 1.2rem;'>{now.strftime('%Y/%m/%d %H:%M:%S')}</span>"
-        f"</div>", 
-        unsafe_allow_html=True
-    )
-
 # ==========================================
 # 2. 畫面路由 (SPA 導航控制)
 # ==========================================
 
 # ─── 首頁模式 (Home) ───
 if st.session_state.page == "home":
-    st.markdown(f"<h1 style='text-align: center; font-size: 2.2rem;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
+    st.title("🇹🇼 台股戰術監控總機")
     
-    render_index_board() # 統一呼叫巨型看板
+    now = datetime.now()
+    twii_df = get_stock_data("^TWII")
+    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
+    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
+    
+    # 乾淨的大盤顯示
+    with st.container(border=True):
+        st.metric(label=f"加權指數 ({now.strftime('%Y/%m/%d %H:%M')})", value=f"{twii_close:,.2f}", delta=f"{twii_change:,.2f}")
         
-    st.markdown("<h3 style='font-size: 1.8rem;'>🔍 快速搜尋</h3>", unsafe_allow_html=True)
-    search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
+    search_val = st.text_input("🔍 快速搜尋代號", placeholder="輸入代號並按 Enter (例如: 2330)")
     if search_val:
         st.session_state.current_stock = search_val
         st.session_state.page = "analysis"
         st.rerun()
 
-    st.markdown("<h3 style='font-size: 1.8rem; margin-top: 20px;'>📡 量大精選：超賣前 10 名榜單</h3>", unsafe_allow_html=True)
+    st.subheader("📡 量大精選：超賣前 10 名榜單")
     scan_results = []
-    with st.spinner('掃描雷達池標的中...'):
+    with st.spinner('雷達掃描中...'):
         for stock in st.session_state.custom_pool:
             data = analyze_today(get_stock_data(stock), stock)
             if data: scan_results.append(data)
@@ -321,37 +208,30 @@ if st.session_state.page == "home":
         df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
         df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
-        # 這是全 App "唯一" 使用 st.columns 的地方！
-        # 配合 CSS 的 [data-testid="stHorizontalBlock"]，它會直接變成精美的單行卡片
+        # 使用 Streamlit 原生 container 製作不跑版的卡片
         for _, row in df_top10_j.iterrows():
-            c1, c2, c3, c4 = st.columns([1.5, 3.5, 4.5, 2.5])
-            
-            is_fav = row['ticker_raw'] in st.session_state.favorites
-            star_icon = "⭐" if is_fav else "☆"
-            p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
-            sign = "+" if row['漲跌'] > 0 else ""
-            
-            with c1:
-                if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
+            with st.container(border=True):
+                is_fav = row['ticker_raw'] in st.session_state.favorites
+                sign = "+" if row['漲跌'] > 0 else ""
+                
+                # 上半部：資訊文字
+                st.markdown(f"### `{row['代號']}` {row['名稱']}")
+                st.markdown(f"**收盤:** {row['收盤價']} | **漲跌:** {sign}{row['漲跌']} ({sign}{row['漲跌幅']}%) | **J值:** {row['J值']}")
+                
+                # 下半部：操作按鈕 (使用原生 columns，手機上自然排列絕不重疊)
+                col1, col2 = st.columns(2)
+                star_btn_text = "⭐ 移除自選" if is_fav else "☆ 加入自選"
+                
+                if col1.button(star_btn_text, key=f"star_{row['ticker_raw']}", use_container_width=True):
                     if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
                     else: st.session_state.favorites.append(row['ticker_raw'])
                     save_json(FAV_FILE, st.session_state.favorites)
                     st.rerun()
-            
-            with c2:
-                # 需求3：立體文字方塊 (Badge) 加上 名稱
-                st.markdown(f"<div style='line-height: 1.2;'><span class='stock-badge'>{row['代號']}</span><br><span class='stock-name'>{row['名稱']}</span></div>", unsafe_allow_html=True)
                 
-            with c3:
-                # 股價與漲跌 (純 HTML，永遠不會被縮寫成...)
-                st.markdown(f"<div style='text-align: right; line-height: 1.2;'><div class='price-text' style='color:{p_color};'>{row['收盤價']}</div><div class='change-text' style='color:{p_color};'>{sign}{row['漲跌']} ({sign}{row['漲跌幅']}%)</div></div>", unsafe_allow_html=True)
-                
-            with c4:
-                if st.button("解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
+                if col2.button("📊 進入解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
                     st.session_state.current_stock = row['ticker_raw']
                     st.session_state.page = "analysis"
                     st.rerun()
-                    
     else: st.info("目前雷達池無資料，請至左側設定選單新增。")
 
 # ─── 解析頁模式 (Analysis) ───
@@ -360,100 +240,80 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = STOCK_NAMES.get(target, "")
     
-    # 需求4：返回首頁置頂 (不使用 columns，乾淨俐落)
+    # 頂部返回按鈕
     if st.button("⬅ 返回首頁", key="back_btn", use_container_width=True):
         st.session_state.page = "home"
         st.rerun()
-    st.markdown("<br>", unsafe_allow_html=True)
     
-    # 呼叫共用大盤資訊
-    render_index_board()
+    # 大盤看板
+    now = datetime.now()
+    twii_df = get_stock_data("^TWII")
+    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
+    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
+    with st.container(border=True):
+        st.metric(label=f"加權指數 ({now.strftime('%Y/%m/%d %H:%M')})", value=f"{twii_close:,.2f}", delta=f"{twii_change:,.2f}")
     
     if df_chart is not None:
         data = analyze_today(df_chart, target)
         
-        p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
+        # 標題
         sign = "+" if data['漲跌'] > 0 else ""
-        st.markdown(
-            f"<h2 style='text-align: center; font-size: 2.2rem;'>🎯 {target} {clean_name} &nbsp;"
-            f"<span style='color:{p_color}; font-weight:900;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</span></h2>", 
-            unsafe_allow_html=True
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='text-align: center;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
+        # 戰術判定 (使用原生防呆訊息框)
         if data['訊號']:
-            st.markdown("<div style='background-color:rgba(0, 204, 0, 0.2); padding:15px; border-radius:8px; font-size:1.3rem; font-weight:bold; color:#00ffcc;'>✅ 戰術判定：【極佳買點】 股價穩在月線之上，短線急跌破 5 日線，且 KDJ 極度超賣。符合買黑黃金坑條件！</div>", unsafe_allow_html=True)
+            st.success("✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌破 5 日線，且 KDJ 極度超賣。符合買黑黃金坑條件！")
         else:
             if data['J值'] >= 80:
-                st.markdown("<div style='background-color:rgba(255, 51, 51, 0.2); padding:15px; border-radius:8px; font-size:1.3rem; font-weight:bold; color:#ff3333;'>⚠️ 戰術判定：【高檔過熱】 J值過高，有回檔風險，嚴禁追高！</div>", unsafe_allow_html=True)
+                st.error("⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險，嚴禁追高！")
             elif data['收盤價'] < data['20MA']:
-                st.markdown("<div style='background-color:rgba(255, 165, 0, 0.2); padding:15px; border-radius:8px; font-size:1.3rem; font-weight:bold; color:orange;'>⛔ 戰術判定：【趨勢偏空】 股價跌破月線支撐，中線趨勢轉弱。</div>", unsafe_allow_html=True)
+                st.warning("⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。")
             else:
-                st.markdown("<div style='background-color:rgba(100, 149, 237, 0.2); padding:15px; border-radius:8px; font-size:1.3rem; font-weight:bold; color:#6495ED;'>⏳ 戰術判定：【觀望中】 雖然在多頭趨勢，但目前未達極度超賣區，建議耐心等待。</div>", unsafe_allow_html=True)
+                st.info("⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區，建議耐心等待。")
         
-        st.markdown("<br>", unsafe_allow_html=True)
+        # 技術指標 (使用原生卡片，手機上會自動排版不變形)
+        st.subheader("📊 技術指標參數")
+        
+        c1, c2 = st.columns(2)
+        with c1.container(border=True):
+            st.markdown(f"**均線 (MA)**\n\n5T: `{data['5MA']}`\n\n10T: `{data['10MA']}`\n\n20T: `{data['20MA']}`")
+        with c2.container(border=True):
+            st.markdown(f"**動能 (MACD)**\n\nDIF: `{data['MACD']}`\n\nOSC: `{data['MACD柱']}`")
+            
+        c3, c4 = st.columns(2)
+        with c3.container(border=True):
+            st.markdown(f"**隨機指標 (KDJ)**\n\nK: `{data['K']}`\n\nD: `{data['D']}`\n\nJ: `{data['J值']}`")
+        with c4.container(border=True):
+            st.markdown(f"**市場熱度**\n\n成交量:\n\n`{data['成交量']} 張`")
 
-        st.markdown("<h3>📊 技術指標參數</h3>", unsafe_allow_html=True)
-        
-        html_tech_blocks = f"""
-        <div class="tech-grid">
-            <div class='tech-box'>
-                <div class='tech-title'>均線 (MA)</div>
-                5T: <span class='val-highlight'>{data['5MA']}</span><br>
-                10T: <span class='val-highlight'>{data['10MA']}</span><br>
-                20T: <span class='val-highlight'>{data['20MA']}</span>
-            </div>
-            <div class='tech-box'>
-                <div class='tech-title'>動能 (MACD)</div>
-                DIF: <span class='val-highlight'>{data['MACD']}</span><br>
-                OSC: <span class='val-highlight'>{data['MACD柱']}</span><br>&nbsp;
-            </div>
-            <div class='tech-box'>
-                <div class='tech-title'>隨機指標 (KDJ)</div>
-                K: <span class='val-highlight'>{data['K']}</span><br>
-                D: <span class='val-highlight'>{data['D']}</span><br>
-                J: <span class='val-highlight'>{data['J值']}</span>
-            </div>
-            <div class='tech-box' style='text-align:center;'>
-                <div class='tech-title'>市場熱度</div>
-                成交量<br>
-                <span class='val-highlight' style='font-size:1.4rem;'>{data['成交量']}</span>張<br>&nbsp;
-            </div>
-        </div>
-        """
-        st.markdown(html_tech_blocks, unsafe_allow_html=True)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-
+        # 圖表
         fig = draw_professional_chart(df_chart, target, data['收盤價'])
         st.plotly_chart(fig, use_container_width=True)
-        st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top: -10px;'>▲ {target} {clean_name} 技術指標綜合面板</div>", unsafe_allow_html=True)
         
         st.divider()
 
-        st.markdown("<h3>📈 多空趨勢判定</h3>", unsafe_allow_html=True)
-        t_short = f"<span style='color:#ff3333;'>🔼 多頭 (站上5T)</span>" if data['收盤價'] > data['5MA'] else f"<span style='color:#00cc00;'>🔽 跌破5T</span>"
-        t_mid = f"<span style='color:#ff3333;'>🔼 多頭 (站上20T)</span>" if data['收盤價'] > data['20MA'] else f"<span style='color:#00cc00;'>🔽 跌破20T</span>"
-        t_long = f"<span style='color:#ff3333;'>🔼 多頭 (站上季線)</span>" if data['收盤價'] > data['60MA'] else f"<span style='color:#00cc00;'>🔽 跌破季線</span>"
+        # 多空趨勢
+        st.subheader("📈 多空趨勢判定")
+        t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
+        t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
+        t_long = "🔼 多頭 (站上季線)" if data['收盤價'] > data['60MA'] else "🔽 跌破季線"
         
-        html_trend_blocks = f"""
-        <div class="trend-grid">
-            <div class='metric-box'><div class='metric-title'>日線 (短)</div>{t_short}</div>
-            <div class='metric-box'><div class='metric-title'>周線 (中)</div>{t_mid}</div>
-            <div class='metric-box'><div class='metric-title'>月線 (長)</div>{t_long}</div>
-        </div>
-        """
-        st.markdown(html_trend_blocks, unsafe_allow_html=True)
+        t1, t2, t3 = st.columns(3)
+        with t1.container(border=True): st.markdown(f"**日線**\n\n{t_short}")
+        with t2.container(border=True): st.markdown(f"**周線**\n\n{t_mid}")
+        with t3.container(border=True): st.markdown(f"**月線**\n\n{t_long}")
         
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # 底部自選
         if target in st.session_state.favorites:
-            if st.button("❌ 從我的自選股移除", use_container_width=True):
+            if st.button("❌ 移除自選", use_container_width=True):
                 st.session_state.favorites.remove(target)
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
         else:
-            if st.button("⭐ 加入我的自選股", use_container_width=True):
+            if st.button("⭐ 加入自選", use_container_width=True):
                 st.session_state.favorites.append(target)
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
