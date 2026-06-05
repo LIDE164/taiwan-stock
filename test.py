@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 # ==========================================
 # 0. 系統初始化與自訂 CSS 魔法 (打造 APP 質感)
 # ==========================================
-st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 # 注入 CSS 讓畫面變成深色卡片風格
 st.markdown("""
@@ -161,7 +161,7 @@ if st.session_state.page == "home":
             pass # 這裡可以展開自選股，為求簡潔我們先列在下方卡片
 
     # 自動掃描雷達池
-    st.markdown("### 📡 今日黃金坑潛力榜 (長條卡片呈現)")
+    st.markdown("### 📡 今日黃金潛力榜 ")
     radar_pool = ["1802", "3362", "2330", "2317", "2454", "2308", "2603", "3231", "2356", "3008"]
     
     scan_results = []
