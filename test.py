@@ -51,6 +51,20 @@ st.markdown('''
         margin-top: -15px;
         margin-bottom: 15px;
     }
+    
+    /* 需求3: 多空趨勢的單行三格方塊設計 */
+    .trend-box {
+        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
+        padding: 15px 10px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .trend-title { font-size: 1.1rem; color: #888; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px;}
+    .trend-status { font-size: 1.3rem; font-weight: 900; }
+    
+    /* 需求1: 星星按鈕微調，讓它能跟名稱放在一起 */
+    .star-btn {
+        background: transparent; border: none; color: #ffcc00; font-size: 1.5rem; 
+        cursor: pointer; padding: 0; margin-left: 8px;
+    }
 </style>
 ''', unsafe_allow_html=True)
 
@@ -149,7 +163,6 @@ def analyze_today(df, ticker_number):
     prev = df.iloc[-2]
     c_name = STOCK_NAMES.get(ticker_number, "")
     
-    # 判斷是否符合買黑黃金坑
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
     
@@ -207,6 +220,18 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
+def render_index_board():
+    now = datetime.now()
+    twii_df = get_stock_data("^TWII")
+    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
+    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
+    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
+    
+    with st.container(border=True):
+        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
+
 # ==========================================
 # 2. 畫面路由 (SPA 導航控制)
 # ==========================================
@@ -215,16 +240,7 @@ def draw_professional_chart(df, ticker_name, latest_price):
 if st.session_state.page == "home":
     st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
     
-    # 大盤看板
-    now = datetime.now()
-    twii_df = get_stock_data("^TWII")
-    twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
-    twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
-    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
-    with st.container(border=True):
-        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
+    render_index_board()
         
     st.markdown("<h3 style='margin-top: 15px;'>🔍 快速搜尋個股</h3>", unsafe_allow_html=True)
     search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
@@ -248,14 +264,23 @@ if st.session_state.page == "home":
         for _, row in df_top10_j.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
-                star_icon = "⭐ 移除自選" if is_fav else "☆ 加入自選"
+                star_icon = "⭐" if is_fav else "☆"
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
-                st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
+                # 需求1：把星號按鈕跟名稱放在同一行，並靠右對齊按鈕
+                c_title, c_star = st.columns([8, 2])
+                with c_title:
+                    st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
+                with c_star:
+                    if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
+                        if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
+                        else: st.session_state.favorites.append(row['ticker_raw'])
+                        save_json(FAV_FILE, st.session_state.favorites)
+                        st.rerun()
                 
                 st.markdown(f'''
-                <div style="background-color: #1a1c24; padding: 12px; border-radius: 8px; border: 1px solid #333; text-align: center; margin: 10px 0;">
+                <div style="background-color: #1a1c24; padding: 12px; border-radius: 8px; border: 1px solid #333; text-align: center; margin: 5px 0 10px 0;">
                     <span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{row['收盤價']}</span>
                     <span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{sign}{row['漲跌']} ({sign}{row['漲跌幅']}%)</span>
                 </div>
@@ -263,14 +288,7 @@ if st.session_state.page == "home":
                 
                 st.markdown(f"📊 當前動態 ➜ **J值:** `{row['J值']}`")
                 
-                btn_c1, btn_c2 = st.columns(2)
-                if btn_c1.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
-                    if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
-                    else: st.session_state.favorites.append(row['ticker_raw'])
-                    save_json(FAV_FILE, st.session_state.favorites)
-                    st.rerun()
-                
-                if btn_c2.button("📊 深度個股解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
+                if st.button("📊 深度個股解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
                     st.session_state.current_stock = row['ticker_raw']
                     st.session_state.page = "analysis"
                     st.rerun()
@@ -295,14 +313,13 @@ elif st.session_state.page == "analysis":
         </div>
         ''', unsafe_allow_html=True)
         
-        # 需求1：實作切換 上一支 / 首頁 / 下一支 的導航列
+        # 導航列
         nav_pool = st.session_state.custom_pool
         if target in nav_pool and len(nav_pool) > 1:
             idx = nav_pool.index(target)
             prev_stock = nav_pool[(idx - 1) % len(nav_pool)]
             next_stock = nav_pool[(idx + 1) % len(nav_pool)]
         else:
-            # 如果是從搜尋來的，不在掃描池內，預設給池子的頭尾
             prev_stock = nav_pool[-1] if nav_pool else ""
             next_stock = nav_pool[0] if nav_pool else ""
 
@@ -367,27 +384,52 @@ elif st.session_state.page == "analysis":
         
         st.divider()
 
+        # 需求3：白話文敘述的三級多空趨勢判定 (一行三個文字方塊)
         st.subheader("📈 三級多空趨勢判定")
-        t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
-        t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
-        t_long = "🔼 多頭 (站上季線)" if data['收盤價'] > data['60MA'] else "🔽 跌破季線"
         
-        with st.container(border=True):
-            st.markdown(f"**短線走勢 (日線級別) :** {t_short}")
-        with st.container(border=True):
-            st.markdown(f"**中線布局 (周線級別) :** {t_mid}")
-        with st.container(border=True):
-            st.markdown(f"**長線防守 (月線級別) :** {t_long}")
+        t_short_text = "強勢格局" if data['收盤價'] > data['5MA'] else "短線弱勢"
+        t_short_color = "#ff3333" if data['收盤價'] > data['5MA'] else "#00cc00"
+        
+        t_mid_text = "中期偏多" if data['收盤價'] > data['20MA'] else "跌破月線"
+        t_mid_color = "#ff3333" if data['收盤價'] > data['20MA'] else "#00cc00"
+        
+        t_long_text = "長線保護" if data['收盤價'] > data['60MA'] else "趨勢轉空"
+        t_long_color = "#ff3333" if data['收盤價'] > data['60MA'] else "#00cc00"
+        
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            st.markdown(f"""
+            <div class="trend-box">
+                <div class="trend-title">短線 (日線)</div>
+                <div class="trend-status" style="color: {t_short_color};">{t_short_text}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with t2:
+            st.markdown(f"""
+            <div class="trend-box">
+                <div class="trend-title">中線 (周線)</div>
+                <div class="trend-status" style="color: {t_mid_color};">{t_mid_text}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with t3:
+            st.markdown(f"""
+            <div class="trend-box">
+                <div class="trend-title">長線 (月線)</div>
+                <div class="trend-status" style="color: {t_long_color};">{t_long_text}</div>
+            </div>
+            """, unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
         if target in st.session_state.favorites:
-            if st.button("❌ 從自選股移除此標的", use_container_width=True):
+            if st.button("❌ 從自選股移除", use_container_width=True):
                 st.session_state.favorites.remove(target)
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
         else:
-            if st.button("⭐ 將此標的加入自選股", use_container_width=True):
+            if st.button("⭐ 將此標的加入自選", use_container_width=True):
                 st.session_state.favorites.append(target)
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
