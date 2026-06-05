@@ -13,29 +13,19 @@ st.set_page_config(page_title="專業交易雷達", layout="centered", initial_s
 # 注入 CSS 讓畫面變成深色卡片風格
 st.markdown("""
 <style>
-    /* 強制設定網頁整體最大寬度為 600px，讓它像手機 APP 一樣集中 */
-    .stApp {
-        max-width: 600px;
-        margin: 0 auto;
-    }
-    
-    /* 調整所有卡片的外觀與間距 */
-    div[data-testid="stVerticalBlock"] {
+    /* 隱藏預設的頂部選單與 Footer */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    /* 打造長條狀卡片外觀 */
+    div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] {
         background-color: #1a1c24;
-        border-radius: 12px;
-        padding: 15px !important;
+        border-radius: 10px;
+        padding: 10px;
         border: 1px solid #2b2e3b;
-        margin-bottom: 10px;
     }
-    
-    /* 縮小標題字體，讓畫面更緊湊 */
-    h1 { font-size: 1.5rem !important; }
-    h2 { font-size: 1.2rem !important; }
-    
-    /* 讓 metric 數值更小，更像手機介面 */
-    [data-testid="stMetricValue"] {
-        font-size: 1rem !important;
-    }
+    /* 讓強調數值有霓虹螢光感 */
+    .glow-text { color: #00ffcc; font-weight: bold; font-size: 1.2rem; }
+    .glow-red { color: #ff3333; font-weight: bold; font-size: 1.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
