@@ -17,7 +17,15 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 需求2：左上角側欄箭頭旁加上文字 */
+    /* 修正：移除所有會破壞排版的 flex 強制覆寫，回歸乾淨的卡片設計 */
+    div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] {
+        background-color: #1a1c24;
+        border-radius: 10px;
+        padding: 15px;
+        border: 1px solid #2b2e3b;
+    }
+    
+    /* 左上角側欄箭頭旁加上文字 */
     [data-testid="collapsedControl"] {
         border: 1px solid #444 !important;
         border-radius: 8px !important;
@@ -34,33 +42,29 @@ st.markdown("""
         color: #ffcc00;
         margin-left: 8px;
     }
-
-    /* 按鈕共用樣式 */
-    .stButton button p { font-size: 1.1rem !important; font-weight: bold !important; margin: 0 !important; }
-    .stButton button { padding: 8px 0px !important; border-radius: 8px !important; min-height: 40px !important; }
     
-    /* 大盤資訊看板 (首頁與解析頁共用) */
+    /* 大盤資訊看板 (首頁與解析頁共用，保證一樣大) */
     .index-board {
         text-align: center; background: #1a1c24; padding: 15px;
         border-radius: 8px; margin-bottom: 20px; border: 1px solid #333;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
 
-    /* 需求3：股票代號文字方塊 (Badge) */
+    /* 需求3：股票號碼文字方塊 (Badge) */
     .stock-badge {
         background-color: #2b3040;
-        padding: 4px 10px;
+        padding: 6px 12px;
         border-radius: 6px;
-        font-size: 1.3rem;
+        font-size: 1.5rem;
         font-weight: 900;
         color: #ffffff;
-        display: inline-block;
-        margin-bottom: 4px;
         border: 1px solid #444c66;
+        display: inline-block;
     }
-    .stock-name { font-size: 1.1rem; color: #aaaaaa; }
-    .price-text { font-size: 1.4rem; font-weight: 900; }
-    .change-text { font-size: 1rem; font-weight: bold; }
+    
+    /* 按鈕樣式統一 */
+    .stButton button p { font-size: 1.2rem !important; font-weight: bold !important; margin: 0 !important; }
+    .stButton button { padding: 5px 0px !important; border-radius: 8px !important; min-height: 45px !important; }
     
     /* 解析頁面：一般方塊與網格系統 */
     .metric-box {
@@ -86,32 +90,13 @@ st.markdown("""
 
     /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
-        /* 解析網格縮配 */
         .tech-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .tech-box { font-size: 1rem !important; padding: 10px !important; }
+        .tech-box { font-size: 1.1rem !important; padding: 10px !important; }
         .trend-grid { gap: 6px; }
-        .metric-box { font-size: 1rem !important; padding: 10px !important; }
+        .metric-box { font-size: 1.1rem !important; padding: 10px !important; }
         
-        /* 需求1：首頁條列式橫向強制不換行 */
-        [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: center !important;
-        }
-        [data-testid="column"] {
-            width: auto !important;
-            flex: 1 1 0px !important;
-            min-width: 0 !important;
-            padding: 0 4px !important;
-        }
-
-        /* 手機版條列字體微調 */
-        .stock-badge { font-size: 1.1rem; padding: 2px 6px; }
-        .stock-name { font-size: 0.9rem; }
-        .price-text { font-size: 1.2rem; }
-        .change-text { font-size: 0.85rem; }
-        .stButton button p { font-size: 0.9rem !important; }
-        .stButton button { min-height: 35px !important; padding: 0 !important; }
+        .stock-badge { font-size: 1.2rem; padding: 4px 8px; }
+        .stButton button p { font-size: 1.1rem !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -269,7 +254,7 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
-# 產生共用大盤資訊區塊
+# 需求2：共用大盤資訊看板模組 (首頁與解析頁完全一致)
 def render_index_board():
     now = datetime.now()
     twii_df = get_stock_data("^TWII")
@@ -279,9 +264,9 @@ def render_index_board():
     
     st.markdown(
         f"<div class='index-board'>"
-        f"<span style='color: #a0a0a0; font-size: 1.2rem;'>加權指數 </span>"
+        f"<span style='color: #a0a0a0; font-size: 1.4rem;'>加權指數 </span>"
         f"<strong style='color: {twii_color}; font-size: 2.2rem;'>{twii_close:,.2f} ({twii_change:,.2f})</strong><br>"
-        f"<span style='color: #666; font-size: 1.0rem;'>{now.strftime('%Y/%m/%d %H:%M:%S')}</span>"
+        f"<span style='color: #666; font-size: 1.2rem;'>{now.strftime('%Y/%m/%d %H:%M:%S')}</span>"
         f"</div>", 
         unsafe_allow_html=True
     )
@@ -292,19 +277,19 @@ def render_index_board():
 
 # ─── 首頁模式 (Home) ───
 if st.session_state.page == "home":
-    st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='text-align: center; font-size: 2.2rem;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
     
-    # 需求2：首頁加權指數與解析頁完全一致
+    # 需求2：首頁加權指數與解析頁字體一樣大
     render_index_board()
         
-    st.markdown("<h3 style='font-size: 1.6rem;'>🔍 快速搜尋</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='font-size: 1.8rem;'>🔍 快速搜尋</h3>", unsafe_allow_html=True)
     search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
         st.session_state.page = "analysis"
         st.rerun()
 
-    st.markdown("<h3 style='font-size: 1.6rem; margin-top: 20px;'>📡 量大精選：超賣前 10 名榜單</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='font-size: 1.8rem; margin-top: 20px;'>📡 量大精選：超賣前 10 名榜單</h3>", unsafe_allow_html=True)
     scan_results = []
     with st.spinner('掃描雷達池標的中...'):
         for stock in st.session_state.custom_pool:
@@ -316,38 +301,46 @@ if st.session_state.page == "home":
         df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
         df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
-        # 需求1：條列式方塊排版 (乾淨的 columns 對齊)
         st.markdown("<hr style='margin:0.2em 0; border-color:#2b2e3b;'>", unsafe_allow_html=True)
         for _, row in df_top10_j.iterrows():
-            c1, c2, c3, c4 = st.columns([1.2, 3.5, 3.5, 2])
-            
-            is_fav = row['ticker_raw'] in st.session_state.favorites
-            star_icon = "⭐" if is_fav else "☆"
-            p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
-            sign = "+" if row['漲跌'] > 0 else ""
-            
-            with c1:
-                if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
-                    if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
-                    else: st.session_state.favorites.append(row['ticker_raw'])
-                    save_json(FAV_FILE, st.session_state.favorites)
-                    st.rerun()
-            
-            with c2:
-                # 需求3：股票號碼用文字方塊 Badge 顯示
-                st.markdown(f"<div class='stock-badge'>{row['代號']}</div><div class='stock-name'>{row['名稱']}</div>", unsafe_allow_html=True)
+            with st.container():
+                # 恢復標準的 Streamlit column 佈局，讓它在手機上自然流暢不變形
+                c1, c2, c3 = st.columns([1.5, 6, 2.5])
                 
-            with c3:
-                st.markdown(f"<div class='price-text' style='color:{p_color};'>{row['收盤價']}</div><div class='change-text' style='color:{p_color};'>{sign}{row['漲跌']} ({sign}{row['漲跌幅']}%)</div>", unsafe_allow_html=True)
+                is_fav = row['ticker_raw'] in st.session_state.favorites
+                star_icon = "⭐" if is_fav else "☆"
+                p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
+                sign = "+" if row['漲跌'] > 0 else ""
                 
-            with c4:
-                # 為了垂直對齊，加一點隱形空間
-                st.markdown("<div style='height: 5px;'></div>", unsafe_allow_html=True)
-                if st.button("解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
-                    st.session_state.current_stock = row['ticker_raw']
-                    st.session_state.page = "analysis"
-                    st.rerun()
+                with c1:
+                    if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
+                        if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
+                        else: st.session_state.favorites.append(row['ticker_raw'])
+                        save_json(FAV_FILE, st.session_state.favorites)
+                        st.rerun()
+                
+                with c2:
+                    # 需求1 & 3：使用純 HTML 確保文字不被縮寫，並將股票代號做成文字方塊 (Badge)
+                    html_block = f"""
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 5px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div class="stock-badge">{row['代號']}</div>
+                            <div style="color: #aaaaaa; font-size: 1.2rem; font-weight: bold;">{row['名稱']}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="color: {p_color}; font-size: 1.5rem; font-weight: 900;">{row['收盤價']}</div>
+                            <div style="color: {p_color}; font-size: 1.1rem; font-weight: bold;">{sign}{row['漲跌']} ({sign}{row['漲跌幅']}%)</div>
+                        </div>
+                    </div>
+                    """
+                    st.markdown(html_block, unsafe_allow_html=True)
                     
+                with c3:
+                    if st.button("📊 解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
+                        st.session_state.current_stock = row['ticker_raw']
+                        st.session_state.page = "analysis"
+                        st.rerun()
+                        
             st.markdown("<hr style='margin:0.2em 0; border-color:#2b2e3b;'>", unsafe_allow_html=True)
     else: st.info("目前雷達池無資料，請至左側設定選單新增。")
 
@@ -357,7 +350,6 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = STOCK_NAMES.get(target, "")
     
-    # 需求3：解析中返回首頁置頂
     col_nav1, col_nav2 = st.columns([1, 4])
     if col_nav1.button("⬅ 返回首頁", key="back_btn", use_container_width=True):
         st.session_state.page = "home"
@@ -373,7 +365,7 @@ elif st.session_state.page == "analysis":
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         st.markdown(
-            f"<h2 style='text-align: center; font-size: 2.0rem;'>🎯 {target} {clean_name} &nbsp;"
+            f"<h2 style='text-align: center; font-size: 2.2rem;'>🎯 {target} {clean_name} &nbsp;"
             f"<span style='color:{p_color}; font-weight:900;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</span></h2>", 
             unsafe_allow_html=True
         )
