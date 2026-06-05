@@ -31,41 +31,58 @@ st.markdown("""
     .stButton button p { font-size: 1.5rem !important; font-weight: bold !important; }
     .stButton button { padding: 12px 0px !important; border-radius: 8px !important; }
     
-    /* 解析頁面：一般方塊 */
-    .metric-box {
+    /* ======== 佈局與排版 CSS ======== */
+    /* 電腦版：技術指標 4 個橫排 */
+    .tech-container {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 15px;
+    }
+    /* 電腦版：趨勢分析 3 個橫排 */
+    .trend-container {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+    }
+
+    /* 一般方塊外觀 */
+    .metric-box, .tech-box {
         background-color: #1a1c24;
         border: 1px solid #333;
         border-radius: 8px;
-        padding: 12px;
-        font-size: 1.4rem;
-        line-height: 1.6;
-        color: #e0e0e0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .metric-title { font-size: 1.2rem; color: #888; margin-bottom: 5px; font-weight: bold; text-align: center; }
     
-    /* 需求修正：技術指標專屬微縮、換行對齊方塊 */
-    .tech-box {
-        background-color: #1a1c24;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 12px 15px;
-        font-size: 1.2rem; /* 字體大小適中 */
-        line-height: 1.8; /* 加大行距讓數值不擁擠 */
-        color: #cccccc;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        text-align: left; /* 靠左對齊讓數值排排站 */
-    }
+    /* 趨勢分析專用 */
+    .metric-box { padding: 12px; font-size: 1.4rem; line-height: 1.6; color: #e0e0e0; text-align: center; }
+    .metric-title { font-size: 1.2rem; color: #888; margin-bottom: 5px; font-weight: bold; }
+    
+    /* 技術指標專用 */
+    .tech-box { padding: 12px 15px; font-size: 1.2rem; line-height: 1.8; color: #cccccc; text-align: left; }
     .tech-title { 
-        font-size: 1.1rem; 
-        color: #888; 
-        margin-bottom: 8px; 
-        font-weight: bold; 
-        text-align: center; /* 標題置中 */
-        border-bottom: 1px solid #333; /* 加上分隔線更專業 */
-        padding-bottom: 5px;
+        font-size: 1.1rem; color: #888; margin-bottom: 8px; font-weight: bold; 
+        text-align: center; border-bottom: 1px solid #333; padding-bottom: 5px;
     }
     .val-highlight { color: #00ffcc; font-weight: bold; margin-left: 5px; } 
+
+    /* ======== 手機版專屬優化 (螢幕寬度 < 768px 自動觸發) ======== */
+    @media (max-width: 768px) {
+        .tech-container {
+            grid-template-columns: repeat(2, 1fr); /* 手機版變成 2x2 方塊並排 */
+            gap: 8px;
+        }
+        .trend-container {
+            grid-template-columns: repeat(3, 1fr); /* 趨勢維持 3 個並排 */
+            gap: 6px;
+        }
+        /* 字體與間距全面縮小，適配手機螢幕 */
+        .tech-box { font-size: 0.95rem !important; padding: 8px 10px !important; line-height: 1.6 !important; }
+        .tech-title { font-size: 0.9rem !important; margin-bottom: 5px !important; }
+        .metric-box { font-size: 1.1rem !important; padding: 8px !important; }
+        .metric-title { font-size: 0.9rem !important; }
+        .val-highlight { margin-left: 2px !important; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -336,12 +353,34 @@ elif st.session_state.page == "analysis":
 
         st.markdown("<h3 style='font-size: 1.8rem;'>📊 技術指標參數</h3>", unsafe_allow_html=True)
         
-        # 需求修正：加入 <br> 換行，並套用新的 .tech-box CSS
-        m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(f"<div class='tech-box'><div class='tech-title'>均線 (MA)</div>5T: <span class='val-highlight'>{data['5MA']}</span><br>10T: <span class='val-highlight'>{data['10MA']}</span><br>20T: <span class='val-highlight'>{data['20MA']}</span></div>", unsafe_allow_html=True)
-        m2.markdown(f"<div class='tech-box'><div class='tech-title'>動能 (MACD)</div>DIF: <span class='val-highlight'>{data['MACD']}</span><br>OSC: <span class='val-highlight'>{data['MACD柱']}</span><br>&nbsp;</div>", unsafe_allow_html=True)
-        m3.markdown(f"<div class='tech-box'><div class='tech-title'>隨機指標 (KDJ)</div>K: <span class='val-highlight'>{data['K']}</span><br>D: <span class='val-highlight'>{data['D']}</span><br>J: <span class='val-highlight'>{data['J值']}</span></div>", unsafe_allow_html=True)
-        m4.markdown(f"<div class='tech-box' style='text-align:center;'><div class='tech-title'>市場熱度</div>成交量<br><span class='val-highlight' style='font-size:1.4rem;'>{data['成交量']}</span>張<br>&nbsp;</div>", unsafe_allow_html=True)
+        # 需求解法：完全放棄 Streamlit 的欄位功能，改用原生 HTML/CSS Grid 達成並排佈局
+        html_tech_blocks = f"""
+        <div class="tech-container">
+            <div class='tech-box'>
+                <div class='tech-title'>均線 (MA)</div>
+                5T: <span class='val-highlight'>{data['5MA']}</span><br>
+                10T: <span class='val-highlight'>{data['10MA']}</span><br>
+                20T: <span class='val-highlight'>{data['20MA']}</span>
+            </div>
+            <div class='tech-box'>
+                <div class='tech-title'>動能 (MACD)</div>
+                DIF: <span class='val-highlight'>{data['MACD']}</span><br>
+                OSC: <span class='val-highlight'>{data['MACD柱']}</span><br>&nbsp;
+            </div>
+            <div class='tech-box'>
+                <div class='tech-title'>隨機指標 (KDJ)</div>
+                K: <span class='val-highlight'>{data['K']}</span><br>
+                D: <span class='val-highlight'>{data['D']}</span><br>
+                J: <span class='val-highlight'>{data['J值']}</span>
+            </div>
+            <div class='tech-box' style='text-align:center;'>
+                <div class='tech-title'>市場熱度</div>
+                成交量<br>
+                <span class='val-highlight' style='font-size:1.4rem;'>{data['成交量']}</span>張<br>&nbsp;
+            </div>
+        </div>
+        """
+        st.markdown(html_tech_blocks, unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -356,10 +395,14 @@ elif st.session_state.page == "analysis":
         t_mid = f"<span style='color:#ff3333;'>🔼 多頭 (站上20T)</span>" if data['收盤價'] > data['20MA'] else f"<span style='color:#00cc00;'>🔽 跌破20T</span>"
         t_long = f"<span style='color:#ff3333;'>🔼 多頭 (站上季線)</span>" if data['收盤價'] > data['60MA'] else f"<span style='color:#00cc00;'>🔽 跌破季線</span>"
         
-        c_t1, c_t2, c_t3 = st.columns(3)
-        c_t1.markdown(f"<div class='metric-box' style='text-align:center;'><div class='metric-title'>日線 (短)</div>{t_short}</div>", unsafe_allow_html=True)
-        c_t2.markdown(f"<div class='metric-box' style='text-align:center;'><div class='metric-title'>周線 (中)</div>{t_mid}</div>", unsafe_allow_html=True)
-        c_t3.markdown(f"<div class='metric-box' style='text-align:center;'><div class='metric-title'>月線 (長)</div>{t_long}</div>", unsafe_allow_html=True)
+        html_trend_blocks = f"""
+        <div class="trend-container">
+            <div class='metric-box'><div class='metric-title'>日線</div>{t_short}</div>
+            <div class='metric-box'><div class='metric-title'>周線</div>{t_mid}</div>
+            <div class='metric-box'><div class='metric-title'>月線</div>{t_long}</div>
+        </div>
+        """
+        st.markdown(html_trend_blocks, unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
