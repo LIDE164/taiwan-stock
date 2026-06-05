@@ -8,7 +8,7 @@ import json
 import os
 
 # ==========================================
-# 0. 系統初始化與自訂 CSS 視覺強化 (全面適配手機)
+# 0. 系統初始化與自訂 CSS 視覺強化
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
@@ -17,23 +17,23 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
+    /* 修正：移除破壞版面的全域 flex-row，回歸流暢卡片佈局 */
     div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"] {
         background-color: #1a1c24;
         border-radius: 10px;
         padding: 15px;
         border: 1px solid #2b2e3b;
+        margin-bottom: 10px;
     }
     
-    /* 需求2：左上角箭頭標示自選股 */
+    /* 左上角選單標示自選股 */
     [data-testid="collapsedControl"] {
         border: 1px solid #444 !important;
         border-radius: 8px !important;
         background-color: #1a1c24 !important;
-        width: auto !important;
-        padding: 5px 15px !important;
+        padding: 5px 12px !important;
         display: flex !important;
         align-items: center !important;
-        transition: 0.3s;
     }
     [data-testid="collapsedControl"]::after {
         content: " ⭐自選股";
@@ -43,14 +43,16 @@ st.markdown("""
         margin-left: 8px;
     }
     
-    [data-testid="stMetricLabel"] p { font-size: 1.2rem !important; color: #cccccc !important; }
-    [data-testid="stMetricValue"] { font-size: 2.0rem !important; font-weight: 900 !important; }
-    [data-testid="stMetricDelta"] { font-size: 1.2rem !important; }
+    /* 需求1：全域數值字體微縮，解決首頁太大的問題 */
+    [data-testid="stMetricLabel"] p { font-size: 1.1rem !important; color: #cccccc !important; }
+    [data-testid="stMetricValue"] { font-size: 1.6rem !important; font-weight: 900 !important; }
+    [data-testid="stMetricDelta"] { font-size: 1.1rem !important; }
 
-    .stButton button p { font-size: 1.3rem !important; font-weight: bold !important; }
+    /* 按鈕字體與外觀 */
+    .stButton button p { font-size: 1.2rem !important; font-weight: bold !important; }
     .stButton button { padding: 8px 0px !important; border-radius: 8px !important; }
     
-    /* 解析頁面：一般方塊與網格系統 */
+    /* 解析頁面：一般方塊與網格系統 (維持您滿意的大小) */
     .metric-box {
         background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
         padding: 12px; font-size: 1.2rem; line-height: 1.6; color: #e0e0e0;
@@ -58,7 +60,7 @@ st.markdown("""
     }
     .metric-title { font-size: 1.1rem; color: #888; margin-bottom: 5px; font-weight: bold; text-align: center; }
     
-    /* 需求1：技術指標專屬排版 */
+    /* 解析頁面的並排網格 */
     .tech-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 15px; }
     .trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     
@@ -73,43 +75,16 @@ st.markdown("""
     }
     .val-highlight { color: #00ffcc; font-weight: bold; margin-left: 5px; } 
 
-    .list-name { font-size: 1.8rem; font-weight: 900; line-height: 1.2; }
-
-    /* ======== 手機版專屬優化 (寬度小於 768px 自動觸發) ======== */
+    /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
-        /* 需求1：首頁字體縮小，強制水平排列不堆疊 */
-        [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: center !important;
-        }
-        [data-testid="column"] {
-            width: auto !important;
-            flex: 1 1 0px !important;
-            min-width: 0 !important;
-            padding: 0 3px !important;
-        }
-        
-        /* 字體與按鈕全面微縮 */
-        h1 { font-size: 1.5rem !important; }
-        h2 { font-size: 1.3rem !important; }
-        h3 { font-size: 1.2rem !important; }
-        
-        [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
-        [data-testid="stMetricDelta"] { font-size: 0.9rem !important; }
-        
-        .list-name { font-size: 1.1rem !important; }
-        .stButton button p { font-size: 1rem !important; }
-        .stButton button { padding: 5px 0px !important; min-height: 0 !important; }
-        
-        /* 需求4：解析指標在手機上變成 2x2 方塊並排 */
+        /* 解析頁面的 2x2 完美並排方塊 */
         .tech-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .tech-box { font-size: 0.95rem !important; padding: 8px 10px !important; line-height: 1.6 !important; }
-        .tech-title { font-size: 0.9rem !important; margin-bottom: 5px !important; }
+        .tech-box { font-size: 1rem !important; padding: 10px !important; }
+        .trend-grid { gap: 6px; }
+        .metric-box { font-size: 1rem !important; padding: 10px !important; }
         
-        .trend-grid { gap: 5px; }
-        .metric-box { font-size: 0.95rem !important; padding: 8px !important; }
-        .metric-title { font-size: 0.85rem !important; }
+        /* 手機按鈕微調 */
+        .stButton button p { font-size: 1.1rem !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -210,7 +185,7 @@ def analyze_today(df, ticker_number):
     prev = df.iloc[-2]
     c_name = STOCK_NAMES.get(ticker_number, "")
     
-    display_name = f"{ticker_number}<br><span style='font-size: 1.1rem; color: gray;'>{c_name}</span>" if c_name else f"{ticker_number}"
+    display_name = f"{ticker_number} {c_name}" if c_name else f"{ticker_number}"
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
     
@@ -280,21 +255,20 @@ if st.session_state.page == "home":
     twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
     twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
     
-    col_h1, col_h2 = st.columns([2, 1])
-    with col_h1:
-        st.markdown(f"<h1>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
-        st.markdown(f"<span style='color:gray; font-size: 1.1rem;'>資料時間：{now.strftime('%Y/%m/%d %H:%M:%S')}</span>", unsafe_allow_html=True)
-    with col_h2: st.metric("加權指數", f"{twii_close:,.2f}", f"{twii_change:,.2f}")
+    st.markdown(f"<h1 style='font-size: 2.2rem; text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: center; color:gray; font-size: 1.1rem; margin-bottom: 20px;'>資料時間：{now.strftime('%Y/%m/%d %H:%M:%S')}</div>", unsafe_allow_html=True)
+    
+    st.metric("加權指數", f"{twii_close:,.2f}", f"{twii_change:,.2f}")
         
     st.divider()
-    st.markdown("<h3>🔍 快速搜尋</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='font-size: 1.6rem;'>🔍 快速搜尋</h3>", unsafe_allow_html=True)
     search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
         st.session_state.page = "analysis"
         st.rerun()
 
-    st.markdown("<h3>📡 量大精選：超賣前 10 名榜單</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='font-size: 1.6rem; margin-top: 20px;'>📡 量大精選：超賣前 10 名榜單</h3>", unsafe_allow_html=True)
     scan_results = []
     with st.spinner('掃描雷達池標的中...'):
         for stock in st.session_state.custom_pool:
@@ -308,28 +282,31 @@ if st.session_state.page == "home":
         
         for _, row in df_top10_j.iterrows():
             with st.container():
-                c_star, c_name, c_price, c_btn = st.columns([1, 3.5, 4.5, 2])
+                # 改為 2 欄位設計：左邊為主要資訊，右邊為操作按鈕
+                col_info, col_action = st.columns([3, 1])
                 
-                is_fav = row['ticker_raw'] in st.session_state.favorites
-                # 需求3：加入自選符號改成空心星星
-                star_icon = "⭐" if is_fav else "☆"
+                with col_info:
+                    st.markdown(f"<div style='font-size: 1.4rem; font-weight: 900; line-height: 1.2; margin-bottom: 5px;'>{row['代號']}</div>", unsafe_allow_html=True)
+                    st.metric("收盤價", f"{row['收盤價']}", f"{row['漲跌']} ({row['漲跌幅']}%)")
                 
-                st.markdown("<div style='padding-top:10px;'>", unsafe_allow_html=True)
-                if c_star.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
-                    if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
-                    else: st.session_state.favorites.append(row['ticker_raw'])
-                    save_json(FAV_FILE, st.session_state.favorites)
-                    st.rerun()
-                
-                c_name.markdown(f"<div class='list-name'>{row['代號']}</div>", unsafe_allow_html=True)
-                c_price.metric("收盤價", f"{row['收盤價']}", f"{row['漲跌']} ({row['漲跌幅']}%)")
-                
-                st.markdown("<br>", unsafe_allow_html=True) 
-                if c_btn.button("📊 解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
-                    st.session_state.current_stock = row['ticker_raw']
-                    st.session_state.page = "analysis"
-                    st.rerun()
-                st.markdown("<hr style='margin:0.5em 0; border-color:#2b2e3b;'>", unsafe_allow_html=True)
+                with col_action:
+                    is_fav = row['ticker_raw'] in st.session_state.favorites
+                    # 需求3：改為空心星星
+                    star_icon = "⭐ 加入" if is_fav else "☆ 自選"
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
+                        if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
+                        else: st.session_state.favorites.append(row['ticker_raw'])
+                        save_json(FAV_FILE, st.session_state.favorites)
+                        st.rerun()
+                    
+                    if st.button("📊 解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
+                        st.session_state.current_stock = row['ticker_raw']
+                        st.session_state.page = "analysis"
+                        st.rerun()
+                        
+                st.markdown("<hr style='margin:0.2em 0; border-color:#2b2e3b;'>", unsafe_allow_html=True)
     else: st.info("目前雷達池無資料，請至左側設定選單新增。")
 
 # ─── 解析頁模式 (Analysis) ───
@@ -351,7 +328,7 @@ elif st.session_state.page == "analysis":
     st.markdown(
         f"<div style='text-align: center; background: #1a1c24; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333;'>"
         f"<span style='color: #a0a0a0; font-size: 1.2rem;'>加權指數 </span>"
-        f"<strong style='color: {twii_color}; font-size: 2.0rem;'>{twii_close:,.2f} ({twii_change:,.2f})</strong><br>"
+        f"<strong style='color: {twii_color}; font-size: 1.8rem;'>{twii_close:,.2f} ({twii_change:,.2f})</strong><br>"
         f"<span style='color: #666; font-size: 1.0rem;'>{now.strftime('%Y/%m/%d %H:%M:%S')}</span>"
         f"</div>", 
         unsafe_allow_html=True
@@ -363,7 +340,7 @@ elif st.session_state.page == "analysis":
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         st.markdown(
-            f"<h2 style='text-align: center;'>🎯 {target} {clean_name} &nbsp;"
+            f"<h2 style='text-align: center; font-size: 2.0rem;'>🎯 {target} {clean_name} &nbsp;"
             f"<span style='color:{p_color}; font-weight:900;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</span></h2>", 
             unsafe_allow_html=True
         )
@@ -383,7 +360,6 @@ elif st.session_state.page == "analysis":
 
         st.markdown("<h3>📊 技術指標參數</h3>", unsafe_allow_html=True)
         
-        # 需求4：全面改用 HTML Grid 系統，確保手機上能夠 2x2 完美並排
         html_tech_blocks = f"""
         <div class="tech-grid">
             <div class='tech-box'>
