@@ -54,7 +54,7 @@ st.markdown('''
         border: 1px solid #333; 
         border-radius: 8px;
         /* padding 控制方塊的內部空間 (上下 15px, 左右 10px)。若覺得太大，可改為 10px 5px */
-        padding: 15px 10px; 
+        padding: 10px 5px; 
         text-align: center; 
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
