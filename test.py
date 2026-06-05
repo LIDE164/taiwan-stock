@@ -53,10 +53,10 @@ st.markdown('''
     .trend-title { font-size: 1.1rem; color: #888; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px;}
     .trend-status { font-size: 1.3rem; font-weight: 900; }
     
-    /* 需求2：籌碼表專屬 CSS */
-    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 1rem; margin-top: 5px;}
-    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 5px; font-weight: normal;}
-    .chip-table td { padding: 6px 5px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 1.1rem;}
+    /* 微調籌碼表 CSS，適應三格一排的較窄空間 */
+    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; margin-top: 2px;}
+    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal;}
+    .chip-table td { padding: 4px 2px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 1rem;}
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
 </style>
@@ -191,7 +191,7 @@ def analyze_today(df, ticker_number):
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round(change_percent, 2), 
         "成交量": int(today['Volume'] / 1000),
-        "5日均量": int(df['Volume'].tail(5).mean() / 1000), # 新增均量
+        "5日均量": int(df['Volume'].tail(5).mean() / 1000),
         "5MA": round(today['5MA'], 2), "10MA": round(today['10MA'], 2),
         "20MA": round(today['20MA'], 2), "60MA": round(today['60MA'], 2) if not pd.isna(today['60MA']) else 0,
         "MACD": round(today['MACD'], 2), "MACD柱": round(today['MACD_Hist'], 3),
@@ -202,20 +202,18 @@ def analyze_today(df, ticker_number):
         "訊號": is_golden_pit
     }
 
-# 需求2：生成模擬籌碼表 HTML
 def generate_mock_chips_html(df):
-    recent_5 = df.tail(5).iloc[::-1] # 取近5日並反轉(最新在最上)
-    html = "<table class='chip-table'><tr><th>日期</th><th>外資 (張)</th><th>投信 (張)</th></tr>"
+    recent_5 = df.tail(5).iloc[::-1]
+    # 縮短表頭字眼以適應1/3寬度
+    html = "<table class='chip-table'><tr><th>日期</th><th>外資</th><th>投信</th></tr>"
     for date, row in recent_5.iterrows():
         d_str = date.strftime("%m/%d")
         
-        # 由於 yfinance 沒有法人資料，這裡用演算法模擬逼真的數據
         change = row['Close'] - row['Open']
         base_vol = row['Volume'] / 1000
         fi_buy = int(change * 200 + (base_vol * 0.08)) 
         it_buy = int(change * 80 + (base_vol * 0.03))
         
-        # 排除 0 的狀況，隨機給點雜訊
         if fi_buy == 0: fi_buy = int(base_vol * 0.01) + 10
         if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
         
@@ -276,7 +274,13 @@ def draw_professional_chart(df, ticker_name, latest_price):
     )
     return fig
 
-def render_index_board():
+# ==========================================
+# 2. 畫面路由 (SPA 導航控制)
+# ==========================================
+
+if st.session_state.page == "home":
+    st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
+    
     now = datetime.now()
     twii_df = get_stock_data("^TWII")
     twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
@@ -287,16 +291,6 @@ def render_index_board():
         st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
-
-# ==========================================
-# 2. 畫面路由 (SPA 導航控制)
-# ==========================================
-
-# ─── 首頁模式 (Home) ───
-if st.session_state.page == "home":
-    st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
-    
-    render_index_board()
         
     st.markdown("<h3 style='margin-top: 15px;'>🔍 快速搜尋個股</h3>", unsafe_allow_html=True)
     search_val = st.text_input("隱藏標籤2", placeholder="輸入代號並按 Enter (例如: 2330)", label_visibility="collapsed")
@@ -351,7 +345,6 @@ if st.session_state.page == "home":
                     st.rerun()
     else: st.info("目前雷達池無資料，請至左側設定選單新增。")
 
-# ─── 解析頁模式 (Analysis) ───
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
@@ -410,47 +403,45 @@ elif st.session_state.page == "analysis":
         
         st.subheader("📊 技術與籌碼參數")
         
-        # 第一排：MA 與 MACD
-        row1_col1, row1_col2 = st.columns(2)
+        # 需求1：改為「一行三格，共兩行」 (3x2 排版)
+        row1_col1, row1_col2, row1_col3 = st.columns(3)
+        
         with row1_col1.container(border=True):
-            st.markdown("#### 🔹 均線 (MA)")
+            st.markdown("#### 🔹 均線(MA)")
             st.markdown(f"* 5T ➜ **`{data['5MA']}`**")
             st.markdown(f"* 10T ➜ **`{data['10MA']}`**")
             st.markdown(f"* 20T ➜ **`{data['20MA']}`**")
             
         with row1_col2.container(border=True):
-            st.markdown("#### 🔹 動能 (MACD)")
+            st.markdown("#### 🔹 動能(MACD)")
             st.markdown(f"* DIF ➜ **`{data['MACD']}`**")
             st.markdown(f"* OSC ➜ **`{data['MACD柱']}`**")
             st.markdown("<br>", unsafe_allow_html=True) 
             
-        # 第二排：KDJ 與 RSI/布林通道
-        row2_col1, row2_col2 = st.columns(2)
-        with row2_col1.container(border=True):
-            st.markdown("#### 🔹 隨機指標 (KDJ)")
+        with row1_col3.container(border=True):
+            st.markdown("#### 🔹 指標(KDJ)")
             st.markdown(f"* K ➜ **`{data['K']}`**")
             st.markdown(f"* D ➜ **`{data['D']}`**")
             st.markdown(f"* J ➜ **`{data['J值']}`**")
+
+        row2_col1, row2_col2, row2_col3 = st.columns(3)
+        
+        with row2_col1.container(border=True):
+            st.markdown("#### 🔹 RSI & 布林")
+            rsi_status = "超賣" if data['RSI'] < 30 else "超買" if data['RSI'] > 70 else "中性"
+            st.markdown(f"* RSI ➜ **`{data['RSI']}`** ({rsi_status})")
+            st.markdown(f"* LB ➜ **`{data['LB']}`**")
+            st.markdown(f"* UB ➜ **`{data['UB']}`**")
             
         with row2_col2.container(border=True):
-            st.markdown("#### 🔹 RSI 與 布林通道")
-            rsi_status = "超賣契機" if data['RSI'] < 30 else "超買警示" if data['RSI'] > 70 else "中性"
-            st.markdown(f"* RSI(14) ➜ **`{data['RSI']}`** ({rsi_status})")
-            st.markdown(f"* 布林下軌(LB) ➜ **`{data['LB']}`**")
-            st.markdown(f"* 布林上軌(UB) ➜ **`{data['UB']}`**")
-            
-        # 需求1 & 2：第三排：成交量 與 法人籌碼(模擬)
-        row3_col1, row3_col2 = st.columns(2)
-        with row3_col1.container(border=True):
-            st.markdown("#### 🔹 市場熱度")
-            st.markdown(f"* 今日成交量 ➜")
+            st.markdown("#### 🔹 市場量能")
+            st.markdown(f"* 今日量 ➜")
             st.markdown(f"**`{data['成交量']} 張`**")
-            st.markdown(f"* 近五日均量 ➜")
+            st.markdown(f"* 5日均量 ➜")
             st.markdown(f"**`{data['5日均量']} 張`**")
             
-        with row3_col2.container(border=True):
-            st.markdown("#### 🔹 籌碼動向(近5日)")
-            # 呼叫產生模擬 HTML 表格
+        with row2_col3.container(border=True):
+            st.markdown("#### 🔹 籌碼動向")
             mock_table_html = generate_mock_chips_html(df_chart)
             st.markdown(mock_table_html, unsafe_allow_html=True)
 
