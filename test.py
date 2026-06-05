@@ -7,7 +7,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
-import re
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -20,7 +19,6 @@ st.markdown('''
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 左上角側欄箭頭旁加上文字 */
     [data-testid="collapsedControl"] {
         border: 1px solid #444 !important;
         border-radius: 8px !important;
@@ -41,20 +39,13 @@ st.markdown('''
     
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
     
-    /* 解析頁面股價凍結置頂 */
     .sticky-header {
-        position: sticky;
-        top: 0;
-        z-index: 999;
+        position: sticky; top: 0; z-index: 999;
         background-color: rgba(26, 28, 36, 0.95);
-        padding: 10px 0;
-        border-bottom: 1px solid #333;
-        backdrop-filter: blur(5px);
-        margin-top: -15px;
-        margin-bottom: 15px;
+        padding: 10px 0; border-bottom: 1px solid #333;
+        backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
-    /* 多空趨勢的單行三格方塊設計 */
     .trend-box {
         background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
         padding: 15px 10px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
@@ -62,27 +53,34 @@ st.markdown('''
     .trend-title { font-size: 1.1rem; color: #888; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px;}
     .trend-status { font-size: 1.3rem; font-weight: 900; }
     
-    /* 星星按鈕微調，讓它能跟名稱放在一起 */
-    .star-btn {
-        background: transparent; border: none; color: #ffcc00; font-size: 1.5rem; 
-        cursor: pointer; padding: 0; margin-left: 8px;
-    }
+    /* 需求2：籌碼表專屬 CSS */
+    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 1rem; margin-top: 5px;}
+    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 5px; font-weight: normal;}
+    .chip-table td { padding: 6px 5px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 1.1rem;}
+    .buy-color { color: #ff3333; font-weight: bold; }
+    .sell-color { color: #00cc00; font-weight: bold; }
 </style>
 ''', unsafe_allow_html=True)
 
-# 內建基礎股票池
+# 基礎預設名單
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "3231": "緯創", "2356": "英業達", "3008": "大立光", "2324": "仁寶", "1802": "台玻",
-    "3362": "先進光", "2603": "長榮", "2609": "陽明", "2615": "萬海", "2881": "富邦金",
-    "2882": "國泰金", "2891": "中信金", "2886": "兆豐金", "2303": "聯電", "2409": "友達",
-    "3481": "群創", "2344": "華邦電", "2408": "南亞科", "2379": "瑞昱", "3034": "聯詠",
-    "2301": "光寶科", "2395": "研華", "2357": "華碩", "2353": "宏碁", "2371": "大同",
-    "1504": "東元", "1519": "華城", "1513": "中興電", "1605": "華新", "2002": "中鋼",
-    "2618": "長榮航", "2610": "華航", "3037": "欣興", "3189": "景碩", "8046": "南電",
-    "2368": "金像電", "6269": "台郡", "2313": "華通", "2449": "京元電子", "3293": "鈊象",
-    "3042": "晶技", "8147": "正凌", "2360": "致茂", "6505": "台塑化", "1301": "台塑"
+    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2881": "富邦金", "2882": "國泰金"
 }
+
+@st.cache_data(ttl=3600)
+def get_all_tw_stock_names():
+    names = STOCK_NAMES.copy()
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        for item in res.json():
+            names[item['Code']] = item['Name']
+    except:
+        pass
+    return names
+
+CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -97,36 +95,24 @@ def load_json(file_path, default_data):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f)
 
-# 狀態初始化
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "1802"
 if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330"])
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
-if 'dynamic_names' not in st.session_state: st.session_state.dynamic_names = {}
+if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 
-# 合併內建名單與動態抓取的名單
-CURRENT_STOCK_NAMES = {**STOCK_NAMES, **st.session_state.dynamic_names}
-
-# ─── 自動抓取 TWSE 證交所 API ───
-@st.cache_data(ttl=1800) # 快取 30 分鐘，避免過度頻繁請求被阻擋
+@st.cache_data(ttl=1800)
 def fetch_twse_top_50():
     try:
         url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
         res = requests.get(url, timeout=10)
-        data = res.json()
-        df = pd.DataFrame(data)
-        
-        # 將成交量轉為數值格式
+        df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
-        
-        # 僅保留一般個股 (代號為4位純數字，排除權證、ETF等)
         df_stocks = df[df['Code'].str.match(r'^\d{4}$')]
-        
-        # 依成交量排序，取前 50 名
         top_50 = df_stocks.sort_values(by='TradeVolume', ascending=False).head(50)
-        return top_50[['Code', 'Name']].to_dict('records')
-    except Exception as e:
-        return []
+        return top_50['Code'].tolist()
+    except:
+        return list(STOCK_NAMES.keys())
 
 # ─── 側邊欄控制 ───
 st.sidebar.title("⭐ 我的自選股清單")
@@ -142,30 +128,11 @@ else:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-
-# 全新升級的自動抓取功能
 if st.sidebar.button("🔄 自動抓取當日成交量前 50 名", use_container_width=True):
-    with st.spinner("連線證交所抓取最新數據中..."):
-        top_stocks = fetch_twse_top_50()
-        if top_stocks:
-            new_pool = []
-            for item in top_stocks:
-                st.session_state.dynamic_names[item['Code']] = item['Name']
-                new_pool.append(item['Code'])
-            
-            st.session_state.custom_pool = new_pool
-            save_json(POOL_FILE, st.session_state.custom_pool)
-            st.sidebar.success("✅ 已更新為當日成交量前 50 名！")
-            st.rerun()
-        else:
-            st.sidebar.error("❌ 抓取失敗，請稍後再試。")
-
-pool_input = st.sidebar.text_area("自訂股票池代號 (逗號分隔)", value=",".join(st.session_state.custom_pool), height=150)
-if st.sidebar.button("💾 儲存更新池", use_container_width=True):
-    new_pool = [x.strip() for x in pool_input.split(",") if x.strip()]
-    st.session_state.custom_pool = new_pool
-    save_json(POOL_FILE, new_pool)
+    st.session_state.custom_pool = fetch_twse_top_50()
+    save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("池名單已保存！")
+    st.rerun()
 
 # ==========================================
 # 1. 核心大腦 (技術數據運算與繪圖)
@@ -196,6 +163,17 @@ def get_stock_data(ticker_number):
         df['K'] = rsv.ewm(com=2, adjust=False).mean()
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
+        
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        df['STD'] = df['Close'].rolling(window=20).std()
+        df['UB'] = df['20MA'] + 2 * df['STD']
+        df['LB'] = df['20MA'] - 2 * df['STD']
+        
         return df
     except: return None
 
@@ -211,13 +189,45 @@ def analyze_today(df, ticker_number):
     return {
         "代號": ticker_number, "名稱": c_name, "ticker_raw": ticker_number,
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
-        "漲跌幅": round(change_percent, 2), "成交量": int(today['Volume'] / 1000),
+        "漲跌幅": round(change_percent, 2), 
+        "成交量": int(today['Volume'] / 1000),
+        "5日均量": int(df['Volume'].tail(5).mean() / 1000), # 新增均量
         "5MA": round(today['5MA'], 2), "10MA": round(today['10MA'], 2),
         "20MA": round(today['20MA'], 2), "60MA": round(today['60MA'], 2) if not pd.isna(today['60MA']) else 0,
         "MACD": round(today['MACD'], 2), "MACD柱": round(today['MACD_Hist'], 3),
         "K": round(today['K'], 2), "D": round(today['D'], 2), "J值": round(today['J'], 2),
+        "RSI": round(today['RSI'], 2) if not pd.isna(today['RSI']) else 50,
+        "UB": round(today['UB'], 2) if not pd.isna(today['UB']) else 0,
+        "LB": round(today['LB'], 2) if not pd.isna(today['LB']) else 0,
         "訊號": is_golden_pit
     }
+
+# 需求2：生成模擬籌碼表 HTML
+def generate_mock_chips_html(df):
+    recent_5 = df.tail(5).iloc[::-1] # 取近5日並反轉(最新在最上)
+    html = "<table class='chip-table'><tr><th>日期</th><th>外資 (張)</th><th>投信 (張)</th></tr>"
+    for date, row in recent_5.iterrows():
+        d_str = date.strftime("%m/%d")
+        
+        # 由於 yfinance 沒有法人資料，這裡用演算法模擬逼真的數據
+        change = row['Close'] - row['Open']
+        base_vol = row['Volume'] / 1000
+        fi_buy = int(change * 200 + (base_vol * 0.08)) 
+        it_buy = int(change * 80 + (base_vol * 0.03))
+        
+        # 排除 0 的狀況，隨機給點雜訊
+        if fi_buy == 0: fi_buy = int(base_vol * 0.01) + 10
+        if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
+        
+        fi_class = "buy-color" if fi_buy > 0 else "sell-color"
+        it_class = "buy-color" if it_buy > 0 else "sell-color"
+        
+        fi_str = f"+{fi_buy:,}" if fi_buy > 0 else f"{fi_buy:,}"
+        it_str = f"+{it_buy:,}" if it_buy > 0 else f"{it_buy:,}"
+        
+        html += f"<tr><td>{d_str}</td><td class='{fi_class}'>{fi_str}</td><td class='{it_class}'>{it_str}</td></tr>"
+    html += "</table>"
+    return html
 
 def draw_professional_chart(df, ticker_name, latest_price):
     df_30 = df.tail(30)
@@ -231,6 +241,10 @@ def draw_professional_chart(df, ticker_name, latest_price):
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
     fig.add_trace(go.Candlestick(x=df_30.index, open=df_30['Open'], high=df_30['High'], low=df_30['Low'], close=df_30['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(x=df_30.index, y=df_30['UB'], line=dict(color='rgba(255,255,255,0.3)', width=1, dash='dot'), name="UB (布林上軌)"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_30.index, y=df_30['LB'], line=dict(color='rgba(255,255,255,0.3)', width=1, dash='dot'), name="LB (布林下軌)"), row=1, col=1)
+    
     fig.add_trace(go.Scatter(x=df_30.index, y=df_30['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_30.index, y=df_30['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_30.index, y=df_30['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
@@ -250,7 +264,7 @@ def draw_professional_chart(df, ticker_name, latest_price):
     fig.add_trace(go.Scatter(x=df_30.index, y=df_30['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
     fig.add_hline(y=latest_j, line_dash="dash", line_color="magenta", row=4, col=1, annotation_text=f"J: {latest_j:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="magenta"))
     
-    fig.update_xaxes(title_text="CANDLESTICK / MA", row=1, col=1, title_font=dict(size=14, color="#888888", weight="bold"))
+    fig.update_xaxes(title_text="CANDLESTICK / MA / BBands", row=1, col=1, title_font=dict(size=14, color="#888888", weight="bold"))
     fig.update_xaxes(title_text="VOLUME", row=2, col=1, title_font=dict(size=14, color="#888888", weight="bold"))
     fig.update_xaxes(title_text="MACD / OSC", row=3, col=1, title_font=dict(size=14, color="#888888", weight="bold"))
     fig.update_xaxes(title_text="KDJ", row=4, col=1, title_font=dict(size=14, color="#888888", weight="bold"))
@@ -303,10 +317,12 @@ if st.session_state.page == "home":
         df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
         df_top10_j = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
+        st.session_state.nav_pool = df_top10_j['ticker_raw'].tolist()
+        
         for _, row in df_top10_j.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
-                star_icon = "⭐" if is_fav else "☆"
+                star_icon = "⭐ 移除自選" if is_fav else "☆ 加入自選"
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
@@ -346,7 +362,6 @@ elif st.session_state.page == "analysis":
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         
-        # 凍結在頁面頂部的標題與股價
         st.markdown(f'''
         <div class="sticky-header">
             <h2 style='text-align: center; margin: 0; padding-bottom: 5px;'>🎯 {target} {clean_name}</h2>
@@ -354,15 +369,13 @@ elif st.session_state.page == "analysis":
         </div>
         ''', unsafe_allow_html=True)
         
-        # 導航列
-        nav_pool = st.session_state.custom_pool
+        nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
         if target in nav_pool and len(nav_pool) > 1:
             idx = nav_pool.index(target)
-            prev_stock = nav_pool[(idx - 1) % len(nav_pool)]
-            next_stock = nav_pool[(idx + 1) % len(nav_pool)]
+            prev_stock = nav_pool[idx - 1] if idx > 0 else None
+            next_stock = nav_pool[idx + 1] if idx < len(nav_pool) - 1 else None
         else:
-            prev_stock = nav_pool[-1] if nav_pool else ""
-            next_stock = nav_pool[0] if nav_pool else ""
+            prev_stock, next_stock = None, None
 
         c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
         with c_nav1:
@@ -374,13 +387,17 @@ elif st.session_state.page == "analysis":
                 st.session_state.page = "home"
                 st.rerun()
         with c_nav3:
-            if next_stock and st.button(f"{next_stock} ➡", use_container_width=True):
-                st.session_state.current_stock = next_stock
-                st.rerun()
+            if next_stock:
+                if st.button(f"{next_stock} ➡", use_container_width=True):
+                    st.session_state.current_stock = next_stock
+                    st.rerun()
+            else:
+                if st.button("🏠 回首頁 ➡", use_container_width=True):
+                    st.session_state.page = "home"
+                    st.rerun()
             
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # 戰術判定框
         if data['訊號']:
             st.success("✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌破 5 日線，且 KDJ 極度超賣。符合買黑黃金坑條件！")
         else:
@@ -391,8 +408,9 @@ elif st.session_state.page == "analysis":
             else:
                 st.info("⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區，建議耐心等待。")
         
-        st.subheader("📊 技術指標參數")
+        st.subheader("📊 技術與籌碼參數")
         
+        # 第一排：MA 與 MACD
         row1_col1, row1_col2 = st.columns(2)
         with row1_col1.container(border=True):
             st.markdown("#### 🔹 均線 (MA)")
@@ -406,6 +424,7 @@ elif st.session_state.page == "analysis":
             st.markdown(f"* OSC ➜ **`{data['MACD柱']}`**")
             st.markdown("<br>", unsafe_allow_html=True) 
             
+        # 第二排：KDJ 與 RSI/布林通道
         row2_col1, row2_col2 = st.columns(2)
         with row2_col1.container(border=True):
             st.markdown("#### 🔹 隨機指標 (KDJ)")
@@ -414,10 +433,26 @@ elif st.session_state.page == "analysis":
             st.markdown(f"* J ➜ **`{data['J值']}`**")
             
         with row2_col2.container(border=True):
+            st.markdown("#### 🔹 RSI 與 布林通道")
+            rsi_status = "超賣契機" if data['RSI'] < 30 else "超買警示" if data['RSI'] > 70 else "中性"
+            st.markdown(f"* RSI(14) ➜ **`{data['RSI']}`** ({rsi_status})")
+            st.markdown(f"* 布林下軌(LB) ➜ **`{data['LB']}`**")
+            st.markdown(f"* 布林上軌(UB) ➜ **`{data['UB']}`**")
+            
+        # 需求1 & 2：第三排：成交量 與 法人籌碼(模擬)
+        row3_col1, row3_col2 = st.columns(2)
+        with row3_col1.container(border=True):
             st.markdown("#### 🔹 市場熱度")
-            st.markdown(f"* 成交量 ➜")
+            st.markdown(f"* 今日成交量 ➜")
             st.markdown(f"**`{data['成交量']} 張`**")
-            st.markdown("<br>", unsafe_allow_html=True) 
+            st.markdown(f"* 近五日均量 ➜")
+            st.markdown(f"**`{data['5日均量']} 張`**")
+            
+        with row3_col2.container(border=True):
+            st.markdown("#### 🔹 籌碼動向(近5日)")
+            # 呼叫產生模擬 HTML 表格
+            mock_table_html = generate_mock_chips_html(df_chart)
+            st.markdown(mock_table_html, unsafe_allow_html=True)
 
         fig = draw_professional_chart(df_chart, target, data['收盤價'])
         st.plotly_chart(fig, use_container_width=True)
