@@ -261,14 +261,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC (柱)"), row=3, col=1)
+    fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC(柱)"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color='white', width=1.5), name="DIF"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color='yellow', width=1.5), name="MACD"), row=3, col=1)
     
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color='white', width=1.5), name="K"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color='yellow', width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
-    
+
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ffcc00", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
@@ -327,17 +327,15 @@ def render_index_board():
             st.markdown(f"<div style='text-align: center; font-size: 2.2rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
         with col2:
-            st.markdown(f"<div style='text-align: center; color: #ffcc00; font-size: 1.1rem; font-weight: bold; margin-top: 10px;'>大盤局勢</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; color: #ffcc00; font-size: 1.1rem; font-weight: bold; margin-top: 10px;'>目前大盤局勢</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 900; color: #fff;'>{trend_status}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #aaa; margin-top: 5px;'>{trend_desc}</div>", unsafe_allow_html=True)
 
 if st.session_state.page == "home":
     st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
-    
     render_index_board()
-        
-    st.markdown("<h3 style='margin-top: 15px;'>🎯 戰術掃描：一鍵尋找買點</h3>", unsafe_allow_html=True)
     
+    st.markdown("<h3 style='margin-top: 15px;'>🎯 戰術掃描：一鍵尋找買點</h3>", unsafe_allow_html=True)
     btn_col1, btn_col2 = st.columns(2)
     if btn_col1.button("✅ 搜尋【適合買進】標的", use_container_width=True):
         st.session_state.filter_buy_only = True
@@ -346,7 +344,7 @@ if st.session_state.page == "home":
         st.session_state.filter_buy_only = False
         st.rerun()
         
-    search_val = st.text_input("🔍 搜尋個股", placeholder="輸入代號並按 Enter (如: 2330)")
+    search_val = st.text_input("隱藏標籤", placeholder="輸入代號並按 Enter (如: 2330)", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
         st.session_state.page = "analysis"
@@ -365,7 +363,6 @@ if st.session_state.page == "home":
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
-        
         if st.session_state.filter_buy_only:
             df_display = df_results[df_results['訊號'] == True]
             if df_display.empty:
@@ -375,7 +372,6 @@ if st.session_state.page == "home":
             df_display = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
         st.session_state.nav_pool = df_display['ticker_raw'].tolist()
-        
         for _, row in df_display.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
@@ -401,7 +397,6 @@ if st.session_state.page == "home":
                 ''', unsafe_allow_html=True)
                 
                 st.markdown(f"📊 當前動態 ➜ **J值:** `{row['J值']}`")
-                
                 if st.button("📊 深度個股解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
                     st.session_state.current_stock = row['ticker_raw']
                     st.session_state.page = "analysis"
@@ -422,7 +417,6 @@ elif st.session_state.page == "analysis":
     
     if df_chart is not None:
         data = analyze_today(df_chart, target)
-        
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         st.markdown(f"<h2 style='text-align: center; margin-bottom:0;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
@@ -488,7 +482,6 @@ elif st.session_state.page == "analysis":
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
         st.subheader("📊 技術指標參數")
-        
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 均線</div>", unsafe_allow_html=True)
@@ -509,7 +502,6 @@ elif st.session_state.page == "analysis":
             st.markdown(f"<div class='tech-text'>J <span class='tech-val'>{data['J值']}</span></div>", unsafe_allow_html=True)
 
         row2_col1, row2_col2 = st.columns(2)
-            
         with row2_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 市場量能</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='tech-text'>今日量能</div>", unsafe_allow_html=True)
@@ -525,13 +517,10 @@ elif st.session_state.page == "analysis":
         st.divider()
 
         st.subheader("📈 三級多空趨勢判定")
-        
         t_short_text = "強勢格局" if data['收盤價'] > data['5MA'] else "短線弱勢"
         t_short_color = "#ff3333" if data['收盤價'] > data['5MA'] else "#00cc00"
-        
         t_mid_text = "中期偏多" if data['收盤價'] > data['20MA'] else "跌破月線"
         t_mid_color = "#ff3333" if data['收盤價'] > data['20MA'] else "#00cc00"
-        
         t_long_text = "長線保護" if data['收盤價'] > data['60MA'] else "趨勢轉空"
         t_long_color = "#ff3333" if data['收盤價'] > data['60MA'] else "#00cc00"
         
@@ -543,7 +532,6 @@ elif st.session_state.page == "analysis":
                 <div class="trend-status" style="color: {t_short_color};">{t_short_text}</div>
             </div>
             ''', unsafe_allow_html=True)
-            
         with t2:
             st.markdown(f'''
             <div class="trend-box">
@@ -551,7 +539,6 @@ elif st.session_state.page == "analysis":
                 <div class="trend-status" style="color: {t_mid_color};">{t_mid_text}</div>
             </div>
             ''', unsafe_allow_html=True)
-            
         with t3:
             st.markdown(f'''
             <div class="trend-box">
