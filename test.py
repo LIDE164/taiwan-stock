@@ -13,13 +13,11 @@ import os
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# 隱藏預設頂部選單，保持介面極簡乾淨
 st.markdown('''
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 左上角側欄箭頭旁加上文字 */
     [data-testid="collapsedControl"] {
         border: 1px solid #444 !important;
         border-radius: 8px !important;
@@ -47,32 +45,14 @@ st.markdown('''
         backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
-    /* 👉 需求1：調整多空趨勢的單行三格方塊大小 */
     .trend-box {
-        background-color: #1a1c24; 
-        border: 1px solid #333; 
-        border-radius: 8px;
-        padding: 10px 5px; /* 縮小留白 */
-        text-align: center; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
+        padding: 10px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .trend-title { 
-        font-size: 1rem; /* 縮小標題 */
-        color: #888; 
-        font-weight: bold; 
-        margin-bottom: 5px; 
-        border-bottom: 1px solid #333; 
-        padding-bottom: 3px;
-    }
-    .trend-status { 
-        font-size: 1.1rem; /* 縮小狀態文字 */
-        font-weight: 900; 
-    }
+    .trend-title { font-size: 1rem; color: #888; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px;}
+    .trend-status { font-size: 1.1rem; font-weight: 900; }
     
-    /* 👉 新增：調整技術指標容器大小 */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        padding: 5px !important; /* 縮小外框留白 */
-    }
+    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 5px !important; }
     .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px;}
     .tech-text { font-size: 0.9rem; color: #ddd; line-height: 1.4; display: flex; justify-content: space-between; padding: 0 5px;}
     .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 1rem;}
@@ -83,14 +63,12 @@ st.markdown('''
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
     
-    /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
         .trend-box { padding: 5px 2px; }
         .trend-title { font-size: 0.85rem; }
         .trend-status { font-size: 0.95rem; }
-        
         .tech-title { font-size: 0.9rem; }
-        .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;} /* 手機上文字若太長改為上下排 */
+        .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;}
         .tech-val { font-size: 0.9rem; }
     }
 </style>
@@ -134,7 +112,7 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
-# 控制圖表顯示天數的變數 (預設60天，約3個月)
+# 新增：控制圖表顯示天數的變數 (預設60天，約3個月)
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
 
 @st.cache_data(ttl=1800)
@@ -463,22 +441,14 @@ elif st.session_state.page == "analysis":
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。
-
-🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
+            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。\n\n🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。
-
-🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
+                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。\n\n🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。
-
-🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
+                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。\n\n🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
             else:
-                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。
-
-🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
+                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。\n\n🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
         
         # 需求2：新增日期區間切換按鈕 (放置在圖表上方)
         st.markdown("<h4 style='text-align: center; margin-top: 15px;'>📅 切換圖表顯示區間</h4>", unsafe_allow_html=True)
@@ -550,28 +520,28 @@ elif st.session_state.page == "analysis":
         
         t1, t2, t3 = st.columns(3)
         with t1:
-            st.markdown(f'''
+            st.markdown(f"""
             <div class="trend-box">
                 <div class="trend-title">短線 (日線)</div>
                 <div class="trend-status" style="color: {t_short_color};">{t_short_text}</div>
             </div>
-            ''', unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
             
         with t2:
-            st.markdown(f'''
+            st.markdown(f"""
             <div class="trend-box">
                 <div class="trend-title">中線 (周線)</div>
                 <div class="trend-status" style="color: {t_mid_color};">{t_mid_text}</div>
             </div>
-            ''', unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
             
         with t3:
-            st.markdown(f'''
+            st.markdown(f"""
             <div class="trend-box">
                 <div class="trend-title">長線 (月線)</div>
                 <div class="trend-status" style="color: {t_long_color};">{t_long_text}</div>
             </div>
-            ''', unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
@@ -586,3 +556,7 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
+"""
+with open("test.py", "w", encoding="utf-8") as f:
+    f.write(code)
+print("test.py updated successfully.")}
