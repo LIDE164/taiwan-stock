@@ -18,42 +18,33 @@ st.markdown('''
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
+    /* 側欄自選股按鈕樣式 */
     [data-testid="collapsedControl"] {
-        border: 1px solid #444 !important;
-        border-radius: 8px !important;
-        background-color: #1a1c24 !important;
-        padding: 5px 12px !important;
-        display: flex !important;
-        align-items: center !important;
-        width: auto !important;
-        transition: 0.3s;
+        border: 1px solid #444 !important; border-radius: 8px !important;
+        background-color: #1a1c24 !important; padding: 5px 12px !important;
+        display: flex !important; align-items: center !important;
+        width: auto !important; transition: 0.3s;
     }
     [data-testid="collapsedControl"]::after {
-        content: " ⭐ 我的自選股";
-        font-size: 1.1rem;
-        font-weight: bold;
-        color: #ffcc00;
-        margin-left: 8px;
+        content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px;
     }
-    
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
     
     .sticky-header {
-        position: sticky; top: 0; z-index: 999;
-        background-color: rgba(26, 28, 36, 0.95);
-        padding: 10px 0; border-bottom: 1px solid #333;
-        backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
+        position: sticky; top: 0; z-index: 999; background-color: rgba(26, 28, 36, 0.95);
+        padding: 10px 0; border-bottom: 1px solid #333; backdrop-filter: blur(5px);
+        margin-top: -15px; margin-bottom: 15px;
     }
     
     .trend-box {
         background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
         padding: 10px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .trend-title { font-size: 1rem; color: #888; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px;}
-    .trend-status { font-size: 1.1rem; font-weight: 900; }
+    .trend-title { font-size: 1rem; color: #888; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px; white-space: nowrap;}
+    .trend-status { font-size: 1.1rem; font-weight: 900; white-space: nowrap;}
     
     div[data-testid="stVerticalBlockBorderWrapper"] { padding: 5px !important; }
-    .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px;}
+    .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px; white-space: nowrap;}
     .tech-text { font-size: 0.9rem; color: #ddd; line-height: 1.4; display: flex; justify-content: space-between; padding: 0 5px;}
     .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 1rem;}
 
@@ -127,7 +118,7 @@ def fetch_twse_top_50():
     except:
         return list(STOCK_NAMES.keys())
 
-# ─── 側邊欄控制 ───
+# ─── 側邊欄 ───
 st.sidebar.title("⭐ 我的自選股清單")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
@@ -155,7 +146,7 @@ if st.sidebar.button("💾 儲存更新池", use_container_width=True):
     st.sidebar.success("✅ 池名單已保存！")
 
 # ==========================================
-# 1. 核心大腦 (技術數據運算與繪圖)
+# 1. 核心大腦
 # ==========================================
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
@@ -183,7 +174,6 @@ def get_stock_data(ticker_number):
         df['K'] = rsv.ewm(com=2, adjust=False).mean()
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
-        
         return df
     except: return None
 
@@ -218,13 +208,11 @@ def generate_mock_chips_html(df):
         base_vol = row['Volume'] / 1000
         fi_buy = int(change * 200 + (base_vol * 0.08)) 
         it_buy = int(change * 80 + (base_vol * 0.03))
-        
         if fi_buy == 0: fi_buy = int(base_vol * 0.01) + 10
         if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
         
         fi_class = "buy-color" if fi_buy > 0 else "sell-color"
         it_class = "buy-color" if it_buy > 0 else "sell-color"
-        
         fi_str = f"+{fi_buy:,}" if fi_buy > 0 else f"{fi_buy:,}"
         it_str = f"+{it_buy:,}" if it_buy > 0 else f"{it_buy:,}"
         
@@ -244,11 +232,8 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 需求4：標示當天收盤指數，字體放大加粗
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, 
-                  annotation_text=f"今日收盤: {latest_price:.2f}", 
-                  annotation_position="top right", 
-                  annotation_font=dict(size=15, color="#ffcc00", weight="bold"))
+                  annotation_text=f"今日收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=15, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -261,16 +246,13 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color='yellow', width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
 
-    # 浮水印數值
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ffcc00", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
 
-    # 需求4：鎖定 X/Y 軸
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
-    
     fig.update_xaxes(title_text="", row=1, col=1)
     fig.update_xaxes(title_text="", row=2, col=1)
     fig.update_xaxes(title_text="", row=3, col=1)
@@ -290,7 +272,7 @@ def render_index_board():
     twii_df = get_stock_data("^TWII")
     twii_close = 0
     twii_change = 0
-    trend_status = "資料讀取中"
+    trend_status = "讀取中"
     trend_desc = ""
     
     if twii_df is not None and not twii_df.empty:
@@ -299,7 +281,6 @@ def render_index_board():
         ma5 = twii_df['5MA'].iloc[-1]
         ma20 = twii_df['20MA'].iloc[-1]
         
-        # 需求2：首頁指數旁邊顯示目前局勢及走向
         if twii_close > ma5 and twii_close > ma20:
             trend_status = "🔥 強勢偏多"
             trend_desc = "大盤站上5日與月線"
@@ -329,14 +310,11 @@ def render_index_board():
 # ==========================================
 # 2. 畫面路由 (SPA 導航控制)
 # ==========================================
-
 if st.session_state.page == "home":
     st.markdown(f"<h1 style='text-align: center;'>🇹🇼 台股戰術監控總機</h1>", unsafe_allow_html=True)
-    
     render_index_board()
-        
-    st.markdown("<h3 style='margin-top: 15px;'>🎯 戰術掃描：一鍵尋找買點</h3>", unsafe_allow_html=True)
     
+    st.markdown("<h3 style='margin-top: 15px;'>🎯 戰術掃描：一鍵尋找買點</h3>", unsafe_allow_html=True)
     btn_col1, btn_col2 = st.columns(2)
     if btn_col1.button("✅ 搜尋【適合買進】標的", use_container_width=True):
         st.session_state.filter_buy_only = True
@@ -364,21 +342,19 @@ if st.session_state.page == "home":
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
-        
         if st.session_state.filter_buy_only:
             df_display = df_results[df_results['訊號'] == True]
             if df_display.empty:
-                st.info("💡 今日雷達池中，暫無同時符合「多頭回檔」與「極度超賣」的極佳買點標的，建議保持耐心觀望！")
+                st.info("💡 今日無符合標的，建議觀望！")
         else:
             df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
             df_display = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
         
         st.session_state.nav_pool = df_display['ticker_raw'].tolist()
-        
         for _, row in df_display.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
-                star_icon = "⭐ 移除自選" if is_fav else "☆ 加入自選"
+                star_icon = "⭐ 移除" if is_fav else "☆ 自選"
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
@@ -400,7 +376,6 @@ if st.session_state.page == "home":
                 ''', unsafe_allow_html=True)
                 
                 st.markdown(f"📊 當前動態 ➜ **J值:** `{row['J值']}`")
-                
                 if st.button("📊 深度個股解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
                     st.session_state.current_stock = row['ticker_raw']
                     st.session_state.page = "analysis"
@@ -412,17 +387,19 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
+    if st.button("⬅ 返回監控總機首頁", key="back_btn", use_container_width=True):
+        st.session_state.page = "home"
+        st.rerun()
+        
+    st.markdown("<br>", unsafe_allow_html=True)
+    render_index_board() 
+    
     if df_chart is not None:
         data = analyze_today(df_chart, target)
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        
-        st.markdown(f'''
-        <div class="sticky-header">
-            <h2 style='text-align: center; margin: 0; padding-bottom: 5px;'>🎯 {target} {clean_name}</h2>
-            <h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin: 0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>
-        </div>
-        ''', unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align: center; margin-bottom:0;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; font-weight: 900; margin-top:0;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
         if target in nav_pool and len(nav_pool) > 1:
@@ -475,9 +452,7 @@ elif st.session_state.page == "analysis":
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
-        # 需求3：隱藏 RSI，並設定 3格+2格 排版
-        st.subheader("📊 技術與籌碼參數")
-        
+        st.subheader("📊 技術指標參數")
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 均線</div>", unsafe_allow_html=True)
@@ -498,7 +473,6 @@ elif st.session_state.page == "analysis":
             st.markdown(f"<div class='tech-text'>J <span class='tech-val'>{data['J值']}</span></div>", unsafe_allow_html=True)
 
         row2_col1, row2_col2 = st.columns(2)
-            
         with row2_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 市場量能</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='tech-text'>今日量能</div>", unsafe_allow_html=True)
@@ -514,13 +488,10 @@ elif st.session_state.page == "analysis":
         st.divider()
 
         st.subheader("📈 三級多空趨勢判定")
-        
         t_short_text = "強勢格局" if data['收盤價'] > data['5MA'] else "短線弱勢"
         t_short_color = "#ff3333" if data['收盤價'] > data['5MA'] else "#00cc00"
-        
         t_mid_text = "中期偏多" if data['收盤價'] > data['20MA'] else "跌破月線"
         t_mid_color = "#ff3333" if data['收盤價'] > data['20MA'] else "#00cc00"
-        
         t_long_text = "長線保護" if data['收盤價'] > data['60MA'] else "趨勢轉空"
         t_long_color = "#ff3333" if data['收盤價'] > data['60MA'] else "#00cc00"
         
@@ -532,7 +503,6 @@ elif st.session_state.page == "analysis":
                 <div class="trend-status" style="color: {t_short_color};">{t_short_text}</div>
             </div>
             ''', unsafe_allow_html=True)
-            
         with t2:
             st.markdown(f'''
             <div class="trend-box">
@@ -540,7 +510,6 @@ elif st.session_state.page == "analysis":
                 <div class="trend-status" style="color: {t_mid_color};">{t_mid_text}</div>
             </div>
             ''', unsafe_allow_html=True)
-            
         with t3:
             st.markdown(f'''
             <div class="trend-box">
@@ -562,6 +531,8 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
+"""
 with open("test.py", "w", encoding="utf-8") as f:
     f.write(code)
-print("test.py updated successfully.")}
+print("test.py fully formatted and ready.")}
+}
