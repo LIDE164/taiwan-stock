@@ -566,4 +566,3 @@ elif st.session_state.page == "analysis":
 with open("test.py", "w", encoding="utf-8") as f:
     f.write(code)
 print("test.py updated successfully.")}
-}
