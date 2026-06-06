@@ -47,7 +47,7 @@ st.markdown('''
         backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
-    /* 👉 多空趨勢的單行三格方塊設計 */
+    /* 👉 調整多空趨勢的單行三格方塊大小 */
     .trend-box {
         background-color: #1a1c24; 
         border: 1px solid #333; 
@@ -69,7 +69,7 @@ st.markdown('''
         font-weight: 900; 
     }
     
-    /* 👉 調整技術指標容器大小 */
+    /* 👉 新增：調整技術指標容器大小 */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         padding: 5px !important; /* 縮小外框留白 */
     }
