@@ -1,4 +1,4 @@
-import yfinance as yf
+code = """import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
@@ -450,22 +450,14 @@ elif st.session_state.page == "analysis":
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。
-
-🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
+            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。\n\n🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。
-
-🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
+                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。\n\n🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。
-
-🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
+                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。\n\n🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
             else:
-                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。
-
-🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
+                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。\n\n🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
         
         st.markdown("<h4 style='text-align: center; margin-top: 15px;'>📅 切換圖表顯示區間</h4>", unsafe_allow_html=True)
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
@@ -569,3 +561,7 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
+"""
+with open("test.py", "w", encoding="utf-8") as f:
+    f.write(code)
+print("test.py updated successfully.")
