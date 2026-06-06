@@ -1,4 +1,4 @@
-code = """import yfinance as yf
+import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
@@ -316,14 +316,22 @@ elif st.session_state.page == "analysis":
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **極佳買點** \n\n建議區間： `{buy_zone_low} ~ {buy_zone_high}`")
+            st.success(f"✅ **極佳買點** 
+
+建議區間： `{buy_zone_low} ~ {buy_zone_high}`")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **高檔過熱** \n\n建議拉回至 `{data['10MA']}`。")
+                st.error(f"⚠️ **高檔過熱** 
+
+建議拉回至 `{data['10MA']}`。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **趨勢偏空** \n\n建議突破 `{data['20MA']}` 再進場。")
+                st.warning(f"⛔ **趨勢偏空** 
+
+建議突破 `{data['20MA']}` 再進場。")
             else:
-                st.info(f"⏳ **觀望中** \n\n可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
+                st.info(f"⏳ **觀望中** 
+
+可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
         
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
         if d_col1.button("1個月"): st.session_state.view_days = 20
@@ -336,19 +344,15 @@ elif st.session_state.page == "analysis":
         
         row1_c1, row1_c2, row1_c3 = st.columns(3)
         with row1_c1.container(border=True):
-            st.write(f"**均線**\\n5T: {data['5MA']}\\n10T: {data['10MA']}\\n20T: {data['20MA']}")
+            st.write(f"**均線**\n5T: {data['5MA']}\n10T: {data['10MA']}\n20T: {data['20MA']}")
         with row1_c2.container(border=True):
-            st.write(f"**MACD**\\nDIF: {data['MACD']}\\nOSC: {data['MACD柱']}")
+            st.write(f"**MACD**\nDIF: {data['MACD']}\nOSC: {data['MACD柱']}")
         with row1_c3.container(border=True):
-            st.write(f"**KDJ**\\nK: {data['K']}\\nD: {data['D']}\\nJ: {data['J值']}")
+            st.write(f"**KDJ**\nK: {data['K']}\nD: {data['D']}\nJ: {data['J值']}")
 
         row2_c1, row2_c2 = st.columns(2)
         with row2_c1.container(border=True):
-            st.write(f"**量能**\\n今日: {data['成交量']}張\\n5均: {data['5日均量']}張")
+            st.write(f"**量能**\n今日: {data['成交量']}張\n5均: {data['5日均量']}張")
         with row2_c2.container(border=True):
             st.markdown("**籌碼(模擬)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
-"""
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-print("test.py stripped and saved successfully.")
