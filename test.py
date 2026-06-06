@@ -47,7 +47,7 @@ st.markdown('''
         backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
-    /* 👉 需求1：調整多空趨勢的單行三格方塊大小 */
+    /* 👉 多空趨勢的單行三格方塊設計 */
     .trend-box {
         background-color: #1a1c24; 
         border: 1px solid #333; 
@@ -69,7 +69,7 @@ st.markdown('''
         font-weight: 900; 
     }
     
-    /* 👉 新增：調整技術指標容器大小 */
+    /* 👉 調整技術指標容器大小 */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         padding: 5px !important; /* 縮小外框留白 */
     }
@@ -134,7 +134,6 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
-# 控制圖表顯示天數的變數 (預設60天，約3個月)
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
 
 @st.cache_data(ttl=1800)
@@ -178,7 +177,6 @@ def get_stock_data(ticker_number):
     if ticker_number == "^TWII": return yf.Ticker("^TWII").history(period="1y")
     base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
     try:
-        # 固定抓取 1 年 (1y)
         df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
         if df.empty or len(df) < 20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
         if df.empty or len(df) < 20: return None
@@ -295,6 +293,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     # 徹底鎖定
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+    
+    fig.update_xaxes(title_text="", row=1, col=1)
+    fig.update_xaxes(title_text="", row=2, col=1)
+    fig.update_xaxes(title_text="", row=3, col=1)
+    fig.update_xaxes(title_text="", row=4, col=1)
     
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_dark", height=850, 
