@@ -13,11 +13,13 @@ import os
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
+# 隱藏預設頂部選單，保持介面極簡乾淨
 st.markdown('''
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
+    /* 左上角側欄箭頭旁加上文字 */
     [data-testid="collapsedControl"] {
         border: 1px solid #444 !important;
         border-radius: 8px !important;
@@ -45,14 +47,32 @@ st.markdown('''
         backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
+    /* 👉 調整多空趨勢的單行三格方塊大小 */
     .trend-box {
-        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
-        padding: 10px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        background-color: #1a1c24; 
+        border: 1px solid #333; 
+        border-radius: 8px;
+        padding: 10px 5px; /* 縮小留白 */
+        text-align: center; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .trend-title { font-size: 1rem; color: #888; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px;}
-    .trend-status { font-size: 1.1rem; font-weight: 900; }
+    .trend-title { 
+        font-size: 1rem; /* 縮小標題 */
+        color: #888; 
+        font-weight: bold; 
+        margin-bottom: 5px; 
+        border-bottom: 1px solid #333; 
+        padding-bottom: 3px;
+    }
+    .trend-status { 
+        font-size: 1.1rem; /* 縮小狀態文字 */
+        font-weight: 900; 
+    }
     
-    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 5px !important; }
+    /* 👉 新增：調整技術指標容器大小 */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 5px !important; /* 縮小外框留白 */
+    }
     .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px;}
     .tech-text { font-size: 0.9rem; color: #ddd; line-height: 1.4; display: flex; justify-content: space-between; padding: 0 5px;}
     .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 1rem;}
@@ -63,12 +83,14 @@ st.markdown('''
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
     
+    /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
         .trend-box { padding: 5px 2px; }
         .trend-title { font-size: 0.85rem; }
         .trend-status { font-size: 0.95rem; }
+        
         .tech-title { font-size: 0.9rem; }
-        .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;}
+        .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;} /* 手機上文字若太長改為上下排 */
         .tech-val { font-size: 0.9rem; }
     }
 </style>
@@ -112,7 +134,7 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
-# 新增：控制圖表顯示天數的變數 (預設60天，約3個月)
+# 控制圖表顯示天數的變數 (預設60天，約3個月)
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
 
 @st.cache_data(ttl=1800)
@@ -156,7 +178,7 @@ def get_stock_data(ticker_number):
     if ticker_number == "^TWII": return yf.Ticker("^TWII").history(period="1y")
     base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
     try:
-        # 為了確保切換到 "1年" 時均線依然精準，這裡改為固定抓取 1 年 (1y)
+        # 固定抓取 1 年 (1y)
         df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
         if df.empty or len(df) < 20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
         if df.empty or len(df) < 20: return None
@@ -241,7 +263,6 @@ def generate_mock_chips_html(df):
     return html
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days):
-    # 根據選擇的天數切片資料
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     
@@ -249,51 +270,44 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
-    # K線與均線
+    # 需求4：主圖只保留 K線、5T、10T、20T，不畫布林通道 (UB/LB刪除)
     fig.add_trace(go.Candlestick(x=df_view.index, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 交易量
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
-    # MACD
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC(柱)"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color='white', width=1.5), name="DIF"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color='yellow', width=1.5), name="MACD"), row=3, col=1)
     
-    # KDJ
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color='white', width=1.5), name="K"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color='yellow', width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
     
-    # ====================================================
-    # 👉 需求3：將數值全部寫在各個圖表的左上角 (浮水印呈現)
-    # ====================================================
+    # 數值寫在左上角
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ffcc00", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
 
-    # ====================================================
-    # 👉 需求1：徹底鎖定 X 與 Y 軸，防止手機滑動時亂縮放
-    # ====================================================
+    # 徹底鎖定
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     
-    # 隱藏下方浪費空間的 X 軸標題
     fig.update_xaxes(title_text="", row=1, col=1)
     fig.update_xaxes(title_text="", row=2, col=1)
     fig.update_xaxes(title_text="", row=3, col=1)
     fig.update_xaxes(title_text="", row=4, col=1)
     
-    # 👉 需求4：將 Legend (圖例指數) 全部統一移到圖表的最底端，並取消拖曳模式 (dragmode=False)
+    # 需求4：將 Legend (圖例指數) 全部統一移到圖表的最底端，並取消拖曳模式 (dragmode=False)
+    # 將 hoverlabel font_size 縮小，讓點擊後的資訊方塊變得精巧且不干擾視線
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_dark", height=850, 
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='#0e1117', plot_bgcolor='#0e1117', 
-        hovermode='x unified', hoverlabel=dict(font_size=13, bgcolor="rgba(26,28,36,0.9)"),
+        hovermode='x unified', hoverlabel=dict(font_size=11, bgcolor="rgba(26,28,36,0.85)"),
         dragmode=False, # 關閉拖曳
         legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5) # 圖例置底
     )
@@ -438,17 +452,26 @@ elif st.session_state.page == "analysis":
             
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # 戰術判定框
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。\n\n🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
+            st.success(f"✅ **戰術判定：【極佳買點】** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。
+
+🎯 **建議入手區間：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局！")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。\n\n🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
+                st.error(f"⚠️ **戰術判定：【高檔過熱】** J值過高，有回檔風險。
+
+🎯 **建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再行觀察。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。\n\n🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
+                st.warning(f"⛔ **戰術判定：【趨勢偏空】** 股價跌破月線支撐，中線趨勢轉弱。
+
+🎯 **建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再行進場。")
             else:
-                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。\n\n🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
+                st.info(f"⏳ **戰術判定：【觀望中】** 雖然在多頭趨勢，但目前未達極度超賣區。
+
+🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
         
         # 需求2：新增日期區間切換按鈕 (放置在圖表上方)
         st.markdown("<h4 style='text-align: center; margin-top: 15px;'>📅 切換圖表顯示區間</h4>", unsafe_allow_html=True)
@@ -463,45 +486,45 @@ elif st.session_state.page == "analysis":
         # config={'scrollZoom': False, 'displayModeBar': False} 完全關閉圖表自帶的縮放與干擾工具列
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
-        st.subheader("📊 技術與籌碼參數")
+        st.subheader("📊 技術指標參數")
         
-        row1_col1, row1_col2 = st.columns(2)
+        # 需求1：使用 st.columns(3) 來讓四個方塊變成「一行三格，共兩行」
+        row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
-            st.markdown("#### 🔹 均線 (MA)")
-            st.markdown(f"* 5T ➜ **`{data['5MA']}`**")
-            st.markdown(f"* 10T ➜ **`{data['10MA']}`**")
-            st.markdown(f"* 20T ➜ **`{data['20MA']}`**")
+            st.markdown("<div class='tech-title'>🔹 均線</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>5T <span class='tech-val'>{data['5MA']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>10T <span class='tech-val'>{data['10MA']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>20T <span class='tech-val'>{data['20MA']}</span></div>", unsafe_allow_html=True)
             
         with row1_col2.container(border=True):
-            st.markdown("#### 🔹 動能 (MACD)")
-            st.markdown(f"* DIF ➜ **`{data['MACD']}`**")
-            st.markdown(f"* OSC ➜ **`{data['MACD柱']}`**")
+            st.markdown("<div class='tech-title'>🔹 MACD</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>DIF <span class='tech-val'>{data['MACD']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>OSC <span class='tech-val'>{data['MACD柱']}</span></div>", unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True) 
             
-        row2_col1, row2_col2 = st.columns(2)
+        with row1_col3.container(border=True):
+            st.markdown("<div class='tech-title'>🔹 KDJ</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>K <span class='tech-val'>{data['K']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>D <span class='tech-val'>{data['D']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>J <span class='tech-val'>{data['J值']}</span></div>", unsafe_allow_html=True)
+
+        row2_col1, row2_col2, row2_col3 = st.columns(3)
         with row2_col1.container(border=True):
-            st.markdown("#### 🔹 隨機指標 (KDJ)")
-            st.markdown(f"* K ➜ **`{data['K']}`**")
-            st.markdown(f"* D ➜ **`{data['D']}`**")
-            st.markdown(f"* J ➜ **`{data['J值']}`**")
+            st.markdown("<div class='tech-title'>🔹 RSI & 布林</div>", unsafe_allow_html=True)
+            rsi_status = "超賣" if data['RSI'] < 30 else "超買" if data['RSI'] > 70 else "中性"
+            st.markdown(f"<div class='tech-text'>RSI <span class='tech-val'>{data['RSI']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>LB <span class='tech-val'>{data['LB']}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>UB <span class='tech-val'>{data['UB']}</span></div>", unsafe_allow_html=True)
             
         with row2_col2.container(border=True):
-            st.markdown("#### 🔹 RSI & 布林")
-            rsi_status = "超賣" if data['RSI'] < 30 else "超買" if data['RSI'] > 70 else "中性"
-            st.markdown(f"* RSI ➜ **`{data['RSI']}`** ({rsi_status})")
-            st.markdown(f"* LB(下軌) ➜ **`{data['LB']}`**")
-            st.markdown(f"* UB(上軌) ➜ **`{data['UB']}`**")
+            st.markdown("<div class='tech-title'>🔹 市場量能</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>今日量能</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-val' style='font-size:1.3rem; text-align:center;'>{data['成交量']} 張</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-text'>5日均量</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='tech-val' style='font-size:1.3rem; text-align:center;'>{data['5日均量']} 張</div>", unsafe_allow_html=True)
             
-        row3_col1, row3_col2 = st.columns(2)
-        with row3_col1.container(border=True):
-            st.markdown("#### 🔹 市場量能")
-            st.markdown(f"* 今日量 ➜")
-            st.markdown(f"**`{data['成交量']} 張`**")
-            st.markdown(f"* 5日均量 ➜")
-            st.markdown(f"**`{data['5日均量']} 張`**")
-            
-        with row3_col2.container(border=True):
-            st.markdown("#### 🔹 籌碼(模擬)")
+        with row2_col3.container(border=True):
+            st.markdown("<div class='tech-title'>🔹 籌碼(模擬)</div>", unsafe_allow_html=True)
             mock_table_html = generate_mock_chips_html(df_chart)
             st.markdown(mock_table_html, unsafe_allow_html=True)
         
@@ -520,28 +543,28 @@ elif st.session_state.page == "analysis":
         
         t1, t2, t3 = st.columns(3)
         with t1:
-            st.markdown(f"""
+            st.markdown(f'''
             <div class="trend-box">
                 <div class="trend-title">短線 (日線)</div>
                 <div class="trend-status" style="color: {t_short_color};">{t_short_text}</div>
             </div>
-            """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
             
         with t2:
-            st.markdown(f"""
+            st.markdown(f'''
             <div class="trend-box">
                 <div class="trend-title">中線 (周線)</div>
                 <div class="trend-status" style="color: {t_mid_color};">{t_mid_text}</div>
             </div>
-            """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
             
         with t3:
-            st.markdown(f"""
+            st.markdown(f'''
             <div class="trend-box">
                 <div class="trend-title">長線 (月線)</div>
                 <div class="trend-status" style="color: {t_long_color};">{t_long_text}</div>
             </div>
-            """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
@@ -556,7 +579,3 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
-"""
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-print("test.py updated successfully.")}
