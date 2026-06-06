@@ -52,46 +52,48 @@ st.markdown('''
         background-color: #1a1c24; 
         border: 1px solid #333; 
         border-radius: 8px;
-        padding: 10px 5px; /* 縮小留白 */
+        padding: 8px 5px; /* 進一步縮小留白 */
         text-align: center; 
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
     .trend-title { 
-        font-size: 1rem; /* 縮小標題 */
+        font-size: 0.95rem; /* 縮小標題 */
         color: #888; 
         font-weight: bold; 
-        margin-bottom: 5px; 
+        margin-bottom: 4px; 
         border-bottom: 1px solid #333; 
-        padding-bottom: 3px;
+        padding-bottom: 2px;
+        white-space: nowrap; /* 強制不換行 */
     }
     .trend-status { 
-        font-size: 1.1rem; /* 縮小狀態文字 */
+        font-size: 1.05rem; /* 縮小狀態文字 */
         font-weight: 900; 
+        white-space: nowrap; /* 強制不換行 */
     }
     
     /* 👉 新增：調整技術指標容器大小 */
     div[data-testid="stVerticalBlockBorderWrapper"] {
-        padding: 5px !important; /* 縮小外框留白 */
+        padding: 4px !important; /* 縮小外框留白 */
     }
-    .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px;}
-    .tech-text { font-size: 0.9rem; color: #ddd; line-height: 1.4; display: flex; justify-content: space-between; padding: 0 5px;}
-    .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 1rem;}
+    .tech-title { font-size: 0.95rem; font-weight: bold; color: #fff; margin-bottom: 4px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: nowrap;}
+    .tech-text { font-size: 0.85rem; color: #ddd; line-height: 1.3; display: flex; justify-content: space-between; padding: 0 2px;}
+    .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 0.95rem;}
 
-    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.85rem; margin-top: 2px;}
-    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal;}
-    .chip-table td { padding: 2px 1px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 0.9rem;}
+    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.8rem; margin-top: 2px;}
+    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal; white-space: nowrap;}
+    .chip-table td { padding: 2px 1px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 0.85rem;}
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
     
     /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
-        .trend-box { padding: 5px 2px; }
-        .trend-title { font-size: 0.85rem; }
-        .trend-status { font-size: 0.95rem; }
+        .trend-box { padding: 4px 1px; }
+        .trend-title { font-size: 0.8rem; }
+        .trend-status { font-size: 0.9rem; }
         
-        .tech-title { font-size: 0.9rem; }
-        .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;} /* 手機上文字若太長改為上下排 */
-        .tech-val { font-size: 0.9rem; }
+        .tech-title { font-size: 0.85rem; }
+        .tech-text { font-size: 0.75rem; flex-direction: column; text-align: center;} /* 手機上文字若太長改為上下排 */
+        .tech-val { font-size: 0.85rem; }
     }
 </style>
 ''', unsafe_allow_html=True)
@@ -134,6 +136,7 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
+# 控制圖表顯示天數的變數 (預設60天，約3個月)
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
 
 @st.cache_data(ttl=1800)
@@ -177,6 +180,7 @@ def get_stock_data(ticker_number):
     if ticker_number == "^TWII": return yf.Ticker("^TWII").history(period="1y")
     base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
     try:
+        # 為了確保切換到 "1年" 時均線依然精準，這裡改為固定抓取 1 年 (1y)
         df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
         if df.empty or len(df) < 20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
         if df.empty or len(df) < 20: return None
@@ -261,6 +265,7 @@ def generate_mock_chips_html(df):
     return html
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days):
+    # 根據選擇的天數切片資料
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     
@@ -268,43 +273,54 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
+    # K線與均線
     fig.add_trace(go.Candlestick(x=df_view.index, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
+    # 交易量
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
+    # MACD
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC(柱)"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color='white', width=1.5), name="DIF"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color='yellow', width=1.5), name="MACD"), row=3, col=1)
     
+    # KDJ
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color='white', width=1.5), name="K"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color='yellow', width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
     
-    # 數值寫在左上角
+    # ====================================================
+    # 👉 需求3：將數值全部寫在各個圖表的左上角 (浮水印呈現)
+    # ====================================================
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ffcc00", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
 
-    # 徹底鎖定
+    # ====================================================
+    # 👉 需求1：徹底鎖定 X 與 Y 軸，防止手機滑動時亂縮放
+    # ====================================================
+    # 圖表高度拉長，避免被擠壓
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     
+    # 隱藏下方浪費空間的 X 軸標題
     fig.update_xaxes(title_text="", row=1, col=1)
     fig.update_xaxes(title_text="", row=2, col=1)
     fig.update_xaxes(title_text="", row=3, col=1)
     fig.update_xaxes(title_text="", row=4, col=1)
     
+    # 👉 需求4：將 Legend (圖例指數) 全部統一移到圖表的最底端，並取消拖曳模式 (dragmode=False)
     fig.update_layout(
-        xaxis_rangeslider_visible=False, template="plotly_dark", height=850, 
+        xaxis_rangeslider_visible=False, template="plotly_dark", height=1000, 
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='#0e1117', plot_bgcolor='#0e1117', 
         hovermode='x unified', hoverlabel=dict(font_size=13, bgcolor="rgba(26,28,36,0.9)"),
-        dragmode=False, 
-        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
+        dragmode=False, # 關閉拖曳
+        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5) # 圖例置底
     )
     return fig
 
@@ -316,7 +332,7 @@ def render_index_board():
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     with st.container(border=True):
-        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.2rem; font-weight: bold;'>加權指數看板 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; font-size: 1.3rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
 
@@ -469,7 +485,7 @@ elif st.session_state.page == "analysis":
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
-        st.subheader("📊 技術指標參數")
+        st.subheader("📊 技術與籌碼參數")
         
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
