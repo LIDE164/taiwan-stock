@@ -47,7 +47,7 @@ st.markdown('''
         backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
-    /* 👉 調整多空趨勢的單行三格方塊大小 */
+    /* 👉 需求1：調整多空趨勢的單行三格方塊大小 */
     .trend-box {
         background-color: #1a1c24; 
         border: 1px solid #333; 
@@ -270,7 +270,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
-    # 需求4：主圖只保留 K線、5T、10T、20T，不畫布林通道 (UB/LB刪除)
     fig.add_trace(go.Candlestick(x=df_view.index, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
@@ -297,19 +296,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     
-    fig.update_xaxes(title_text="", row=1, col=1)
-    fig.update_xaxes(title_text="", row=2, col=1)
-    fig.update_xaxes(title_text="", row=3, col=1)
-    fig.update_xaxes(title_text="", row=4, col=1)
-    
-    # 需求4：將 Legend (圖例指數) 全部統一移到圖表的最底端，並取消拖曳模式 (dragmode=False)
-    # 將 hoverlabel font_size 縮小，讓點擊後的資訊方塊變得精巧且不干擾視線
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_dark", height=850, 
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='#0e1117', plot_bgcolor='#0e1117', 
-        hovermode='x unified', hoverlabel=dict(font_size=11, bgcolor="rgba(26,28,36,0.85)"),
-        dragmode=False, # 關閉拖曳
-        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5) # 圖例置底
+        hovermode='x unified', hoverlabel=dict(font_size=13, bgcolor="rgba(26,28,36,0.9)"),
+        dragmode=False, 
+        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
     )
     return fig
 
@@ -452,7 +444,6 @@ elif st.session_state.page == "analysis":
             
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # 戰術判定框
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
@@ -473,7 +464,6 @@ elif st.session_state.page == "analysis":
 
 🎯 **建議操作：** 可於 `{data['10MA']}`(10T) 至 `{data['20MA']}`(月線) 區間分批逢低佈局。")
         
-        # 需求2：新增日期區間切換按鈕 (放置在圖表上方)
         st.markdown("<h4 style='text-align: center; margin-top: 15px;'>📅 切換圖表顯示區間</h4>", unsafe_allow_html=True)
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
         if d_col1.button("1個月", use_container_width=True): st.session_state.view_days = 20
@@ -481,14 +471,11 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月", use_container_width=True): st.session_state.view_days = 120
         if d_col4.button("1年", use_container_width=True): st.session_state.view_days = 240
         
-        # 繪製圖表 (傳入選擇的天數 view_days)
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
-        # config={'scrollZoom': False, 'displayModeBar': False} 完全關閉圖表自帶的縮放與干擾工具列
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
         st.subheader("📊 技術指標參數")
         
-        # 需求1：使用 st.columns(3) 來讓四個方塊變成「一行三格，共兩行」
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 均線</div>", unsafe_allow_html=True)
