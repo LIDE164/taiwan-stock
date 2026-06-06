@@ -476,9 +476,3 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
-"""
-
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-
-print("test.py updated successfully.")
