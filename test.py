@@ -13,38 +13,67 @@ import os
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
+# 隱藏預設頂部選單，保持介面極簡乾淨
 st.markdown('''
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 側欄自選股按鈕樣式 */
+    /* 左上角側欄箭頭旁加上文字 */
     [data-testid="collapsedControl"] {
-        border: 1px solid #444 !important; border-radius: 8px !important;
-        background-color: #1a1c24 !important; padding: 5px 12px !important;
-        display: flex !important; align-items: center !important;
-        width: auto !important; transition: 0.3s;
+        border: 1px solid #444 !important;
+        border-radius: 8px !important;
+        background-color: #1a1c24 !important;
+        padding: 5px 12px !important;
+        display: flex !important;
+        align-items: center !important;
+        width: auto !important;
+        transition: 0.3s;
     }
     [data-testid="collapsedControl"]::after {
-        content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px;
+        content: " ⭐ 我的自選股";
+        font-size: 1.1rem;
+        font-weight: bold;
+        color: #ffcc00;
+        margin-left: 8px;
     }
+    
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
     
     .sticky-header {
-        position: sticky; top: 0; z-index: 999; background-color: rgba(26, 28, 36, 0.95);
-        padding: 10px 0; border-bottom: 1px solid #333; backdrop-filter: blur(5px);
-        margin-top: -15px; margin-bottom: 15px;
+        position: sticky; top: 0; z-index: 999;
+        background-color: rgba(26, 28, 36, 0.95);
+        padding: 10px 0; border-bottom: 1px solid #333;
+        backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
     
+    /* 調整多空趨勢的單行三格方塊大小 */
     .trend-box {
-        background-color: #1a1c24; border: 1px solid #333; border-radius: 8px;
-        padding: 10px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        background-color: #1a1c24; 
+        border: 1px solid #333; 
+        border-radius: 8px;
+        padding: 10px 5px; 
+        text-align: center; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .trend-title { font-size: 1rem; color: #888; font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px; white-space: nowrap;}
-    .trend-status { font-size: 1.1rem; font-weight: 900; white-space: nowrap;}
+    .trend-title { 
+        font-size: 1rem; 
+        color: #888; 
+        font-weight: bold; 
+        margin-bottom: 5px; 
+        border-bottom: 1px solid #333; 
+        padding-bottom: 3px;
+    }
+    .trend-status { 
+        font-size: 1.1rem; 
+        font-weight: 900; 
+    }
     
-    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 5px !important; }
-    .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px; white-space: nowrap;}
+    /* 調整技術指標容器大小 */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        padding: 5px !important; 
+    }
+    .tech-title { font-size: 1rem; font-weight: bold; color: #fff; margin-bottom: 5px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 3px;}
     .tech-text { font-size: 0.9rem; color: #ddd; line-height: 1.4; display: flex; justify-content: space-between; padding: 0 5px;}
     .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 1rem;}
 
@@ -54,10 +83,12 @@ st.markdown('''
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
     
+    /* ======== 手機版專屬優化 ======== */
     @media (max-width: 768px) {
         .trend-box { padding: 5px 2px; }
         .trend-title { font-size: 0.85rem; }
         .trend-status { font-size: 0.95rem; }
+        
         .tech-title { font-size: 0.9rem; }
         .tech-text { font-size: 0.8rem; flex-direction: column; text-align: center;}
         .tech-val { font-size: 0.9rem; }
@@ -118,7 +149,7 @@ def fetch_twse_top_50():
     except:
         return list(STOCK_NAMES.keys())
 
-# ─── 側邊欄 ───
+# ─── 側邊欄控制 ───
 st.sidebar.title("⭐ 我的自選股清單")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
@@ -146,7 +177,7 @@ if st.sidebar.button("💾 儲存更新池", use_container_width=True):
     st.sidebar.success("✅ 池名單已保存！")
 
 # ==========================================
-# 1. 核心大腦
+# 1. 核心大腦 (技術數據運算與繪圖)
 # ==========================================
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
@@ -174,6 +205,17 @@ def get_stock_data(ticker_number):
         df['K'] = rsv.ewm(com=2, adjust=False).mean()
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
+        
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        df['STD'] = df['Close'].rolling(window=20).std()
+        df['UB'] = df['20MA'] + 2 * df['STD']
+        df['LB'] = df['20MA'] - 2 * df['STD']
+        
         return df
     except: return None
 
@@ -196,6 +238,9 @@ def analyze_today(df, ticker_number):
         "20MA": round(today['20MA'], 2), "60MA": round(today['60MA'], 2) if not pd.isna(today['60MA']) else 0,
         "MACD": round(today['MACD'], 2), "MACD柱": round(today['MACD_Hist'], 3),
         "K": round(today['K'], 2), "D": round(today['D'], 2), "J值": round(today['J'], 2),
+        "RSI": round(today['RSI'], 2) if not pd.isna(today['RSI']) else 50,
+        "UB": round(today['UB'], 2) if not pd.isna(today['UB']) else 0,
+        "LB": round(today['LB'], 2) if not pd.isna(today['LB']) else 0,
         "訊號": is_golden_pit
     }
 
@@ -208,11 +253,13 @@ def generate_mock_chips_html(df):
         base_vol = row['Volume'] / 1000
         fi_buy = int(change * 200 + (base_vol * 0.08)) 
         it_buy = int(change * 80 + (base_vol * 0.03))
+        
         if fi_buy == 0: fi_buy = int(base_vol * 0.01) + 10
         if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
         
         fi_class = "buy-color" if fi_buy > 0 else "sell-color"
         it_class = "buy-color" if it_buy > 0 else "sell-color"
+        
         fi_str = f"+{fi_buy:,}" if fi_buy > 0 else f"{fi_buy:,}"
         it_str = f"+{it_buy:,}" if it_buy > 0 else f"{it_buy:,}"
         
@@ -232,6 +279,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
+    # 標示當天收盤指數
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, 
                   annotation_text=f"今日收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=15, color="#ffcc00", weight="bold"))
     
@@ -251,8 +299,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days):
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
 
+    # 鎖定圖表軸
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+    
     fig.update_xaxes(title_text="", row=1, col=1)
     fig.update_xaxes(title_text="", row=2, col=1)
     fig.update_xaxes(title_text="", row=3, col=1)
@@ -281,6 +331,7 @@ def render_index_board():
         ma5 = twii_df['5MA'].iloc[-1]
         ma20 = twii_df['20MA'].iloc[-1]
         
+        # 首頁局勢分析
         if twii_close > ma5 and twii_close > ma20:
             trend_status = "🔥 強勢偏多"
             trend_desc = "大盤站上5日與月線"
@@ -345,7 +396,7 @@ if st.session_state.page == "home":
         if st.session_state.filter_buy_only:
             df_display = df_results[df_results['訊號'] == True]
             if df_display.empty:
-                st.info("💡 今日無符合標的，建議觀望！")
+                st.info("💡 今日雷達池中，暫無同時符合「多頭回檔」與「極度超賣」的極佳買點標的，建議保持耐心觀望！")
         else:
             df_top50_vol = df_results.sort_values(by="成交量", ascending=False).head(50)
             df_display = df_top50_vol.sort_values(by="J值", ascending=True).head(10)
@@ -452,7 +503,9 @@ elif st.session_state.page == "analysis":
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': False, 'displayModeBar': False})
         
-        st.subheader("📊 技術指標參數")
+        # 技術與籌碼參數區 (3x2 完美陣列)
+        st.subheader("📊 技術與籌碼參數")
+        
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1.container(border=True):
             st.markdown("<div class='tech-title'>🔹 均線</div>", unsafe_allow_html=True)
@@ -531,8 +584,3 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_FILE, st.session_state.favorites) 
                 st.rerun()
     else: st.error("無法載入該股票資料，請確認代號是否正確。")
-"""
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-print("test.py fully formatted and ready.")}
-}
