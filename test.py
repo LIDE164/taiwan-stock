@@ -50,9 +50,27 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
+# 股票名稱字典與 API
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城"
+}
+
+# 產業分類資料庫 (靜態擴充範例)
+INDUSTRY_MAP = {
+    "2330": "半導體業", "2317": "其他電子業", "2454": "半導體業", "2308": "電子零組件業", 
+    "2382": "電腦及週邊設備業", "2376": "電腦及週邊設備業", "1802": "玻璃陶瓷", 
+    "2603": "航運業", "1785": "光電業", "1519": "電機機械",
+    "3231": "電腦及週邊設備業", "2356": "電腦及週邊設備業", "3008": "光電業"
+}
+
+# 關聯股票對應表
+RELATED_STOCKS = {
+    "半導體業": ["2330", "2454", "2303"],
+    "電腦及週邊設備業": ["2382", "2376", "3231", "2356"],
+    "航運業": ["2603", "2609", "2615"],
+    "光電業": ["1785", "3008", "3481", "2409"],
+    "其他電子業": ["2317", "2354"]
 }
 
 @st.cache_data(ttl=86400)
@@ -172,13 +190,12 @@ def analyze_today(df, ticker_number):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 5日漲跌幅計算
     close_5d = df['Close'].iloc[-5] if len(df) >= 5 else df['Close'].iloc[0]
     pct_5d = (today['Close'] - close_5d) / close_5d * 100
     
     return {
         "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
-        "昨日收盤價": round(prev['Close'], 2),
+        "昨日收盤價": round(prev['Close'], 2), 
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round((today['Close'] - prev['Close']) / prev['Close'] * 100, 2), 
         "近5日漲幅(%)": f"{round(pct_5d, 2)}%",
@@ -189,7 +206,6 @@ def analyze_today(df, ticker_number):
         "訊號": (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     }
 
-# 修正：參數對齊 5 個 (df, ticker_name, latest_price, view_days, is_light_mode)
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -327,7 +343,6 @@ if st.session_state.page == "home":
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_display = df_results.sort_values(by="成交量", ascending=False).head(20)
-            # 新增昨日收盤價欄位
             table_df = df_display[['代號', '名稱', '昨日收盤價', '收盤價', '漲跌幅', '近5日漲幅(%)', '成交量', '5日均量']]
             table_df.set_index('代號', inplace=True)
             st.dataframe(table_df, use_container_width=True)
@@ -374,6 +389,9 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
+    # 判斷產業
+    industry = INDUSTRY_MAP.get(target, "未知產業")
+    
     c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
     nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
     prev_stock, next_stock = None, None
@@ -399,6 +417,8 @@ elif st.session_state.page == "analysis":
         
         display_title = f"🎯 {target} {data.get('名稱', '')}" if data.get('名稱') else f"🎯 {target}"
         st.markdown(f"<h2 style='text-align: center;'>{display_title}</h2>", unsafe_allow_html=True)
+        # 需求1：新增該股票是什麼產業
+        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1rem; margin-top: -10px;'>🏭 所屬產業: {industry}</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
@@ -426,7 +446,6 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
-        # 修正參數呼叫
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days, is_light_mode)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
@@ -448,6 +467,43 @@ elif st.session_state.page == "analysis":
             st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})", unsafe_allow_html=True)
 
         st.divider()
+        
+        # 需求2：在解析中顯示相關股票近日漲幅及昨日收盤價與解析功能
+        st.subheader(f"🔗 同產業關聯股票 ({industry})")
+        related_tickers = RELATED_STOCKS.get(industry, [])
+        # 移除自己
+        related_tickers = [t for t in related_tickers if t != target]
+        
+        if related_tickers:
+            rel_results = []
+            for rel_target in related_tickers:
+                rel_df = get_stock_data(rel_target)
+                if rel_df is not None:
+                    rel_data = analyze_today(rel_df, rel_target)
+                    if rel_data:
+                        rel_results.append(rel_data)
+            
+            if rel_results:
+                rel_df_display = pd.DataFrame(rel_results)
+                table_rel = rel_df_display[['代號', '名稱', '昨日收盤價', '收盤價', '漲跌幅', '近5日漲幅(%)']]
+                table_rel.set_index('代號', inplace=True)
+                st.dataframe(table_rel, use_container_width=True)
+                
+                # 建立按鈕可以快速跳轉解析
+                cols = st.columns(min(len(rel_results), 4))
+                for i, r_data in enumerate(rel_results):
+                    c_idx = i % 4
+                    with cols[c_idx]:
+                        if st.button(f"📊 解析 {r_data['代號']}", key=f"rel_btn_{r_data['代號']}", use_container_width=True):
+                            st.session_state.current_stock = r_data['代號']
+                            st.rerun()
+            else:
+                st.info(f"目前無 {industry} 其他股票資料。")
+        else:
+            st.info(f"系統資料庫中暫無與 {target} 同屬 {industry} 的其他關聯股票。")
+
+        st.divider()
+        
         st.subheader("📰 相關新聞")
         news_items = get_real_news(target, clean_name)
         if news_items:
@@ -459,4 +515,4 @@ elif st.session_state.page == "analysis":
 """
 with open("test.py", "w", encoding="utf-8") as f:
     f.write(code)
-print("test.py updated completely.")
+print("test.py updated for industry and related stocks.")
