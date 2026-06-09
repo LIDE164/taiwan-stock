@@ -13,14 +13,13 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# 1. 強制每次更新滑動至頂端
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -40,10 +39,7 @@ st.markdown(f'''
 <style>
     .stApp {{ background-color: {app_bg}; }}
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
-    [data-testid="collapsedControl"] {{
-        border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important;
-        padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s;
-    }}
+    [data-testid="collapsedControl"] {{ border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; }}
     [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
     .stButton button {{ font-weight: bold !important; border-radius: 8px !important; }}
     button[kind="primary"] {{ font-size: 1.5rem !important; padding: 15px !important; border-radius: 12px !important; background-color: #ffcc00 !important; color: #111 !important; border: none !important; }}
@@ -267,11 +263,11 @@ def predict_tomorrow_open(twii_df, sox_df):
         elif s_change > 0: score += 1
         else: score -= 1
         
-    if score >= 2: return "🚀 高機率開高", "美股強勢且台股站穩短均線，市場追價意願濃，預估明日早盤有機會跳空開高。"
+    if score >= 2: return "🚀 高機率開高", "美股強勢且台股站穩短均線，預估明日早盤有機會跳空開高。"
     elif score == 1: return "📈 偏多震盪", "國際局勢穩定，台股具備抗跌韌性，預估開平高盤後震盪走高。"
     elif score == 0: return "⚖️ 觀望平盤", "多空力道均衡，預估開平盤附近，需觀察開盤後主力買賣超方向。"
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
-    else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防明日跳空開低殺盤。"
+    else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，預防明日跳空開低殺盤。"
 
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
@@ -286,16 +282,47 @@ def render_index_board():
     
     pred_title, pred_desc = predict_tomorrow_open(twii_df, sox_df)
     
+    if twii_df is not None and not twii_df.empty:
+        ma5 = twii_df['5MA'].iloc[-1]
+        ma20 = twii_df['20MA'].iloc[-1]
+
+        if twii_close > ma5 and twii_close > ma20: trend_status = "🔥 強勢偏多"
+        elif twii_close < ma5 and twii_close < ma20: trend_status = "🧊 弱勢偏空"
+        elif twii_close > ma20: trend_status = "⚠️ 震盪整理"
+        else: trend_status = "📈 跌深反彈"
+            
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
             st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: 900; margin-top:5px;'>技術面：{trend_status}</div>", unsafe_allow_html=True)
         with col2:
             st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測模型</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
+            
+            # --- 修正：在首頁補回大盤新聞 ---
+            news_items = []
+            try:
+                yf_news = yf.Ticker("0050.TW").news
+                if not yf_news: yf_news = yf.Ticker("2330.TW").news
+                for n in yf_news[:3]: news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
+            except: pass
+            
+            if not news_items: news_items = get_real_news("台股", "加權指數")
+
+            if news_items:
+                us_news_html = "<div style='margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; text-align: left;'>"
+                us_news_html += "<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span><br>"
+                for n in news_items[:3]:
+                    if n['title'] and n['title'] != "👉 Google 新聞搜尋":
+                        us_news_html += f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-bottom: 4px;'>➤ {n['title']}</a>"
+                if "<a href" not in us_news_html:
+                    us_news_html += f"<a href='https://www.google.com/search?q=台股大盤新聞&tbm=nws' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-bottom: 4px;'>➤ 👉 點擊查看最新台股大盤新聞</a>"
+                us_news_html += "</div>"
+                st.markdown(us_news_html, unsafe_allow_html=True)
             
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新: {now_time_str}</div>", unsafe_allow_html=True)
 
@@ -424,7 +451,6 @@ elif st.session_state.page == "analysis":
             with tc4:
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
 
-            # 2. 歷史買點回測掃描儀 (取代月曆)
             st.markdown("---")
             st.markdown("##### 💡 近一個月歷史買點回測")
             recent_30 = df_chart.tail(30)
@@ -507,15 +533,6 @@ elif st.session_state.page == "analysis":
             st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
             st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
             
-            # --- 補上相關新聞 ---
-            st.divider()
-            st.subheader("📰 相關新聞")
-            news_items = get_real_news(target, c_name)
-            if news_items:
-                for n in news_items: st.markdown(f"- [{n['title']}]({n['link']})")
-            else: st.info("目前暫無相關新聞。")
-            
-            st.divider()
             if target in st.session_state.favorites:
                 if st.button("❌ 從自選股移除此標的", type="primary", use_container_width=True):
                     st.session_state.favorites.remove(target); save_json(FAV_FILE, st.session_state.favorites); st.rerun()
