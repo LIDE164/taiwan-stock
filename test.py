@@ -13,14 +13,14 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# 每次頁面更新自動滑到最上方
+# 1. 強制每次更新滑動至頂端
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -118,6 +118,10 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
+# --- 新增來源標示與連結 ---
+st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
+
+
 @st.cache_data(ttl=86400)
 def get_fundamental_and_industry_data(ticker_number):
     try:
@@ -140,14 +144,7 @@ def get_stock_data(ticker_number):
             df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(base_ticker).history(period="1y")
-        
         if df.empty or len(df)<20: return None
-        
-        # 🚨【新增防呆機制】：剔除 Yahoo 傳回的 NaN (空值) 垃圾資料，避免導致計算崩潰
-        df = df.dropna(subset=['Close']) 
-        df['Volume'] = df['Volume'].fillna(0) # 確保成交量沒有空值
-        
-        if df.empty or len(df)<20: return None # 再次確認過濾後資料是否足夠
         
         df['5MA'] = df['Close'].rolling(5).mean()
         df['10MA'] = df['Close'].rolling(10).mean()
@@ -170,16 +167,13 @@ def get_stock_data(ticker_number):
         return df
     except: return None
 
-# --- 強化版：多來源即時新聞抓取 ---
 @st.cache_data(ttl=600)
 def get_real_news(ticker, name):
     news_list = []
-    # 偽裝成真實瀏覽器避免被阻擋
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
     query = urllib.parse.quote(f"{ticker} {name} 股票")
     url = f"https://news.google.com/rss/search?q={query}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     
-    # 策略 1: Google News RSS
     try:
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
@@ -187,7 +181,6 @@ def get_real_news(ticker, name):
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
     except: pass
     
-    # 策略 2: 如果 Google 被擋，改抓 Yahoo API 官方新聞
     if not news_list:
         try:
             yf_news = yf.Ticker(f"{ticker}.TW").news
@@ -196,7 +189,6 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
 
-    # 策略 3: 最後防線，給出真實可點擊的搜尋按鈕
     if not news_list:
         news_list.append({"title": f"👉 點擊查看【{ticker} {name}】最新市場消息", "link": f"https://www.google.com/search?q={query}&tbm=nws"})
         
@@ -273,7 +265,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
 tz_tpe = timezone(timedelta(hours=8))
 
-# 3. 預測明日開盤模組
 def predict_tomorrow_open(twii_df, sox_df):
     if twii_df is None or twii_df.empty: return "資料不足", ""
     t_val = twii_df['Close'].iloc[-1]
@@ -320,13 +311,20 @@ def render_index_board():
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
             
-        # 首頁大盤新聞
         st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
         st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
-        news_items = get_real_news("台股", "大盤")
+        news_items = []
+        try:
+            yf_news = yf.Ticker("0050.TW").news
+            if not yf_news: yf_news = yf.Ticker("2330.TW").news
+            for n in yf_news[:3]: news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
+        except: pass
+        if not news_items: news_items = get_real_news("台股", "加權指數")
+
         if news_items:
-            for n in news_items:
-                st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+            for n in news_items[:3]:
+                if n['title'] and n['title'] != "👉 Google 新聞搜尋":
+                    st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
             
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新: {now_time_str}</div>", unsafe_allow_html=True)
 
@@ -442,7 +440,7 @@ elif st.session_state.page == "analysis":
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 15px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
             
             tc1, tc2, tc3, tc4 = st.columns([1, 1, 1, 1])
@@ -455,7 +453,6 @@ elif st.session_state.page == "analysis":
             with tc4:
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
 
-            # 2. 歷史買點回測掃描儀
             st.markdown("---")
             st.markdown("##### 💡 近一個月歷史買點回測")
             recent_30 = df_chart.tail(30)
@@ -538,7 +535,6 @@ elif st.session_state.page == "analysis":
             st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
             st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
             
-            # 確保新聞被正確渲染成原生超連結
             st.divider()
             st.subheader("📰 相關新聞")
             news_items = get_real_news(target, c_name)
