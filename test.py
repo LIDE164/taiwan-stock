@@ -1,4 +1,4 @@
-import yfinance as yf
+code = """import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
@@ -50,7 +50,6 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# 股票名稱字典與 API
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城"
@@ -179,6 +178,7 @@ def analyze_today(df, ticker_number):
     
     return {
         "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
+        "昨日收盤價": round(prev['Close'], 2),
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round((today['Close'] - prev['Close']) / prev['Close'] * 100, 2), 
         "近5日漲幅(%)": f"{round(pct_5d, 2)}%",
@@ -189,7 +189,8 @@ def analyze_today(df, ticker_number):
         "訊號": (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     }
 
-def draw_professional_chart(df, latest_price, view_days, is_light_mode):
+# 修正：參數對齊 5 個 (df, ticker_name, latest_price, view_days, is_light_mode)
+def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -239,7 +240,6 @@ def draw_professional_chart(df, latest_price, view_days, is_light_mode):
     )
     return fig
 
-# 獲取正確時區的時間
 tz_tpe = timezone(timedelta(hours=8))
 
 def render_index_board():
@@ -298,14 +298,12 @@ def render_index_board():
             
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新時間: {now_time_str}</div>", unsafe_allow_html=True)
 
-
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
     
     st.markdown("<h3 style='margin-top: 15px;'>🎯 掃描買點</h3>", unsafe_allow_html=True)
     
-    # 增設 近日熱門 選單
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     if btn_col1.button("✅ 尋找買點", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
     if btn_col2.button("📋 熱門名單", use_container_width=True): st.session_state.scan_mode = "hot"; st.rerun()
@@ -329,7 +327,8 @@ if st.session_state.page == "home":
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_display = df_results.sort_values(by="成交量", ascending=False).head(20)
-            table_df = df_display[['代號', '名稱', '收盤價', '漲跌幅', '近5日漲幅(%)', '成交量', '5日均量']]
+            # 新增昨日收盤價欄位
+            table_df = df_display[['代號', '名稱', '昨日收盤價', '收盤價', '漲跌幅', '近5日漲幅(%)', '成交量', '5日均量']]
             table_df.set_index('代號', inplace=True)
             st.dataframe(table_df, use_container_width=True)
             
@@ -375,7 +374,6 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
-    # 實現導航 上一檔 下一檔
     c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
     nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
     prev_stock, next_stock = None, None
@@ -428,6 +426,7 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
+        # 修正參數呼叫
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days, is_light_mode)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
@@ -457,3 +456,7 @@ elif st.session_state.page == "analysis":
             
     else:
         st.error("查無此股票資料，請確認輸入代號是否正確。")
+"""
+with open("test.py", "w", encoding="utf-8") as f:
+    f.write(code)
+print("test.py updated completely.")
