@@ -47,19 +47,16 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
-# 動態抓取全台灣上市櫃股票名稱字典
-@st.cache_data(ttl=86400) # 快取一天
+@st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
     names = {
         "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
         "2376": "技嘉", "1802": "台玻", "2603": "長榮"
     }
     try:
-        # 上市
         res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
         for item in res.json():
             names[item['Code']] = item['Name']
-        # 由於上櫃 OpenAPI 較不穩定，這裡主要確保上市股票 100% 抓到。
     except:
         pass
     return names
@@ -178,7 +175,6 @@ def analyze_today(df, ticker_number):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 使用超大字典抓名稱
     c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
     
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
@@ -196,7 +192,8 @@ def analyze_today(df, ticker_number):
         "訊號": is_golden_pit
     }
 
-def draw_professional_chart(df, latest_price, view_days):
+# 此處確保參數為 4 個
+def draw_professional_chart(df, ticker_name, latest_price, view_days):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -258,16 +255,16 @@ def render_index_board():
         
         if twii_close > ma5 and twii_close > ma20:
             trend_status = "🔥 強勢偏多"
-            trend_desc = "大盤站上5日與月線"
+            trend_desc = "站上5日與月線"
         elif twii_close < ma5 and twii_close < ma20:
             trend_status = "🧊 弱勢偏空"
-            trend_desc = "跌破5日與月線支撐"
+            trend_desc = "跌破5日與月線"
         elif twii_close > ma20:
             trend_status = "⚠️ 震盪整理"
-            trend_desc = "守月線但破5日線"
+            trend_desc = "守月線但破5日"
         else:
             trend_status = "📈 跌深反彈"
-            trend_desc = "站回5日但低於月線"
+            trend_desc = "站回5日但破月線"
             
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
@@ -282,9 +279,6 @@ def render_index_board():
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 900; color: #fff;'>{trend_status}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #aaa; margin-top: 5px;'>{trend_desc}</div>", unsafe_allow_html=True)
 
-# ==========================================
-# 2. 畫面路由
-# ==========================================
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -364,7 +358,6 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
-        # 解決 \n\n 顯示問題，使用 markdown 來做斷行與排版
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
@@ -387,10 +380,10 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
+        # 此處確實使用四個參數呼叫，定義處也已改成四個參數
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
-        # 將指標區塊的 \n 改成 HTML 的 <br> 標籤以避免語法錯誤
         row1_c1, row1_c2, row1_c3 = st.columns(3)
         with row1_c1.container(border=True):
             st.markdown(f"**均線**<br>5T: {data['5MA']}<br>10T: {data['10MA']}<br>20T: {data['20MA']}", unsafe_allow_html=True)
