@@ -564,7 +564,6 @@ elif st.session_state.page == "analysis":
             
     else:
         st.error("查無此股票資料，請確認輸入代號是否正確。")
-"""
 with open("test.py", "w", encoding="utf-8") as f:
     f.write(code)
 print("test.py finalized successfully.")}
