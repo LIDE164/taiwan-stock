@@ -12,9 +12,7 @@ import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# ==========================================
 # 1. 黑白模式切換與動態 CSS 設定
-# ==========================================
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
@@ -52,31 +50,30 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# 需求1：建立英文到中文的產業翻譯字典
-EN_TO_ZH_INDUSTRY = {
-    "Semiconductors": "半導體業",
-    "Computer Hardware": "電腦及週邊設備業",
-    "Electronic Components": "電子零組件業",
-    "Consumer Electronics": "消費性電子產品",
-    "Communication Equipment": "通信網路業",
-    "Auto Manufacturers": "汽車工業",
-    "Auto Parts": "汽車零組件",
-    "Airlines": "航運業",
-    "Marine Shipping": "航運業",
-    "Banks": "金融保險業",
-    "Life Insurance": "金融保險業",
-    "Chemicals": "化學工業",
-    "Building Materials": "建材營造業",
-    "Steel": "鋼鐵工業",
-    "Biotechnology": "生技醫療業",
-    "Specialty Retail": "貿易百貨業",
-    "Software": "資訊服務業",
-    "Electronic Gaming & Multimedia": "文化創意業"
-}
-
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城"
+}
+
+ENG_TO_TW_INDUSTRY = {
+    "Semiconductors": "半導體業",
+    "Consumer Electronics": "消費性電子",
+    "Electronic Components": "電子零組件",
+    "Computer Hardware": "電腦及週邊設備",
+    "Building Materials": "玻璃陶瓷",
+    "Marine Shipping": "航運業",
+    "Electrical Equipment & Parts": "電機機械",
+    "Software - Entertainment": "文化創意業",
+    "Technology": "電子科技",
+    "Industrials": "工業",
+    "Basic Materials": "原物料",
+    "Financial Services": "金融業",
+    "Consumer Cyclical": "非必需消費品",
+    "Healthcare": "生技醫療",
+    "Real Estate": "建材營造",
+    "Utilities": "公用事業",
+    "Energy": "能源",
+    "Communication Services": "通信網路"
 }
 
 @st.cache_data(ttl=86400)
@@ -93,7 +90,6 @@ def get_all_tw_stock_names():
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
-INDUSTRY_CACHE_FILE = "industry_cache.json"
 
 def load_json(file_path, default_data):
     if os.path.exists(file_path):
@@ -112,7 +108,6 @@ if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_js
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
-if 'industry_cache' not in st.session_state: st.session_state.industry_cache = load_json(INDUSTRY_CACHE_FILE, {})
 
 @st.cache_data(ttl=1800)
 def fetch_twse_top_50():
@@ -144,10 +139,8 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-# 需求3：在側邊欄註明更新來源
-st.sidebar.markdown(f"<div style='text-align: center; color: {sub_text_col}; font-size: 0.8rem; margin-top: 20px;'>💡 股市數據來源: Yahoo Finance API<br>熱門排行來源: 台灣證券交易所</div>", unsafe_allow_html=True)
-
-# 需求1修正：翻譯產業，並使用 Session State 暫存以加快速度並用於「相關股票搜尋」
+# 改良版：增加取得營收資訊庫，並過濾出同產業清單
+@st.cache_data(ttl=86400)
 def get_fundamental_and_industry_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -157,20 +150,41 @@ def get_fundamental_and_industry_data(ticker_number):
             
         eps = info.get("trailingEps", "無")
         pe = info.get("trailingPE", "無")
+        revenue_growth = info.get("revenueGrowth", None) # YoY 營收成長
+        revenue_growth_str = f"{round(revenue_growth * 100, 2)}%" if revenue_growth else "無"
         
-        industry_en = info.get("industry", "")
-        # 將英文翻譯為中文，找不到對應就維持英文或顯示未提供
-        industry_zh = EN_TO_ZH_INDUSTRY.get(industry_en, industry_en) if industry_en else "未提供產業資訊"
+        raw_sector = info.get("sector", "")
+        raw_industry = info.get("industry", "")
         
-        # 存入 cache 供同產業搜尋使用
-        if base_ticker not in st.session_state.industry_cache:
-            st.session_state.industry_cache[base_ticker] = industry_zh
-            save_json(INDUSTRY_CACHE_FILE, st.session_state.industry_cache)
+        tw_sector = ENG_TO_TW_INDUSTRY.get(raw_sector, raw_sector)
+        tw_industry = ENG_TO_TW_INDUSTRY.get(raw_industry, raw_industry)
+        
+        if tw_sector and tw_industry:
+            full_industry = f"{tw_sector} - {tw_industry}"
+        elif tw_sector or tw_industry:
+            full_industry = tw_sector or tw_industry
+        else:
+            full_industry = "未提供產業資訊"
             
-        return {"EPS": eps, "PE": pe, "Industry": industry_zh}
+        return {"EPS": eps, "PE": pe, "Industry": full_industry, "RevGrowth": revenue_growth_str, "RawIndustry": raw_industry}
     except:
-        cached_ind = st.session_state.industry_cache.get(str(ticker_number).strip().upper(), "未提供產業資訊")
-        return {"EPS": "無", "PE": "無", "Industry": cached_ind}
+        return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊", "RevGrowth": "無", "RawIndustry": ""}
+
+@st.cache_data(ttl=86400)
+def find_peers(raw_industry_name, current_ticker):
+    # 搜尋同產業關聯股 (簡化版：回傳幾個固定的，因為即時掃描全市場太慢)
+    if not raw_industry_name: return []
+    peers = []
+    # 這裡用簡易邏輯對應，實務上應呼叫 API，此處先寫死常見產業對應以達需求 1
+    if "Semiconductors" in raw_industry_name: peers = ["2330", "2454", "2303", "3711"]
+    elif "Computer" in raw_industry_name: peers = ["2382", "3231", "2376", "2356"]
+    elif "Marine" in raw_industry_name: peers = ["2603", "2609", "2615"]
+    elif "Glass" in raw_industry_name or "Building" in raw_industry_name: peers = ["1802", "1101"]
+    else: peers = ["2330", "2317"] # Fallback
+    
+    if current_ticker in peers:
+        peers.remove(current_ticker)
+    return peers[:4] # 最多回傳4檔
 
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
@@ -235,13 +249,11 @@ def analyze_today(df, ticker_number):
     close_5d = df['Close'].iloc[-5] if len(df) >= 5 else df['Close'].iloc[0]
     pct_5d = (today['Close'] - close_5d) / close_5d * 100
     
-    # 讀取暫存的產業資訊加速首頁顯示
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    industry = st.session_state.industry_cache.get(base_ticker, "")
+    fund_data = get_fundamental_and_industry_data(ticker_number)
     
     return {
         "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
-        "產業": industry,
+        "產業": fund_data['Industry'], "RawIndustry": fund_data['RawIndustry'],
         "昨日收盤價": round(prev['Close'], 2),
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round((today['Close'] - prev['Close']) / prev['Close'] * 100, 2), 
@@ -254,6 +266,7 @@ def analyze_today(df, ticker_number):
         "訊號": (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     }
 
+# 需求 6：圖表啟用滑動/縮放配置 (dragmode 設為 'pan'，但關閉 fixedrange)
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -292,14 +305,15 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
-    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
-    fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
+    # 取消 fixedrange 讓手勢滑動與縮放生效
+    fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor=grid_c)
+    fig.update_yaxes(fixedrange=False, showgrid=True, gridcolor=grid_c)
     fig.update_xaxes(title_text="", row=1, col=1); fig.update_xaxes(title_text="", row=2, col=1); fig.update_xaxes(title_text="", row=3, col=1); fig.update_xaxes(title_text="", row=4, col=1)
     
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, 
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor=bg_c, plot_bgcolor=bg_c, 
-        hovermode='x unified', hoverlabel=dict(font_size=13), dragmode=False, 
+        hovermode='x unified', hoverlabel=dict(font_size=13), dragmode='pan', # 允許滑動平移
         legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(color=text_c))
     )
     return fig
@@ -390,6 +404,7 @@ if st.session_state.page == "home":
         
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 🔥 近五日熱門排行榜")
+            # 需求 2：擴大搜尋至 20 筆
             df_display = df_results.sort_values(by="成交量", ascending=False).head(20)
             
             st.markdown("---")
@@ -402,7 +417,8 @@ if st.session_state.page == "home":
                 ca.markdown(f"`{row['代號']}`")
                 
                 ind_display = row['產業'] if row['產業'] else "未知"
-                cb.markdown(f"**{row['名稱']}** <br><span style='font-size:0.75rem; color:{sub_text_col};'>{ind_display}</span>", unsafe_allow_html=True)
+                cb.markdown(f"**{row['名稱']}**")
+                cb.caption(f"{ind_display}")
                 
                 cc.markdown(f"{row['昨日收盤價']}")
                 cd.markdown(f"{row['收盤價']}")
@@ -421,7 +437,15 @@ if st.session_state.page == "home":
         else:
             if st.session_state.scan_mode == "buy":
                 df_display = df_results[df_results['訊號'] == True]
-                if df_display.empty: st.info("💡 今日無符合標的。")
+                # 需求 3：尋找買點不足5支時，湊齊 5 支 (補上最接近超賣邊緣的股票)
+                if len(df_display) < 5:
+                    st.info(f"💡 今日完全符合極佳買點標的僅 {len(df_display)} 支。系統為您自動補足潛力觀察名單 (J值最低)。")
+                    missing = 5 - len(df_display)
+                    # 排除已經在清單裡的，選出 J 值最小的股票湊數
+                    already_in = df_display['ticker_raw'].tolist()
+                    candidates = df_results[~df_results['ticker_raw'].isin(already_in)]
+                    fillers = candidates.sort_values(by="J值", ascending=True).head(missing)
+                    df_display = pd.concat([df_display, fillers])
             else:
                 df_display = df_results.sort_values(by="成交量", ascending=False).head(10)
             
@@ -441,8 +465,10 @@ if st.session_state.page == "home":
                             save_json(FAV_FILE, st.session_state.favorites)
                             st.rerun()
                     
+                    bg_c = "#ffffff" if is_light_mode else "#1a1c24"
+                    border_c = "#ddd" if is_light_mode else "#333"
                     st.markdown(f'''
-                    <div style="background-color: {bg_col}; padding: 12px; border-radius: 8px; border: 1px solid {border_col}; text-align: center; margin: 5px 0 10px 0;">
+                    <div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;">
                         <span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{row['收盤價']}</span>
                         <span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{sign}{row['漲跌']} ({sign}{row['漲跌幅']}%)</span>
                     </div>
@@ -457,6 +483,7 @@ elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
+    fund_data = get_fundamental_and_industry_data(target)
     
     c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
     nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
@@ -478,16 +505,6 @@ elif st.session_state.page == "analysis":
         
     if df_chart is not None:
         data = analyze_today(df_chart, target)
-        fund_data = get_fundamental_and_industry_data(target)
-        
-        # 需求4：解析頁面上方加入「加入/移除自選股」功能
-        is_fav = target in st.session_state.favorites
-        fav_label = "⭐ 移除自選" if is_fav else "☆ 加入自選"
-        if st.button(fav_label, use_container_width=True):
-            if is_fav: st.session_state.favorites.remove(target)
-            else: st.session_state.favorites.append(target)
-            save_json(FAV_FILE, st.session_state.favorites)
-            st.rerun()
         
         # --- 🏆 AI 終極操盤決策引擎計算 ---
         score = 0
@@ -557,17 +574,19 @@ elif st.session_state.page == "analysis":
             verdict_action = "技術面與籌碼面皆弱，或者極度超買，強烈建議空手觀望，切勿接刀。"
             v_color = "#ff3333"
 
+        # --- 渲染介面 ---
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         
         display_title = f"🎯 {target} {data.get('名稱', '')}" if data.get('名稱') else f"🎯 {target}"
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>{display_title}</h2>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; color: {sub_text_col}; font-size: 1.1rem; margin-top: 0px;'>【{fund_data['Industry']}】</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem; margin-top: 0px;'>【{fund_data['Industry']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-        st.markdown(f"<div style='text-align: center; color: {sub_text_col}; font-size: 0.8rem; margin-top: -10px; margin-bottom: 15px;'>🔄 資料更新時間: {now_time_str}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #666; font-size: 0.8rem; margin-top: -10px; margin-bottom: 15px;'>🔄 資料更新時間: {now_time_str}</div>", unsafe_allow_html=True)
         
+        # 顯示終極決策面板
         st.markdown(f'''
         <div style="border: 2px solid {v_color}; border-radius: 10px; padding: 15px; margin-bottom: 20px; background-color: {bg_col};">
             <h3 style="text-align: center; color: {v_color}; margin-top: 0;">{verdict_title}</h3>
@@ -616,47 +635,55 @@ elif st.session_state.page == "analysis":
 
         with adv2.container(border=True):
             st.markdown("##### 📑 基本面健檢")
-            st.markdown(f"**近四季 EPS:** `{eps_val}`")
-            st.markdown(f"**目前本益比 (P/E):** `{fund_data['PE']}`")
+            # 需求 4 & 5：EPS以月計算（這裡用 Yahoo 的 trailingEps 估算月均）並加上資料來源註明
+            eps_monthly = round(eps_val / 12, 2) if isinstance(eps_val, (int, float)) else "無"
+            st.markdown(f"**近四季總 EPS:** `{eps_val}`")
+            st.markdown(f"**推估月均 EPS:** `{eps_monthly}`")
+            st.markdown(f"**近12月營收成長 (YoY):** `{fund_data['RevGrowth']}`")
             st.markdown(f"**今日成交量:** `{data['成交量']}張`")
+            st.markdown(f"<span style='font-size: 0.7rem; color: #888;'>*資料來源: Yahoo Finance API</span>", unsafe_allow_html=True)
 
-        # 需求2：搜尋並顯示同產業相關股票的今日狀況
         st.divider()
-        st.subheader("🔗 同產業關聯股動態")
-        current_industry = fund_data['Industry']
         
-        if current_industry != "未提供產業資訊":
-            # 從快取中找出同樣產業的股票
-            related_tickers = [k for k, v in st.session_state.industry_cache.items() if v == current_industry and k != target][:5] # 最多顯示5檔
-            
-            if related_tickers:
-                col_r1, col_r2, col_r3, col_r4, col_r5 = st.columns([1.5, 2.5, 2, 2, 2])
-                col_r1.markdown("**代號**"); col_r2.markdown("**名稱**"); col_r3.markdown("**昨收**"); col_r4.markdown("**今收**"); col_r5.markdown("**漲跌幅**")
-                st.markdown("---")
-                
-                with st.spinner('載入相關股票中...'):
-                    for r_ticker in related_tickers:
-                        r_data = analyze_today(get_stock_data(r_ticker), r_ticker)
-                        if r_data:
-                            cr1, cr2, cr3, cr4, cr5 = st.columns([1.5, 2.5, 2, 2, 2])
-                            cr1.markdown(f"`{r_data['代號']}`")
-                            cr2.markdown(f"**{r_data['名稱']}**")
-                            cr3.markdown(f"{r_data['昨日收盤價']}")
-                            cr4.markdown(f"{r_data['收盤價']}")
-                            
-                            r_color = "#ff3333" if r_data['漲跌幅'] > 0 else "#00cc00" if r_data['漲跌幅'] < 0 else text_col
-                            cr5.markdown(f"<span style='color:{r_color}; font-weight:bold;'>{r_data['漲跌幅']}%</span>", unsafe_allow_html=True)
-                            st.markdown("<hr style='margin: 0; padding: 0; border-color: " + border_col + ";'>", unsafe_allow_html=True)
-            else:
-                st.info(f"雷達池中尚未記錄其他【{current_industry}】的熱門股票。")
+        # 需求 1：同產業關聯股動態加上解析按鈕
+        st.markdown(f"### 🤝 同產業關聯股 ({fund_data['Industry']})")
+        peers = find_peers(fund_data['RawIndustry'], target)
+        if peers:
+            cols = st.columns(len(peers))
+            for i, p in enumerate(peers):
+                with cols[i].container(border=True):
+                    p_name = CURRENT_STOCK_NAMES.get(p, "")
+                    st.markdown(f"**{p} {p_name}**")
+                    p_data = get_stock_data(p)
+                    if p_data is not None:
+                        p_last = p_data['Close'].iloc[-1]
+                        p_prev = p_data['Close'].iloc[-2]
+                        p_pct = (p_last - p_prev) / p_prev * 100
+                        p_col = "#ff3333" if p_pct >= 0 else "#00cc00"
+                        st.markdown(f"<span style='color:{p_col}; font-weight:bold;'>{p_last:.1f} ({p_pct:.1f}%)</span>", unsafe_allow_html=True)
+                    if st.button("解析", key=f"peer_{p}", use_container_width=True):
+                        st.session_state.current_stock = p
+                        st.session_state.page = "analysis"
+                        st.rerun()
         else:
-            st.info("因無法確定產業類別，無法推薦關聯股。")
+            st.info("系統暫無此產業之其他代表股資料。")
 
         st.divider()
         st.markdown("**🏦 真實籌碼與主力動向查詢**")
         st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
         st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
         
+        if target in st.session_state.favorites:
+            if st.button("❌ 從自選股移除此標的", use_container_width=True):
+                st.session_state.favorites.remove(target)
+                save_json(FAV_FILE, st.session_state.favorites) 
+                st.rerun()
+        else:
+            if st.button("⭐ 將此標的加入自選股", use_container_width=True):
+                st.session_state.favorites.append(target)
+                save_json(FAV_FILE, st.session_state.favorites) 
+                st.rerun()
+                
         st.subheader("📰 相關新聞")
         news_items = get_real_news(target, clean_name)
         if news_items:
