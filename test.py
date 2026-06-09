@@ -144,7 +144,14 @@ def get_stock_data(ticker_number):
             df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(base_ticker).history(period="1y")
+        
         if df.empty or len(df)<20: return None
+        
+        # 🚨【新增防呆機制】：剔除 Yahoo 傳回的 NaN (空值) 垃圾資料，避免導致計算崩潰
+        df = df.dropna(subset=['Close']) 
+        df['Volume'] = df['Volume'].fillna(0) # 確保成交量沒有空值
+        
+        if df.empty or len(df)<20: return None # 再次確認過濾後資料是否足夠
         
         df['5MA'] = df['Close'].rolling(5).mean()
         df['10MA'] = df['Close'].rolling(10).mean()
