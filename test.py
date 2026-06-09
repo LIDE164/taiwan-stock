@@ -1,7 +1,6 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-import requests
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -79,6 +78,7 @@ if 'view_days' not in st.session_state: st.session_state.view_days = 60
 def fetch_twse_top_50():
     try:
         url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        import requests
         res = requests.get(url, timeout=10)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
@@ -106,13 +106,18 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
-    if ticker_number == "^TWII": return yf.Ticker("^TWII").history(period="1y")
-    base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
     try:
-        df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
-        if df.empty or len(df) < 20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
+        if ticker_number == "^TWII":
+            df = yf.Ticker("^TWII").history(period="1y")
+        else:
+            base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
+            df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
+            if df.empty or len(df) < 20: 
+                df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
+                
         if df.empty or len(df) < 20: return None
         
+        # 修正：現在無論是大盤還是个股，都會統一計算這些均線指標
         df['5MA'] = df['Close'].rolling(window=5).mean()
         df['10MA'] = df['Close'].rolling(window=10).mean()
         df['20MA'] = df['Close'].rolling(window=20).mean()
@@ -130,6 +135,7 @@ def get_stock_data(ticker_number):
         df['K'] = rsv.ewm(com=2, adjust=False).mean()
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
+        
         return df
     except: return None
 
@@ -239,16 +245,16 @@ def render_index_board():
         
         if twii_close > ma5 and twii_close > ma20:
             trend_status = "🔥 強勢偏多"
-            trend_desc = "站上5日與月線"
+            trend_desc = "大盤站上5日與月線"
         elif twii_close < ma5 and twii_close < ma20:
             trend_status = "🧊 弱勢偏空"
-            trend_desc = "跌破5日與月線"
+            trend_desc = "跌破5日與月線支撐"
         elif twii_close > ma20:
             trend_status = "⚠️ 震盪整理"
-            trend_desc = "守月線但破5日"
+            trend_desc = "守月線但破5日線"
         else:
             trend_status = "📈 跌深反彈"
-            trend_desc = "站回5日但破月線"
+            trend_desc = "站回5日但低於月線"
             
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
@@ -347,14 +353,14 @@ elif st.session_state.page == "analysis":
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **極佳買點** \n\n建議區間： `{buy_zone_low} ~ {buy_zone_high}`")
+            st.success(f"✅ **極佳買點** \\n\\n建議區間： `{buy_zone_low} ~ {buy_zone_high}`")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **高檔過熱** \n\n建議拉回至 `{data['10MA']}`。")
+                st.error(f"⚠️ **高檔過熱** \\n\\n建議拉回至 `{data['10MA']}`。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **趨勢偏空** \n\n建議突破 `{data['20MA']}` 再進場。")
+                st.warning(f"⛔ **趨勢偏空** \\n\\n建議突破 `{data['20MA']}` 再進場。")
             else:
-                st.info(f"⏳ **觀望中** \n\n可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
+                st.info(f"⏳ **觀望中** \\n\\n可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
         
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
         if d_col1.button("1個月"): st.session_state.view_days = 20
@@ -379,3 +385,4 @@ elif st.session_state.page == "analysis":
         with row2_c2.container(border=True):
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
+"""
