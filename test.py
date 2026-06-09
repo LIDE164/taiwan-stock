@@ -231,7 +231,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC"), row=3, col=1)
+    fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC (柱)"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
     
@@ -430,23 +430,20 @@ elif st.session_state.page == "analysis":
             recent_30 = df_chart.tail(30)
             found_opp = False
             
-            # 使用橫向列排列按鈕
             btn_cols = st.columns(4)
             col_idx = 0
             
-            # 回推過去 30 天，每一天都跑一次決策引擎
             for idx in range(len(recent_30)):
                 temp_df = df_chart.iloc[:len(df_chart) - 30 + idx + 1]
                 t_data = analyze_today(temp_df, target)
                 t_sc, _ = get_decision_score(t_data, f_data)
                 
-                if t_sc >= 2: # 找出 A 級以上的機會
+                if t_sc >= 2: 
                     found_opp = True
                     dt_str = temp_df.index[-1].strftime('%m/%d')
                     badge = "🟢 S級" if t_sc >= 5 else "🟡 A級"
                     
                     with btn_cols[col_idx % 4]:
-                        # 計算出當天相對於今日的 offset 讓按鈕可以直接觸發時光機跳躍
                         jump_offset = -(len(df_chart) - len(temp_df))
                         if st.button(f"{dt_str} {badge}", key=f"hist_{dt_str}", use_container_width=True):
                             st.session_state.date_offset = jump_offset
@@ -510,6 +507,15 @@ elif st.session_state.page == "analysis":
             st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
             st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
             
+            # --- 補上相關新聞 ---
+            st.divider()
+            st.subheader("📰 相關新聞")
+            news_items = get_real_news(target, c_name)
+            if news_items:
+                for n in news_items: st.markdown(f"- [{n['title']}]({n['link']})")
+            else: st.info("目前暫無相關新聞。")
+            
+            st.divider()
             if target in st.session_state.favorites:
                 if st.button("❌ 從自選股移除此標的", type="primary", use_container_width=True):
                     st.session_state.favorites.remove(target); save_json(FAV_FILE, st.session_state.favorites); st.rerun()
