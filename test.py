@@ -13,10 +13,15 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-components.html
+components.html(
+    \"\"\"
+    <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
+    </script>
+    \"\"\",
     height=0, width=0
+)
 
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
