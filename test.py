@@ -12,9 +12,7 @@ import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# ==========================================
 # 1. 黑白模式切換與動態 CSS 設定
-# ==========================================
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
@@ -55,6 +53,12 @@ st.markdown(f'''
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城"
+}
+
+INDUSTRY_MAP = {
+    "2330": "半導體業", "2317": "其他電子業", "2454": "半導體業", "2308": "電子零組件業", "2382": "電腦及週邊設備業",
+    "2376": "電腦及週邊設備業", "1802": "玻璃陶瓷", "2603": "航運業", "1785": "光電業", "1519": "電機機械",
+    "3293": "文化創意業", "3037": "電子零組件業", "8046": "電子零組件業"
 }
 
 @st.cache_data(ttl=86400)
@@ -120,7 +124,6 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-# 獲取正確產業與財報資料
 @st.cache_data(ttl=86400)
 def get_fundamental_and_industry_data(ticker_number):
     try:
@@ -131,15 +134,13 @@ def get_fundamental_and_industry_data(ticker_number):
             
         eps = info.get("trailingEps", "無")
         pe = info.get("trailingPE", "無")
-        # 直接抓取 Yahoo Finance 的產業分類
         sector = info.get("sector", "")
         industry = info.get("industry", "")
-        # 如果有抓到資料，合併顯示；沒抓到則顯示未提供
-        full_industry = f"{sector} - {industry}" if sector and industry else "未提供產業資訊"
+        full_industry = f"{sector} - {industry}" if sector and industry else INDUSTRY_MAP.get(base_ticker, "未提供產業資訊")
         
         return {"EPS": eps, "PE": pe, "Industry": full_industry}
     except:
-        return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
+        return {"EPS": "無", "PE": "無", "Industry": INDUSTRY_MAP.get(str(ticker_number).strip().upper(), "未提供產業資訊")}
 
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
@@ -204,9 +205,11 @@ def analyze_today(df, ticker_number):
     close_5d = df['Close'].iloc[-5] if len(df) >= 5 else df['Close'].iloc[0]
     pct_5d = (today['Close'] - close_5d) / close_5d * 100
     
-    # 這裡的產業只給首頁預覽用，真正的產業會在解析頁面抓取
+    fund_data = get_fundamental_and_industry_data(ticker_number)
+    
     return {
         "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
+        "產業": fund_data['Industry'],
         "昨日收盤價": round(prev['Close'], 2),
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round((today['Close'] - prev['Close']) / prev['Close'] * 100, 2), 
@@ -365,7 +368,11 @@ if st.session_state.page == "home":
             for _, row in df_display.iterrows():
                 ca, cb, cc, cd, ce, cf = st.columns([1.5, 2.5, 1.5, 1.5, 2, 1.5])
                 ca.markdown(f"`{row['代號']}`")
-                cb.markdown(f"**{row['名稱']}**")
+                
+                # 產業名稱如果是未提供，則縮小顯示
+                ind_display = row['產業'] if row['產業'] else "未知"
+                cb.markdown(f"**{row['名稱']}** <br><span style='font-size:0.75rem; color:#888;'>{ind_display}</span>", unsafe_allow_html=True)
+                
                 cc.markdown(f"{row['昨日收盤價']}")
                 cd.markdown(f"{row['收盤價']}")
                 
@@ -421,6 +428,7 @@ elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
+    fund_data = get_fundamental_and_industry_data(target)
     
     c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
     nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
@@ -442,37 +450,99 @@ elif st.session_state.page == "analysis":
         
     if df_chart is not None:
         data = analyze_today(df_chart, target)
-        fund_data = get_fundamental_and_industry_data(target)
+        
+        # --- 🏆 AI 終極操盤決策引擎計算 ---
+        score = 0
+        reasons = []
+        
+        signal_kdj = data['訊號']
+        j_val = data['J值']
+        close_val = data['收盤價']
+        ma20_val = data['20MA']
+        bb_up = data['BB_UP']
+        bb_dn = data['BB_DN']
+        bias_val = data['BIAS']
+        vol_ratio = data['成交量'] / (data['5日均量'] + 0.001)
+        eps_val = fund_data['EPS']
+        is_profitable = isinstance(eps_val, (int, float)) and eps_val > 0
+
+        if signal_kdj:
+            score += 3
+            reasons.append("✅ 穩在月線上且KDJ超賣 (極佳買點核心條件)")
+        if close_val <= bb_dn * 1.02:
+            score += 2
+            reasons.append("✅ 觸及布林下軌 (具備超跌反彈動能)")
+        if bias_val < -5:
+            score += 1
+            reasons.append("✅ 負乖離擴大 (短線殺盤力道竭盡)")
+        if is_profitable:
+            score += 2
+            reasons.append("✅ 基本面獲利 (具備長線保護短線優勢)")
+        if vol_ratio > 1.5 and data['漲跌'] > 0:
+            score += 2
+            reasons.append("✅ 量價配合 (突破5日均量，主力疑似進場)")
+
+        if j_val >= 80:
+            score -= 3
+            reasons.append("⚠️ KDJ高檔過熱 (隨時面臨獲利了結賣壓)")
+        if close_val >= bb_up * 0.98:
+            score -= 2
+            reasons.append("⚠️ 觸及布林上軌 (上檔壓力沉重，追高風險大)")
+        if bias_val > 7:
+            score -= 2
+            reasons.append("⚠️ 正乖離過大 (技術面隨時有修正需求)")
+        if close_val < ma20_val:
+            score -= 2
+            reasons.append("⚠️ 跌破月線 (中線趨勢已轉弱)")
+        if not is_profitable and eps_val != "無":
+            score -= 1
+            reasons.append("⚠️ 基本面虧損 (缺乏底部實質支撐)")
+
+        if score >= 5:
+            verdict_title = "🟢 【S級買點】強烈建議佈局"
+            verdict_action = f"勝率極高！建議於 {bb_dn:.2f} ~ {ma20_val:.2f} 之間分批建倉。"
+            v_color = "#00cc00"
+        elif score >= 2:
+            verdict_title = "🟡 【A級機會】偏多試單"
+            verdict_action = f"具備反彈契機，可於 {close_val:.2f} 附近小注試單，若跌破 {bb_dn:.2f} 需嚴格停損。"
+            v_color = "#ffcc00"
+        elif score >= -1:
+            verdict_title = "⚪ 【中性觀望】多空不明"
+            verdict_action = f"目前多空拉鋸，無必勝把握，建議等待突破 {ma20_val:.2f} 或回測 {bb_dn:.2f} 再行動作。"
+            v_color = text_col
+        elif score >= -4:
+            verdict_title = "🟠 【風險警示】逢高減碼"
+            verdict_action = f"追高風險大，若持有建議於 {close_val:.2f} ~ {bb_up:.2f} 之間分批獲利了結。"
+            v_color = "#ff9900"
+        else:
+            verdict_title = "🔴 【極度危險】嚴禁做多"
+            verdict_action = "技術面與籌碼面皆弱，或者極度超買，強烈建議空手觀望，切勿接刀。"
+            v_color = "#ff3333"
+
+        # --- 渲染介面 ---
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         
         display_title = f"🎯 {target} {data.get('名稱', '')}" if data.get('名稱') else f"🎯 {target}"
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>{display_title}</h2>", unsafe_allow_html=True)
-        
-        # 顯示真正的產業類別
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem; margin-top: 0px;'>【{fund_data['Industry']}】</div>", unsafe_allow_html=True)
-        
-        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
         st.markdown(f"<div style='text-align: center; color: #666; font-size: 0.8rem; margin-top: -10px; margin-bottom: 15px;'>🔄 資料更新時間: {now_time_str}</div>", unsafe_allow_html=True)
         
-        # 移除 <br> 確保純淨
-        if data['訊號']:
-            buy_zone_low = data['20MA']
-            buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success("✅ **極佳買點：** 股價穩在月線之上，短線急跌且 KDJ 極度超賣。")
-            st.markdown(f"**🎯 建議操作：** 接近月線支撐約 `{buy_zone_low} ~ {buy_zone_high}` 附近佈局。")
-        else:
-            if data['J值'] >= 80:
-                st.error("⚠️ **高檔過熱：** J值過高，有回檔風險。")
-                st.markdown(f"**🎯 建議操作：** 目前溢價風險高，建議等拉回至 10日線 `{data['10MA']}` 附近再觀察。")
-            elif data['收盤價'] < data['20MA']:
-                st.warning("⛔ **趨勢偏空：** 股價跌破月線支撐，中線趨勢轉弱。")
-                st.markdown(f"**🎯 建議操作：** 空頭走勢中，建議空手觀望，或等突破月線 `{data['20MA']}` 再進場。")
-            else:
-                st.info("⏳ **觀望中：** 雖然在多頭趨勢，但目前未達極度超賣區。")
-                st.markdown(f"**🎯 建議操作：** 可於 `{data['10MA']}` 至 `{data['20MA']}` 區間分批逢低佈局。")
+        # 顯示終極決策面板
+        st.markdown(f'''
+        <div style="border: 2px solid {v_color}; border-radius: 10px; padding: 15px; margin-bottom: 20px; background-color: {bg_col};">
+            <h3 style="text-align: center; color: {v_color}; margin-top: 0;">{verdict_title}</h3>
+            <p style="text-align: center; font-size: 1.1rem; font-weight: bold; color: {text_col};">{verdict_action}</p>
+            <hr style="border-color: {border_col};">
+            <p style="font-size: 0.9rem; color: {sub_text_col}; margin-bottom: 5px;"><strong>🧠 決策引擎分析依據：</strong></p>
+            <ul style="font-size: 0.9rem; color: {text_col}; line-height: 1.6;">
+                {"".join([f"<li>{r}</li>" for r in reasons])}
+            </ul>
+        </div>
+        ''', unsafe_allow_html=True)
         
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
         if d_col1.button("1個月"): st.session_state.view_days = 20
@@ -483,73 +553,36 @@ elif st.session_state.page == "analysis":
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days, is_light_mode)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
-        # 移除 <br> 確保純淨
         st.markdown("### 📈 基礎技術指標")
         row1_c1, row1_c2, row1_c3 = st.columns(3)
         with row1_c1.container(border=True):
             st.markdown("**均線**")
-            st.markdown(f"5T: {data['5MA']}")
-            st.markdown(f"10T: {data['10MA']}")
-            st.markdown(f"20T: {data['20MA']}")
+            st.markdown(f"5T: `{data['5MA']}`")
+            st.markdown(f"10T: `{data['10MA']}`")
+            st.markdown(f"20T: `{data['20MA']}`")
         with row1_c2.container(border=True):
             st.markdown("**MACD**")
-            st.markdown(f"DIF: {data['MACD']}")
-            st.markdown(f"OSC: {data['MACD柱']}")
+            st.markdown(f"DIF: `{data['MACD']}`")
+            st.markdown(f"OSC: `{data['MACD柱']}`")
         with row1_c3.container(border=True):
             st.markdown("**KDJ**")
-            st.markdown(f"K: {data['K']}")
-            st.markdown(f"D: {data['D']}")
-            st.markdown(f"J: {data['J值']}")
+            st.markdown(f"K: `{data['K']}`")
+            st.markdown(f"D: `{data['D']}`")
+            st.markdown(f"J: `{data['J值']}`")
 
-        st.markdown("### 🕵️‍♂️ 專業操盤手進階分析")
+        st.markdown("### 🕵️‍♂️ 進階數據面板")
         adv1, adv2 = st.columns(2)
         with adv1.container(border=True):
-            st.markdown("##### 📦 籌碼與主力動向推估")
-            if data['成交量'] > data['5日均量'] * 1.5 and data['漲跌'] > 0:
-                st.success("🔥 **推估：主力吃貨/拉抬**")
-                st.markdown("股價上漲且爆出大於 5 日均量 1.5 倍的成交量，顯示買盤強勁且可能有大戶介入。")
-            elif data['成交量'] > data['5日均量'] * 1.5 and data['漲跌'] < 0:
-                st.error("⚠️ **推估：高檔倒貨/停損賣壓**")
-                st.markdown("股價下跌且爆出大量，顯示賣壓極度沉重，需提防主力倒貨風險。")
-            else:
-                st.info("⚖️ **推估：量能平穩觀望**")
-                st.markdown("目前成交量未見異常激增，買賣雙方力道均衡，主力暫無明顯大動作。")
-                
-            st.markdown("##### 📊 布林通道 (Bollinger Bands)")
-            if data['收盤價'] >= data['BB_UP']:
-                st.error(f"⚠️ **高檔過熱**")
-                st.markdown(f"股價 ({data['收盤價']}) 已觸及或突破布林上軌 ({data['BB_UP']})，短線極度強勢但隨時面臨拉回壓力。")
-            elif data['收盤價'] <= data['BB_DN']:
-                st.success(f"✅ **超跌反彈契機**")
-                st.markdown(f"股價 ({data['收盤價']}) 已觸及或跌破布林下軌 ({data['BB_DN']})，隨時有極大機率展開反彈。")
-            else:
-                st.info(f"⚖️ **通道內震盪**")
-                st.markdown(f"股價運行於上軌 ({data['BB_UP']}) 與下軌 ({data['BB_DN']}) 之間，屬於常態波動。")
+            st.markdown("##### 📊 布林通道 & 乖離率")
+            st.markdown(f"**布林上軌 (壓力):** `{data['BB_UP']}`")
+            st.markdown(f"**布林下軌 (支撐):** `{data['BB_DN']}`")
+            st.markdown(f"**月線乖離率:** `{data['BIAS']}%`")
 
         with adv2.container(border=True):
-            st.markdown("##### 📐 月線乖離率 (BIAS)")
-            bias_val = data['BIAS']
-            if bias_val > 7:
-                st.error(f"⚠️ **正乖離過大 ({bias_val}%)**")
-                st.markdown("股價飆漲偏離月線太遠，如同拉緊的橡皮筋，極易引發獲利了結賣壓。")
-            elif bias_val < -7:
-                st.success(f"✅ **負乖離過大 ({bias_val}%)**")
-                st.markdown("股價重挫偏離月線太深，短線殺盤力道竭盡，跌深反彈機率極高。")
-            else:
-                st.info(f"⚖️ **乖離率正常 ({bias_val}%)**")
-                st.markdown("股價與月線距離適中，未見極端偏離。")
-                
             st.markdown("##### 📑 基本面健檢")
-            eps_val = fund_data['EPS']
-            pe_val = fund_data['PE']
-            st.markdown(f"**近四季 EPS (每股盈餘):** `{eps_val}`")
-            st.markdown(f"**目前本益比 (P/E):** `{pe_val}`")
-            if isinstance(eps_val, (int, float)) and eps_val > 0:
-                st.success("✅ **本業獲利中**：公司近期呈現獲利狀態，基本面具備一定支撐。")
-            elif isinstance(eps_val, (int, float)) and eps_val <= 0:
-                st.error("⚠️ **公司虧損中**：近期每股盈餘為負值，若非轉機股或生技股，需極度留意基本面風險。")
-            else:
-                st.info("未取得完整財務數據。")
+            st.markdown(f"**近四季 EPS:** `{eps_val}`")
+            st.markdown(f"**目前本益比 (P/E):** `{fund_data['PE']}`")
+            st.markdown(f"**今日成交量:** `{data['成交量']}張`")
 
         st.divider()
         st.markdown("**🏦 真實籌碼與主力動向查詢**")
