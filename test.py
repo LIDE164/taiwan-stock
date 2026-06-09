@@ -10,78 +10,50 @@ import os
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# 需求1：新增主題切換按鈕 (放置在側邊欄最上方)
-st.sidebar.title("⚙️ 介面設定")
-is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
-
-# 動態設定 CSS 變數
-bg_col = "#ffffff" if is_light_mode else "#1a1c24"
-border_col = "#ddd" if is_light_mode else "#333"
-text_col = "#333" if is_light_mode else "#ddd"
-title_col = "#111" if is_light_mode else "#fff"
-sub_text_col = "#666" if is_light_mode else "#888"
-val_col = "#0066cc" if is_light_mode else "#00ffcc"
-sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
-app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
-
-st.markdown(f'''
+st.markdown("""
 <style>
-    .stApp {{ background-color: {app_bg}; }}
-    #MainMenu {{visibility: hidden;}}
-    footer {{visibility: hidden;}}
-    [data-testid="collapsedControl"] {{
-        border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important;
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    [data-testid="collapsedControl"] {
+        border: 1px solid #444 !important; border-radius: 8px !important; background-color: #1a1c24 !important;
         padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s;
-    }}
-    [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
-    .stButton button {{ font-weight: bold !important; border-radius: 8px !important; }}
-    .sticky-header {{
-        position: sticky; top: 0; z-index: 999; background-color: {sticky_bg};
-        padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
-    }}
-    .trend-box {{ background-color: {bg_col}; border: 1px solid {border_col}; border-radius: 8px; padding: 8px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
-    .trend-title {{ font-size: 0.95rem; color: {sub_text_col}; font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid {border_col}; padding-bottom: 2px; white-space: nowrap; }}
-    .trend-status {{ font-size: 1.05rem; font-weight: 900; white-space: nowrap; color: {title_col}; }}
-    div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
-    .tech-title {{ font-size: 0.95rem; font-weight: bold; color: {title_col}; margin-bottom: 4px; text-align: center; border-bottom: 1px solid {border_col}; padding-bottom: 2px; white-space: nowrap;}}
-    .tech-text {{ font-size: 0.85rem; color: {text_col}; line-height: 1.3; display: flex; justify-content: space-between; padding: 0 2px;}}
-    .tech-val {{ font-weight: bold; color: {val_col}; font-family: monospace; font-size: 0.95rem;}}
-    .chip-table {{ width: 100%; text-align: center; border-collapse: collapse; font-size: 0.8rem; margin-top: 2px; color: {text_col};}}
-    .chip-table th {{ color: {sub_text_col}; border-bottom: 1px solid {border_col}; padding: 2px; font-weight: normal; white-space: nowrap;}}
-    .chip-table td {{ padding: 2px 1px; border-bottom: 1px solid {border_col}; font-family: monospace; font-size: 0.85rem;}}
-    .buy-color {{ color: #ff3333 !important; font-weight: bold; }}
-    .sell-color {{ color: #00aa00 !important; font-weight: bold; }}
-    h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
-    @media (max-width: 768px) {{
-        .trend-box {{ padding: 4px 1px; }}
-        .trend-title {{ font-size: 0.8rem; }}
-        .trend-status {{ font-size: 0.9rem; }}
-        .tech-title {{ font-size: 0.85rem; }}
-        .tech-text {{ font-size: 0.75rem; flex-direction: column; text-align: center;}}
-        .tech-val {{ font-size: 0.85rem; }}
-    }}
-</style>
-''', unsafe_allow_html=True)
-
-# 需求2：同時抓取上市(TWSE)與上櫃(TPEx)股票名稱
-@st.cache_data(ttl=86400)
-def get_all_tw_stock_names():
-    names = {
-        "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
-        "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科"
     }
-    try:
-        # 上市
-        res_twse = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
-        for item in res_twse.json(): names[item['Code']] = item['Name']
-        # 上櫃
-        res_tpex = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
-        for item in res_tpex.json(): names[item['SecuritiesCompanyCode']] = item['CompanyName']
-    except:
-        pass
-    return names
+    [data-testid="collapsedControl"]::after { content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }
+    .stButton button { font-weight: bold !important; border-radius: 8px !important; }
+    .sticky-header {
+        position: sticky; top: 0; z-index: 999; background-color: rgba(26, 28, 36, 0.95);
+        padding: 10px 0; border-bottom: 1px solid #333; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
+    }
+    .trend-box { background-color: #1a1c24; border: 1px solid #333; border-radius: 8px; padding: 8px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .trend-title { font-size: 0.95rem; color: #888; font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: nowrap; }
+    .trend-status { font-size: 1.05rem; font-weight: 900; white-space: nowrap; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 4px !important; }
+    .tech-title { font-size: 0.95rem; font-weight: bold; color: #fff; margin-bottom: 4px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: nowrap;}
+    .tech-text { font-size: 0.85rem; color: #ddd; line-height: 1.3; display: flex; justify-content: space-between; padding: 0 2px;}
+    .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 0.95rem;}
+    .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.8rem; margin-top: 2px;}
+    .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal; white-space: nowrap;}
+    .chip-table td { padding: 2px 1px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 0.85rem;}
+    .buy-color { color: #ff3333; font-weight: bold; }
+    .sell-color { color: #00cc00; font-weight: bold; }
+    @media (max-width: 768px) {
+        .trend-box { padding: 4px 1px; }
+        .trend-title { font-size: 0.8rem; }
+        .trend-status { font-size: 0.9rem; }
+        .tech-title { font-size: 0.85rem; }
+        .tech-text { font-size: 0.75rem; flex-direction: column; text-align: center;}
+        .tech-val { font-size: 0.85rem; }
+    }
+</style>
+""", unsafe_allow_html=True)
 
-CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+# 加強版字典，涵蓋常見的上市與上櫃股票
+STOCK_NAMES = {
+    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
+    "3231": "緯創", "2356": "英業達", "3008": "大立光", "2324": "仁寶", "1802": "台玻",
+    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2881": "富邦金", "2882": "國泰金",
+    "2376": "技嘉", "1785": "光洋科", "3293": "鈊象", "1519": "華城", "1513": "中興電"
+}
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -100,6 +72,7 @@ if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2376"
 if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330", "1785"])
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
+if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
 
@@ -116,11 +89,10 @@ def fetch_twse_top_50():
     except:
         return ["2330", "2317", "2454", "2382", "3231"]
 
-st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選股")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
-        fav_name = CURRENT_STOCK_NAMES.get(fav, "")
+        fav_name = STOCK_NAMES.get(fav, "")
         if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
             st.session_state.page = "analysis"
@@ -137,16 +109,18 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
     try:
-        if ticker_number == "^TWII":
+        # 強制去除使用者輸入的空白
+        base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+        
+        if base_ticker == "^TWII":
             df = yf.Ticker("^TWII").history(period="1y")
         else:
-            base_ticker = ticker_number.upper().replace(".TW", "").replace(".TWO", "")
-            # 需求3：先找上市，再找上櫃，最後直接拿代碼找 (支援美股或未知股票)
+            # 防呆：先找上市 (.TW)，找不到再找上櫃 (.TWO)，最後找美股原代號
             df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
             if df.empty or len(df) < 20: 
                 df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
             if df.empty or len(df) < 20:
-                df = yf.Ticker(base_ticker).history(period="1y") # 備用機制支援美股
+                df = yf.Ticker(base_ticker).history(period="1y")
                 
         if df.empty or len(df) < 20: return None
         
@@ -198,7 +172,8 @@ def analyze_today(df, ticker_number):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
+    # 支援沒在字典裡的股票也能分析
+    c_name = STOCK_NAMES.get(ticker_number, "")
     
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
@@ -215,24 +190,16 @@ def analyze_today(df, ticker_number):
         "訊號": is_golden_pit
     }
 
-def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
+def draw_professional_chart(df, ticker_name, latest_price, view_days):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
     
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
-    # 根據模式設定圖表顏色
-    line_k = "#0066cc" if is_light_mode else "white"
-    line_d = "#ff9900" if is_light_mode else "yellow"
-    line_j = "#9900cc" if is_light_mode else "magenta"
-    grid_c = "rgba(0,0,0,0.1)" if is_light_mode else "rgba(255,255,255,0.1)"
-    bg_c = "#ffffff" if is_light_mode else "#0e1117"
-    text_c = "#333" if is_light_mode else "#ccc"
-    
     fig.add_trace(go.Candlestick(x=df_view.index, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='yellow', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"今日收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=15, color="#ffcc00", weight="bold"))
@@ -241,32 +208,31 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
     fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color='white', width=1.5), name="DIF"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color='yellow', width=1.5), name="MACD"), row=3, col=1)
     
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color='white', width=1.5), name="K"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color='yellow', width=1.5), name="D"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color='magenta', width=1.5), name="J"), row=4, col=1)
 
-    ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ffcc00", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color="#ccc", size=12), xanchor="left", bgcolor="rgba(26,28,36,0.6)")
 
-    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
-    fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
+    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
+    fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
     fig.update_xaxes(title_text="", row=1, col=1)
     fig.update_xaxes(title_text="", row=2, col=1)
     fig.update_xaxes(title_text="", row=3, col=1)
     fig.update_xaxes(title_text="", row=4, col=1)
     
     fig.update_layout(
-        xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, 
-        margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor=bg_c, plot_bgcolor=bg_c, 
-        hovermode='x unified', hoverlabel=dict(font_size=13),
+        xaxis_rangeslider_visible=False, template="plotly_dark", height=850, 
+        margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='#0e1117', plot_bgcolor='#0e1117', 
+        hovermode='x unified', hoverlabel=dict(font_size=13, bgcolor="rgba(26,28,36,0.9)"),
         dragmode=False, 
-        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(color=text_c))
+        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5)
     )
     return fig
 
@@ -276,7 +242,8 @@ def render_index_board():
     twii_close = 0
     twii_change = 0
     trend_status = "讀取中"
-    trend_desc = ""
+    trend_desc = "正在分析市場動向..."
+    us_news_html = ""
     
     if twii_df is not None and not twii_df.empty:
         twii_close = twii_df['Close'].iloc[-1]
@@ -284,31 +251,68 @@ def render_index_board():
         ma5 = twii_df['5MA'].iloc[-1]
         ma20 = twii_df['20MA'].iloc[-1]
         
+        # 抓取美股費城半導體指數作為國際動向參考
+        try:
+            sox_df = yf.Ticker("^SOX").history(period="5d")
+            if not sox_df.empty:
+                sox_change = (sox_df['Close'].iloc[-1] - sox_df['Close'].iloc[-2]) / sox_df['Close'].iloc[-2] * 100
+                if sox_change < -1.5:
+                    us_status = "⚠️ 美半導體重挫"
+                    us_desc = "美股科技股賣壓沉重，外資恐提款台股，電子權值股易承壓，建議多看少做，避免追高。"
+                elif sox_change > 1.5:
+                    us_status = "🚀 美科技股強勢"
+                    us_desc = "美股那斯達克與半導體走強，風險偏好升溫，有利台股多頭延續，可留意突破上攻標的。"
+                elif sox_change < 0:
+                    us_status = "📉 美股偏空震盪"
+                    us_desc = "國際股市走弱，台股上檔有壓，請留意防禦型標的或傳產避險。"
+                else:
+                    us_status = "⚖️ 美股穩定整理"
+                    us_desc = "國際市場無明顯方向，台股將回歸內資主力籌碼與中小型題材股表現為主。"
+            else:
+                us_status = "大盤局勢"
+                us_desc = "技術面守穩，留意個股表現。"
+        except:
+            us_status = "大盤局勢"
+            us_desc = "技術面守穩，留意個股表現。"
+
+        # 台股均線判斷
         if twii_close > ma5 and twii_close > ma20:
             trend_status = "🔥 強勢偏多"
-            trend_desc = "大盤站上5日與月線"
         elif twii_close < ma5 and twii_close < ma20:
             trend_status = "🧊 弱勢偏空"
-            trend_desc = "跌破5日與月線支撐"
         elif twii_close > ma20:
             trend_status = "⚠️ 震盪整理"
-            trend_desc = "守月線但破5日線"
         else:
             trend_status = "📈 跌深反彈"
-            trend_desc = "站回5日但低於月線"
+            
+        # 抓取台積電作為台股新聞代表
+        try:
+            news_data = yf.Ticker("2330.TW").news[:3]
+            if news_data:
+                us_news_html += "<div style='margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; text-align: left;'>"
+                us_news_html += "<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span><br>"
+                for n in news_data:
+                    title = n.get('title', '新聞連結')
+                    link = n.get('link', '#')
+                    us_news_html += f"<a href='{link}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none;'>➤ {title}</a><br>"
+                us_news_html += "</div>"
+        except:
+            pass
             
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     with st.container(border=True):
-        col1, col2 = st.columns([1.2, 1])
+        col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>加權指數 ({now.strftime('%m/%d %H:%M')})</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 2.5rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.2f}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>漲跌: {'+' if twii_change > 0 else ''}{twii_change:,.2f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1.1rem; font-weight: bold;'>台灣加權指數</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f} 點</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: 900; color: #fff; margin-top:5px;'>技術面：{trend_status}</div>", unsafe_allow_html=True)
         with col2:
-            st.markdown(f"<div style='text-align: center; color: #ffcc00; font-size: 1.1rem; font-weight: bold; margin-top: 10px;'>大盤局勢</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: 900;'>{trend_status}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 0.85rem; margin-top: 5px;'>{trend_desc}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🌍 國際連動解析</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold; color: #fff;'>{us_status}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; color: #ccc; margin-top: 5px;'>{us_desc}</div>", unsafe_allow_html=True)
+            st.markdown(us_news_html, unsafe_allow_html=True)
 
 # ==========================================
 # 2. 畫面路由
@@ -326,7 +330,6 @@ if st.session_state.page == "home":
         st.session_state.filter_buy_only = False
         st.rerun()
         
-    # 需求4：搜尋欄位空格內打上[搜尋股票]
     search_val = st.text_input("隱藏標籤", placeholder="搜尋股票", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
@@ -351,7 +354,7 @@ if st.session_state.page == "home":
         for _, row in df_display.iterrows():
             with st.container(border=True):
                 is_fav = row['ticker_raw'] in st.session_state.favorites
-                star_icon = "⭐ 移除" if is_fav else "☆ 自選"
+                star_icon = "⭐" if is_fav else "☆"
                 sign = "+" if row['漲跌'] > 0 else ""
                 p_color = "#ff3333" if row['漲跌'] >= 0 else "#00cc00"
                 
@@ -380,7 +383,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
-    clean_name = CURRENT_STOCK_NAMES.get(target, "")
+    clean_name = STOCK_NAMES.get(target, "")
     
     if st.button("⬅ 返回首頁", use_container_width=True):
         st.session_state.page = "home"
@@ -390,10 +393,12 @@ elif st.session_state.page == "analysis":
         data = analyze_today(df_chart, target)
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
+        
+        # 即使沒有名字也照常顯示代號
+        display_title = f"🎯 {target} {data.get('名稱', '')}" if data.get('名稱') else f"🎯 {target}"
+        st.markdown(f"<h2 style='text-align: center;'>{display_title}</h2>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
-        # 使用多行指令來取代 \n，徹底杜絕格式錯誤
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
@@ -416,7 +421,7 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
-        fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days, is_light_mode)
+        fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
         row1_c1, row1_c2, row1_c3 = st.columns(3)
@@ -434,4 +439,9 @@ elif st.session_state.page == "analysis":
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
     else:
-        st.error("查無此股票資料，或為無效代號。")
+        st.error("查無此股票資料，請確認輸入代號是否正確。")
+"""
+with open("test.py", "w", encoding="utf-8") as f:
+    f.write(code)
+print("test.py finalized successfully.")}
+}
