@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-# 1. 強制每次更新滑動至頂端 (已修正語法錯誤)
+# 每次頁面更新自動滑到最上方
 components.html(
     """
     <script>
@@ -163,17 +163,36 @@ def get_stock_data(ticker_number):
         return df
     except: return None
 
+# --- 強化版：多來源即時新聞抓取 ---
 @st.cache_data(ttl=600)
 def get_real_news(ticker, name):
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
+    # 偽裝成真實瀏覽器避免被阻擋
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+    query = urllib.parse.quote(f"{ticker} {name} 股票")
+    url = f"https://news.google.com/rss/search?q={query}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    
+    # 策略 1: Google News RSS
     try:
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
     except: pass
-    if not news_list: news_list.append({"title": f"👉 Google 新聞搜尋", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
+    
+    # 策略 2: 如果 Google 被擋，改抓 Yahoo API 官方新聞
+    if not news_list:
+        try:
+            yf_news = yf.Ticker(f"{ticker}.TW").news
+            if not yf_news: yf_news = yf.Ticker(f"{ticker}.TWO").news
+            for n in yf_news[:3]:
+                news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
+        except: pass
+
+    # 策略 3: 最後防線，給出真實可點擊的搜尋按鈕
+    if not news_list:
+        news_list.append({"title": f"👉 點擊查看【{ticker} {name}】最新市場消息", "link": f"https://www.google.com/search?q={query}&tbm=nws"})
+        
     return news_list
 
 def analyze_today(df, ticker_number):
@@ -264,11 +283,11 @@ def predict_tomorrow_open(twii_df, sox_df):
         elif s_change > 0: score += 1
         else: score -= 1
         
-    if score >= 2: return "🚀 高機率開高", "美股強勢且台股站穩短均線，市場追價意願濃，預估明日早盤有機會跳空開高。"
+    if score >= 2: return "🚀 高機率開高", "美股強勢且台股站穩短均線，預估明日早盤有機會跳空開高。"
     elif score == 1: return "📈 偏多震盪", "國際局勢穩定，台股具備抗跌韌性，預估開平高盤後震盪走高。"
     elif score == 0: return "⚖️ 觀望平盤", "多空力道均衡，預估開平盤附近，需觀察開盤後主力買賣超方向。"
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
-    else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防明日跳空開低殺盤。"
+    else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
 
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
@@ -294,26 +313,13 @@ def render_index_board():
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
             
-        news_items = []
-        try:
-            yf_news = yf.Ticker("0050.TW").news
-            if not yf_news: yf_news = yf.Ticker("2330.TW").news
-            for n in yf_news[:3]:
-                news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
-        except: pass
-        if not news_items: news_items = get_real_news("台股", "加權指數")
-
-        us_news_html = ""
+        # 首頁大盤新聞
+        st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
+        news_items = get_real_news("台股", "大盤")
         if news_items:
-            us_news_html += "<div style='margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; text-align: left;'>"
-            us_news_html += "<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span><br>"
-            for n in news_items[:3]:
-                if n['title'] and n['title'] != "👉 Google 新聞搜尋":
-                    us_news_html += f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-bottom: 4px;'>➤ {n['title']}</a>"
-            if "<a href" not in us_news_html:
-                us_news_html += f"<a href='https://www.google.com/search?q=台股大盤新聞&tbm=nws' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-bottom: 4px;'>➤ 👉 點擊查看最新台股大盤新聞</a>"
-            us_news_html += "</div>"
-            st.markdown(us_news_html, unsafe_allow_html=True)
+            for n in news_items:
+                st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
             
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新: {now_time_str}</div>", unsafe_allow_html=True)
 
@@ -442,6 +448,7 @@ elif st.session_state.page == "analysis":
             with tc4:
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
 
+            # 2. 歷史買點回測掃描儀
             st.markdown("---")
             st.markdown("##### 💡 近一個月歷史買點回測")
             recent_30 = df_chart.tail(30)
@@ -523,6 +530,15 @@ elif st.session_state.page == "analysis":
             st.markdown("**🏦 真實籌碼與主力動向查詢**")
             st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
             st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
+            
+            # 確保新聞被正確渲染成原生超連結
+            st.divider()
+            st.subheader("📰 相關新聞")
+            news_items = get_real_news(target, c_name)
+            if news_items:
+                for n in news_items:
+                    st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:1rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+            else: st.info("目前暫無相關新聞。")
             
             st.divider()
             if target in st.session_state.favorites:
