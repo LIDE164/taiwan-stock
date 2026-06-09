@@ -47,13 +47,24 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
-# 修復問題 1：補回完整的股票名稱字典
-STOCK_NAMES = {
-    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
-    "3231": "緯創", "2356": "英業達", "3008": "大立光", "2324": "仁寶", "1802": "台玻",
-    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2881": "富邦金", "2882": "國泰金",
-    "2376": "技嘉"
-}
+# 動態抓取全台灣上市櫃股票名稱字典
+@st.cache_data(ttl=86400) # 快取一天
+def get_all_tw_stock_names():
+    names = {
+        "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
+        "2376": "技嘉", "1802": "台玻", "2603": "長榮"
+    }
+    try:
+        # 上市
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        for item in res.json():
+            names[item['Code']] = item['Name']
+        # 由於上櫃 OpenAPI 較不穩定，這裡主要確保上市股票 100% 抓到。
+    except:
+        pass
+    return names
+
+CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -71,7 +82,7 @@ def save_json(file_path, data):
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2376"
 if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330"])
-if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, list(STOCK_NAMES.keys()))
+if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'filter_buy_only' not in st.session_state: st.session_state.filter_buy_only = False
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
@@ -85,19 +96,14 @@ def fetch_twse_top_50():
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
         df_stocks = df[df['Code'].str.match(r'^\d{4}$')]
         top_50 = df_stocks.sort_values(by='TradeVolume', ascending=False).head(50)
-        
-        # 動態將抓取到的股票名稱加入字典
-        for _, row in top_50.iterrows():
-            STOCK_NAMES[row['Code']] = row['Name']
-            
         return top_50['Code'].tolist()
     except:
-        return list(STOCK_NAMES.keys())
+        return ["2330", "2317", "2454", "2382", "3231"]
 
 st.sidebar.title("⭐ 我的自選股")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
-        fav_name = STOCK_NAMES.get(fav, fav) # 顯示名稱
+        fav_name = CURRENT_STOCK_NAMES.get(fav, "")
         if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
             st.session_state.page = "analysis"
@@ -172,8 +178,8 @@ def analyze_today(df, ticker_number):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # 這裡也補上名稱抓取
-    c_name = STOCK_NAMES.get(ticker_number, "")
+    # 使用超大字典抓名稱
+    c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
     
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
@@ -190,8 +196,7 @@ def analyze_today(df, ticker_number):
         "訊號": is_golden_pit
     }
 
-# 修復問題 2：確保函數接收 4 個參數 (df, ticker_name, latest_price, view_days)
-def draw_professional_chart(df, ticker_name, latest_price, view_days):
+def draw_professional_chart(df, latest_price, view_days):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -346,6 +351,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
+    clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
     if st.button("⬅ 返回首頁", use_container_width=True):
         st.session_state.page = "home"
@@ -355,20 +361,25 @@ elif st.session_state.page == "analysis":
         data = analyze_today(df_chart, target)
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {data['名稱']}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
+        # 解決 \n\n 顯示問題，使用 markdown 來做斷行與排版
         if data['訊號']:
             buy_zone_low = data['20MA']
             buy_zone_high = round(data['20MA'] * 1.02, 2)
-            st.success(f"✅ **極佳買點** \\n\\n建議區間： `{buy_zone_low} ~ {buy_zone_high}`")
+            st.success("✅ **極佳買點**")
+            st.markdown(f"**建議區間：** `{buy_zone_low} ~ {buy_zone_high}`")
         else:
             if data['J值'] >= 80:
-                st.error(f"⚠️ **高檔過熱** \\n\\n建議拉回至 `{data['10MA']}`。")
+                st.error("⚠️ **高檔過熱**")
+                st.markdown(f"**建議：** 拉回至 `{data['10MA']}` 再觀察。")
             elif data['收盤價'] < data['20MA']:
-                st.warning(f"⛔ **趨勢偏空** \\n\\n建議突破 `{data['20MA']}` 再進場。")
+                st.warning("⛔ **趨勢偏空**")
+                st.markdown(f"**建議：** 突破 `{data['20MA']}` 再進場。")
             else:
-                st.info(f"⏳ **觀望中** \\n\\n可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
+                st.info("⏳ **觀望中**")
+                st.markdown(f"**建議：** 可於 `{data['10MA']}` 至 `{data['20MA']}` 佈局。")
         
         d_col1, d_col2, d_col3, d_col4 = st.columns(4)
         if d_col1.button("1個月"): st.session_state.view_days = 20
@@ -376,21 +387,21 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
-        # 正確傳入 4 個參數 (df, ticker_name, latest_price, view_days)
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
+        # 將指標區塊的 \n 改成 HTML 的 <br> 標籤以避免語法錯誤
         row1_c1, row1_c2, row1_c3 = st.columns(3)
         with row1_c1.container(border=True):
-            st.write(f"**均線**\\n5T: {data['5MA']}\\n10T: {data['10MA']}\\n20T: {data['20MA']}")
+            st.markdown(f"**均線**<br>5T: {data['5MA']}<br>10T: {data['10MA']}<br>20T: {data['20MA']}", unsafe_allow_html=True)
         with row1_c2.container(border=True):
-            st.write(f"**MACD**\\nDIF: {data['MACD']}\\nOSC: {data['MACD柱']}")
+            st.markdown(f"**MACD**<br>DIF: {data['MACD']}<br>OSC: {data['MACD柱']}", unsafe_allow_html=True)
         with row1_c3.container(border=True):
-            st.write(f"**KDJ**\\nK: {data['K']}\\nD: {data['D']}\\nJ: {data['J值']}")
+            st.markdown(f"**KDJ**<br>K: {data['K']}<br>D: {data['D']}<br>J: {data['J值']}", unsafe_allow_html=True)
 
         row2_c1, row2_c2 = st.columns(2)
         with row2_c1.container(border=True):
-            st.write(f"**量能**\\n今日: {data['成交量']}張\\n5均: {data['5日均量']}張")
+            st.markdown(f"**量能**<br>今日: {data['成交量']}張<br>5均: {data['5日均量']}張", unsafe_allow_html=True)
         with row2_c2.container(border=True):
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
