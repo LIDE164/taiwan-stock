@@ -1,6 +1,7 @@
-code = """import yfinance as yf
+import yfinance as yf
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -13,75 +14,32 @@ st.markdown('''
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
     [data-testid="collapsedControl"] {
-        border: 1px solid #444 !important;
-        border-radius: 8px !important;
-        background-color: #1a1c24 !important;
-        padding: 5px 12px !important;
-        display: flex !important;
-        align-items: center !important;
-        width: auto !important;
-        transition: 0.3s;
+        border: 1px solid #444 !important; border-radius: 8px !important; background-color: #1a1c24 !important;
+        padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s;
     }
-    [data-testid="collapsedControl"]::after {
-        content: " ⭐ 我的自選股";
-        font-size: 1.1rem;
-        font-weight: bold;
-        color: #ffcc00;
-        margin-left: 8px;
-    }
-    
+    [data-testid="collapsedControl"]::after { content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }
     .stButton button { font-weight: bold !important; border-radius: 8px !important; }
-    
     .sticky-header {
-        position: sticky; top: 0; z-index: 999;
-        background-color: rgba(26, 28, 36, 0.95);
-        padding: 10px 0; border-bottom: 1px solid #333;
-        backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
+        position: sticky; top: 0; z-index: 999; background-color: rgba(26, 28, 36, 0.95);
+        padding: 10px 0; border-bottom: 1px solid #333; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px;
     }
-    
-    .trend-box {
-        background-color: #1a1c24; 
-        border: 1px solid #333; 
-        border-radius: 8px;
-        padding: 8px 5px; 
-        text-align: center; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-    .trend-title { 
-        font-size: 0.95rem; 
-        color: #888; 
-        font-weight: bold; 
-        margin-bottom: 4px; 
-        border-bottom: 1px solid #333; 
-        padding-bottom: 2px;
-        white-space: nowrap;
-    }
-    .trend-status { 
-        font-size: 1.05rem; 
-        font-weight: 900; 
-        white-space: nowrap; 
-    }
-    
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        padding: 4px !important; 
-    }
+    .trend-box { background-color: #1a1c24; border: 1px solid #333; border-radius: 8px; padding: 8px 5px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .trend-title { font-size: 0.95rem; color: #888; font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: nowrap; }
+    .trend-status { font-size: 1.05rem; font-weight: 900; white-space: nowrap; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { padding: 4px !important; }
     .tech-title { font-size: 0.95rem; font-weight: bold; color: #fff; margin-bottom: 4px; text-align: center; border-bottom: 1px solid #333; padding-bottom: 2px; white-space: nowrap;}
     .tech-text { font-size: 0.85rem; color: #ddd; line-height: 1.3; display: flex; justify-content: space-between; padding: 0 2px;}
     .tech-val { font-weight: bold; color: #00ffcc; font-family: monospace; font-size: 0.95rem;}
-
     .chip-table { width: 100%; text-align: center; border-collapse: collapse; font-size: 0.8rem; margin-top: 2px;}
     .chip-table th { color: #888; border-bottom: 1px solid #444; padding: 2px; font-weight: normal; white-space: nowrap;}
     .chip-table td { padding: 2px 1px; border-bottom: 1px solid #2a2d3a; font-family: monospace; font-size: 0.85rem;}
     .buy-color { color: #ff3333; font-weight: bold; }
     .sell-color { color: #00cc00; font-weight: bold; }
-    
     @media (max-width: 768px) {
         .trend-box { padding: 4px 1px; }
         .trend-title { font-size: 0.8rem; }
         .trend-status { font-size: 0.9rem; }
-        
         .tech-title { font-size: 0.85rem; }
         .tech-text { font-size: 0.75rem; flex-direction: column; text-align: center;}
         .tech-val { font-size: 0.85rem; }
@@ -121,7 +79,6 @@ if 'view_days' not in st.session_state: st.session_state.view_days = 60
 def fetch_twse_top_50():
     try:
         url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-        import requests
         res = requests.get(url, timeout=10)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
@@ -181,25 +138,19 @@ def generate_mock_chips_html(df):
     html = "<table class='chip-table'><tr><th>日期</th><th>外資</th><th>投信</th></tr>"
     for date, row in recent_5.iterrows():
         d_str = date.strftime("%m/%d")
-        
-        # 需求：修改外資顯示邏輯，讓它「看起來是買超（紅色正數）」
-        # 原本邏輯會因為當天是綠K (Close < Open) 而算出負數 (賣超)
-        # 現在我們強制讓外資在這些天顯示正數 (買超)，並用紅色顯示
-        
+        change = row['Close'] - row['Open']
         base_vol = row['Volume'] / 1000
         
-        # 強制讓外資買超 (紅色)
-        fi_buy = int(base_vol * 0.15) + 120 # 隨機產生一個正整數的買超量
+        # 強制外資顯示紅字買超
+        fi_buy = int(base_vol * 0.15) + 120 
         
-        # 投信維持原本邏輯或微調
-        change = row['Close'] - row['Open']
         it_buy = int(change * 80 + (base_vol * 0.03))
         if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
         
-        fi_class = "buy-color" # 強制紅色
+        fi_class = "buy-color" 
         it_class = "buy-color" if it_buy > 0 else "sell-color"
         
-        fi_str = f"+{fi_buy:,}" # 強制加號
+        fi_str = f"+{fi_buy:,}"
         it_str = f"+{it_buy:,}" if it_buy > 0 else f"{it_buy:,}"
         
         html += f"<tr><td>{d_str}</td><td class='{fi_class}'>{fi_str}</td><td class='{it_class}'>{it_str}</td></tr>"
@@ -294,10 +245,10 @@ def render_index_board():
             trend_desc = "跌破5日與月線"
         elif twii_close > ma20:
             trend_status = "⚠️ 震盪整理"
-            trend_desc = "守月線破5日"
+            trend_desc = "守月線但破5日"
         else:
             trend_status = "📈 跌深反彈"
-            trend_desc = "站回5日低於月"
+            trend_desc = "站回5日但破月線"
             
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
@@ -428,7 +379,3 @@ elif st.session_state.page == "analysis":
         with row2_c2.container(border=True):
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
-"""
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-print("test.py updated successfully.")
