@@ -1,4 +1,4 @@
-code = """import yfinance as yf
+import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
@@ -50,27 +50,15 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# 股票名稱字典與 API
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城"
 }
 
-# 產業分類資料庫 (靜態擴充範例)
 INDUSTRY_MAP = {
-    "2330": "半導體業", "2317": "其他電子業", "2454": "半導體業", "2308": "電子零組件業", 
-    "2382": "電腦及週邊設備業", "2376": "電腦及週邊設備業", "1802": "玻璃陶瓷", 
-    "2603": "航運業", "1785": "光電業", "1519": "電機機械",
-    "3231": "電腦及週邊設備業", "2356": "電腦及週邊設備業", "3008": "光電業"
-}
-
-# 關聯股票對應表
-RELATED_STOCKS = {
-    "半導體業": ["2330", "2454", "2303"],
-    "電腦及週邊設備業": ["2382", "2376", "3231", "2356"],
-    "航運業": ["2603", "2609", "2615"],
-    "光電業": ["1785", "3008", "3481", "2409"],
-    "其他電子業": ["2317", "2354"]
+    "2330": "半導體業", "2317": "其他電子業", "2454": "半導體業", "2308": "電子零組件業", "2382": "電腦及週邊設備業",
+    "2376": "電腦及週邊設備業", "1802": "玻璃陶瓷", "2603": "航運業", "1785": "光電業", "1519": "電機機械",
+    "3293": "文化創意業", "3037": "電子零組件業", "8046": "電子零組件業"
 }
 
 @st.cache_data(ttl=86400)
@@ -136,6 +124,21 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
+# 獲取財報基本面資料
+@st.cache_data(ttl=86400)
+def get_fundamental_data(ticker_number):
+    try:
+        base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+        info = yf.Ticker(f"{base_ticker}.TW").info
+        if not info or 'trailingEps' not in info:
+            info = yf.Ticker(f"{base_ticker}.TWO").info
+        
+        eps = info.get("trailingEps", "無")
+        pe = info.get("trailingPE", "無")
+        return {"EPS": eps, "PE": pe}
+    except:
+        return {"EPS": "無", "PE": "無"}
+
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
     try:
@@ -153,6 +156,14 @@ def get_stock_data(ticker_number):
         df['10MA'] = df['Close'].rolling(window=10).mean()
         df['20MA'] = df['Close'].rolling(window=20).mean()
         df['60MA'] = df['Close'].rolling(window=60).mean()
+        
+        # 新增：布林通道 (Bollinger Bands)
+        df['STD20'] = df['Close'].rolling(window=20).std()
+        df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
+        df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
+        
+        # 新增：乖離率 (BIAS)
+        df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
         
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -193,14 +204,18 @@ def analyze_today(df, ticker_number):
     close_5d = df['Close'].iloc[-5] if len(df) >= 5 else df['Close'].iloc[0]
     pct_5d = (today['Close'] - close_5d) / close_5d * 100
     
+    industry = INDUSTRY_MAP.get(ticker_number, "上市櫃公司")
+    
     return {
         "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
-        "昨日收盤價": round(prev['Close'], 2), 
+        "產業": industry,
+        "昨日收盤價": round(prev['Close'], 2),
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round((today['Close'] - prev['Close']) / prev['Close'] * 100, 2), 
         "近5日漲幅(%)": f"{round(pct_5d, 2)}%",
         "成交量": int(today['Volume'] / 1000), "5日均量": int(df['Volume'].tail(5).mean() / 1000),
         "5MA": round(today['5MA'], 2), "10MA": round(today['10MA'], 2), "20MA": round(today['20MA'], 2),
+        "BB_UP": round(today['BB_UP'], 2), "BB_DN": round(today['BB_DN'], 2), "BIAS": round(today['BIAS_20'], 2),
         "MACD": round(today['MACD'], 2), "MACD柱": round(today['MACD_Hist'], 3),
         "K": round(today['K'], 2), "D": round(today['D'], 2), "J值": round(today['J'], 2),
         "訊號": (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
@@ -343,9 +358,29 @@ if st.session_state.page == "home":
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_display = df_results.sort_values(by="成交量", ascending=False).head(20)
-            table_df = df_display[['代號', '名稱', '昨日收盤價', '收盤價', '漲跌幅', '近5日漲幅(%)', '成交量', '5日均量']]
-            table_df.set_index('代號', inplace=True)
-            st.dataframe(table_df, use_container_width=True)
+            
+            st.markdown("---")
+            col_a, col_b, col_c, col_d, col_e, col_f = st.columns([1.5, 2.5, 1.5, 1.5, 2, 1.5])
+            col_a.markdown("**代號**"); col_b.markdown("**名稱(產業)**"); col_c.markdown("**昨收**"); col_d.markdown("**今收**"); col_e.markdown("**近5日漲幅**"); col_f.markdown("**動作**")
+            st.markdown("---")
+            
+            for _, row in df_display.iterrows():
+                ca, cb, cc, cd, ce, cf = st.columns([1.5, 2.5, 1.5, 1.5, 2, 1.5])
+                ca.markdown(f"`{row['代號']}`")
+                cb.markdown(f"**{row['名稱']}** <br><span style='font-size:0.75rem; color:#888;'>{row['產業']}</span>", unsafe_allow_html=True)
+                cc.markdown(f"{row['昨日收盤價']}")
+                cd.markdown(f"{row['收盤價']}")
+                
+                val_5d = float(row['近5日漲幅(%)'].strip('%'))
+                color_5d = "#ff3333" if val_5d > 0 else "#00cc00" if val_5d < 0 else text_col
+                ce.markdown(f"<span style='color:{color_5d}; font-weight:bold;'>{row['近5日漲幅(%)']}</span>", unsafe_allow_html=True)
+                
+                with cf:
+                    if st.button("📊 解析", key=f"btn_recent_{row['ticker_raw']}", use_container_width=True):
+                        st.session_state.current_stock = row['ticker_raw']
+                        st.session_state.page = "analysis"
+                        st.rerun()
+                st.markdown("<hr style='margin: 0; padding: 0;'>", unsafe_allow_html=True)
             
         else:
             if st.session_state.scan_mode == "buy":
@@ -389,9 +424,6 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     clean_name = CURRENT_STOCK_NAMES.get(target, "")
     
-    # 判斷產業
-    industry = INDUSTRY_MAP.get(target, "未知產業")
-    
     c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
     nav_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
     prev_stock, next_stock = None, None
@@ -412,13 +444,13 @@ elif st.session_state.page == "analysis":
         
     if df_chart is not None:
         data = analyze_today(df_chart, target)
+        fund_data = get_fundamental_data(target) # 取得財報
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
         
         display_title = f"🎯 {target} {data.get('名稱', '')}" if data.get('名稱') else f"🎯 {target}"
-        st.markdown(f"<h2 style='text-align: center;'>{display_title}</h2>", unsafe_allow_html=True)
-        # 需求1：新增該股票是什麼產業
-        st.markdown(f"<div style='text-align: center; color: #aaa; font-size: 1rem; margin-top: -10px;'>🏭 所屬產業: {industry}</div>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>{display_title}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1rem; margin-top: 0px;'>【{data['產業']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
@@ -457,53 +489,48 @@ elif st.session_state.page == "analysis":
         with row1_c3.container(border=True):
             st.markdown(f"**KDJ**<br>K: {data['K']}<br>D: {data['D']}<br>J: {data['J值']}", unsafe_allow_html=True)
 
-        row2_c1, row2_c2 = st.columns(2)
-        with row2_c1.container(border=True):
-            st.markdown(f"**量能**<br>今日: {data['成交量']}張<br>5均: {data['5日均量']}張", unsafe_allow_html=True)
-        with row2_c2.container(border=True):
-            st.markdown("**🏦 真實籌碼與主力動向查詢**")
-            st.markdown(f"由於國際 API 無法取得台灣券商每日分點進出資料，為求精準判斷，強烈建議您直接點擊下方專業平台，查看最新主力籌碼動向：", unsafe_allow_html=True)
-            st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)", unsafe_allow_html=True)
-            st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})", unsafe_allow_html=True)
-
-        st.divider()
-        
-        # 需求2：在解析中顯示相關股票近日漲幅及昨日收盤價與解析功能
-        st.subheader(f"🔗 同產業關聯股票 ({industry})")
-        related_tickers = RELATED_STOCKS.get(industry, [])
-        # 移除自己
-        related_tickers = [t for t in related_tickers if t != target]
-        
-        if related_tickers:
-            rel_results = []
-            for rel_target in related_tickers:
-                rel_df = get_stock_data(rel_target)
-                if rel_df is not None:
-                    rel_data = analyze_today(rel_df, rel_target)
-                    if rel_data:
-                        rel_results.append(rel_data)
-            
-            if rel_results:
-                rel_df_display = pd.DataFrame(rel_results)
-                table_rel = rel_df_display[['代號', '名稱', '昨日收盤價', '收盤價', '漲跌幅', '近5日漲幅(%)']]
-                table_rel.set_index('代號', inplace=True)
-                st.dataframe(table_rel, use_container_width=True)
-                
-                # 建立按鈕可以快速跳轉解析
-                cols = st.columns(min(len(rel_results), 4))
-                for i, r_data in enumerate(rel_results):
-                    c_idx = i % 4
-                    with cols[c_idx]:
-                        if st.button(f"📊 解析 {r_data['代號']}", key=f"rel_btn_{r_data['代號']}", use_container_width=True):
-                            st.session_state.current_stock = r_data['代號']
-                            st.rerun()
+        st.markdown("### 🕵️‍♂️ 專業操盤手進階分析")
+        adv1, adv2 = st.columns(2)
+        with adv1.container(border=True):
+            st.markdown("##### 📦 籌碼與主力動向推估")
+            if data['成交量'] > data['5日均量'] * 1.5 and data['漲跌'] > 0:
+                st.success("🔥 **推估：主力吃貨/拉抬**<br>股價上漲且爆出大於 5 日均量 1.5 倍的成交量，顯示買盤強勁且可能有大戶介入。")
+            elif data['成交量'] > data['5日均量'] * 1.5 and data['漲跌'] < 0:
+                st.error("⚠️ **推估：高檔倒貨/停損賣壓**<br>股價下跌且爆出大量，顯示賣壓極度沉重，需提防主力倒貨風險。")
             else:
-                st.info(f"目前無 {industry} 其他股票資料。")
-        else:
-            st.info(f"系統資料庫中暫無與 {target} 同屬 {industry} 的其他關聯股票。")
+                st.info("⚖️ **推估：量能平穩觀望**<br>目前成交量未見異常激增，買賣雙方力道均衡，主力暫無明顯大動作。")
+                
+            st.markdown("<br>##### 📊 布林通道 (Bollinger Bands)", unsafe_allow_html=True)
+            if data['收盤價'] >= data['BB_UP']:
+                st.error(f"⚠️ **高檔過熱**<br>股價 ({data['收盤價']}) 已觸及或突破布林上軌 ({data['BB_UP']})，短線極度強勢但隨時面臨拉回壓力。")
+            elif data['收盤價'] <= data['BB_DN']:
+                st.success(f"✅ **超跌反彈契機**<br>股價 ({data['收盤價']}) 已觸及或跌破布林下軌 ({data['BB_DN']})，隨時有極大機率展開反彈。")
+            else:
+                st.info(f"⚖️ **通道內震盪**<br>股價運行於上軌 ({data['BB_UP']}) 與下軌 ({data['BB_DN']}) 之間，屬於常態波動。")
+
+        with adv2.container(border=True):
+            st.markdown("##### 📐 月線乖離率 (BIAS)")
+            bias_val = data['BIAS']
+            if bias_val > 7:
+                st.error(f"⚠️ **正乖離過大 ({bias_val}%)**<br>股價飆漲偏離月線太遠，如同拉緊的橡皮筋，極易引發獲利了結賣壓。")
+            elif bias_val < -7:
+                st.success(f"✅ **負乖離過大 ({bias_val}%)**<br>股價重挫偏離月線太深，短線殺盤力道竭盡，跌深反彈機率極高。")
+            else:
+                st.info(f"⚖️ **乖離率正常 ({bias_val}%)**<br>股價與月線距離適中，未見極端偏離。")
+                
+            st.markdown("<br>##### 📑 基本面健檢", unsafe_allow_html=True)
+            eps_val = fund_data['EPS']
+            pe_val = fund_data['PE']
+            st.markdown(f"**近四季 EPS (每股盈餘):** `{eps_val}`")
+            st.markdown(f"**目前本益比 (P/E):** `{pe_val}`")
+            if isinstance(eps_val, (int, float)) and eps_val > 0:
+                st.success("✅ **本業獲利中**：公司近期呈現獲利狀態，基本面具備一定支撐。")
+            elif isinstance(eps_val, (int, float)) and eps_val <= 0:
+                st.error("⚠️ **公司虧損中**：近期每股盈餘為負值，若非轉機股或生技股，需極度留意基本面風險。")
+            else:
+                st.info("未取得完整財務數據。")
 
         st.divider()
-        
         st.subheader("📰 相關新聞")
         news_items = get_real_news(target, clean_name)
         if news_items:
@@ -512,7 +539,3 @@ elif st.session_state.page == "analysis":
             
     else:
         st.error("查無此股票資料，請確認輸入代號是否正確。")
-"""
-with open("test.py", "w", encoding="utf-8") as f:
-    f.write(code)
-print("test.py updated for industry and related stocks.")
