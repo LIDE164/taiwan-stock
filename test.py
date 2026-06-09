@@ -39,7 +39,6 @@ val_col = "#0066cc" if is_light_mode else "#00ffcc"
 sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
 app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
 
-# 加入按鈕巨大化 CSS
 st.markdown(f'''
 <style>
     .stApp {{ background-color: {app_bg}; }}
@@ -294,7 +293,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
-    # 確保鎖定拖拉與縮放
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_xaxes(title_text="", row=1, col=1); fig.update_xaxes(title_text="", row=2, col=1); fig.update_xaxes(title_text="", row=3, col=1); fig.update_xaxes(title_text="", row=4, col=1)
@@ -379,7 +377,7 @@ if st.session_state.page == "home":
     search_val = st.text_input("隱藏標籤", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
     if search_val:
         st.session_state.current_stock = search_val
-        st.session_state.date_offset = 0 # 重置時光機
+        st.session_state.date_offset = 0
         st.session_state.page = "analysis"
         st.rerun()
         
@@ -418,7 +416,7 @@ if st.session_state.page == "home":
                 with cf:
                     if st.button("📊 解析", key=f"btn_recent_{row['ticker_raw']}", use_container_width=True):
                         st.session_state.current_stock = row['ticker_raw']
-                        st.session_state.date_offset = 0 # 重置時光機
+                        st.session_state.date_offset = 0
                         st.session_state.page = "analysis"
                         st.rerun()
                 st.markdown("<hr style='margin: 0; padding: 0;'>", unsafe_allow_html=True)
@@ -461,7 +459,7 @@ if st.session_state.page == "home":
                     
                     if st.button("📊 解析", key=f"btn_{row['ticker_raw']}", use_container_width=True):
                         st.session_state.current_stock = row['ticker_raw']
-                        st.session_state.date_offset = 0 # 重置時光機
+                        st.session_state.date_offset = 0
                         st.session_state.page = "analysis"
                         st.rerun()
 
@@ -492,7 +490,6 @@ elif st.session_state.page == "analysis":
         
     if df_chart is not None:
         
-        # --- 處理時光機日期偏移 ---
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
         
         if len(df_slice) < 5:
@@ -504,7 +501,6 @@ elif st.session_state.page == "analysis":
             data = analyze_today(df_slice, target)
             current_view_date = df_slice.index[-1].strftime('%Y/%m/%d')
             
-            # --- 🏆 AI 終極操盤決策引擎計算 ---
             score = 0
             reasons = []
             
@@ -581,15 +577,23 @@ elif st.session_state.page == "analysis":
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-top: 0px; margin-bottom: 15px;'>📊 檢視日期: {current_view_date}</div>", unsafe_allow_html=True)
             
-            # --- 1. 歷史時光機 (切換日期) ---
-            t_col1, t_col2, t_col3 = st.columns([1, 2, 1])
+            # --- 新增：回到今日 按鈕 ---
+            t_col1, t_col2, t_col3, t_col4 = st.columns([1, 1, 1, 1])
             with t_col1:
                 if st.button("⬅️ 前一日", use_container_width=True):
                     st.session_state.date_offset -= 1
                     st.rerun()
             with t_col2:
-                st.markdown(f"<div style='text-align: center; margin-top: 5px; font-weight: bold;'>📅 時光機 (切換分析基準日)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; margin-top: 5px; font-weight: bold;'>📅 時光機</div>", unsafe_allow_html=True)
             with t_col3:
+                # 只有當 date_offset < 0 (也就是回到過去時) 才顯示「回到今日」按鈕
+                if st.session_state.date_offset < 0:
+                    if st.button("🎯 回到今日", use_container_width=True):
+                        st.session_state.date_offset = 0
+                        st.rerun()
+                else:
+                    st.markdown("") # 佔位
+            with t_col4:
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)):
                     st.session_state.date_offset += 1
                     st.rerun()
@@ -618,7 +622,6 @@ elif st.session_state.page == "analysis":
             st.markdown("### 📈 基礎技術指標")
             row1_c1, row1_c2, row1_c3 = st.columns(3)
             with row1_c1.container(border=True):
-                # 2. 均線加上收盤價 & HTML 的原生連結 <a> 取代 Markdown []() 防止解析失效
                 st.markdown(f"**均線** (當日收盤: `{data['收盤價']}`)")
                 st.markdown(f"5T: `{data['5MA']}`")
                 st.markdown(f"10T: `{data['10MA']}`")
@@ -649,13 +652,10 @@ elif st.session_state.page == "analysis":
 
             with adv2.container(border=True):
                 st.markdown("##### 📑 基本面健檢")
-                
-                # 4. 新增以月計算 EPS
                 if isinstance(eps_val, (int, float)):
                     monthly_eps = round(eps_val / 12, 2)
                 else:
                     monthly_eps = "無"
-                
                 st.markdown(f"**近四季累計 EPS:** `{eps_val}` <a href='{yh_url}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
                 st.markdown(f"**換算單月 EPS:** `{monthly_eps}`")
                 st.markdown(f"**目前本益比 (P/E):** `{fund_data['PE']}` <a href='{yh_url}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
@@ -707,7 +707,6 @@ elif st.session_state.page == "analysis":
             
             st.divider()
             
-            # 5. 巨大化自選股按鈕置於最下方
             if target in st.session_state.favorites:
                 if st.button("❌ 從自選股移除此標的", type="primary", use_container_width=True):
                     st.session_state.favorites.remove(target)
