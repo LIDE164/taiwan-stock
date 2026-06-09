@@ -119,7 +119,6 @@ if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_js
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 60
-# 為了時光機功能新增 date_offset
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 @st.cache_data(ttl=1800)
@@ -141,7 +140,7 @@ if st.session_state.favorites:
         fav_name = CURRENT_STOCK_NAMES.get(fav, "")
         if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
-            st.session_state.date_offset = 0  # 切換股票時重置時光機
+            st.session_state.date_offset = 0
             st.session_state.page = "analysis"
             st.rerun()
 
@@ -295,14 +294,15 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
-    fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor=grid_c)
+    # 確保鎖定拖拉與縮放
+    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_xaxes(title_text="", row=1, col=1); fig.update_xaxes(title_text="", row=2, col=1); fig.update_xaxes(title_text="", row=3, col=1); fig.update_xaxes(title_text="", row=4, col=1)
     
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, 
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor=bg_c, plot_bgcolor=bg_c, 
-        hovermode='x unified', hoverlabel=dict(font_size=13), dragmode='pan', 
+        hovermode='x unified', hoverlabel=dict(font_size=13), dragmode=False, 
         legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(color=text_c))
     )
     return fig
@@ -618,25 +618,25 @@ elif st.session_state.page == "analysis":
             st.markdown("### 📈 基礎技術指標")
             row1_c1, row1_c2, row1_c3 = st.columns(3)
             with row1_c1.container(border=True):
-                # 2. 均線加上收盤價 & 3. 來源
+                # 2. 均線加上收盤價 & HTML 的原生連結 <a> 取代 Markdown []() 防止解析失效
                 st.markdown(f"**均線** (當日收盤: `{data['收盤價']}`)")
                 st.markdown(f"5T: `{data['5MA']}`")
                 st.markdown(f"10T: `{data['10MA']}`")
                 st.markdown(f"20T: `{data['20MA']}`")
-                st.markdown(f"<div style='text-align:right; font-size:0.75rem; color:#888;'>[🔗Yahoo來源]({yh_url}/technical-analysis)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:right; font-size:0.75rem;'><a href='{yh_url}/technical-analysis' target='_blank' style='color:#888; text-decoration:none;'>🔗Yahoo來源</a></div>", unsafe_allow_html=True)
             with row1_c2.container(border=True):
                 st.markdown("**MACD**")
                 st.markdown(f"DIF: `{data['MACD']}`")
                 st.markdown(f"OSC: `{data['MACD柱']}`")
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align:right; font-size:0.75rem; color:#888;'>[🔗Yahoo來源]({yh_url}/technical-analysis)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:right; font-size:0.75rem;'><a href='{yh_url}/technical-analysis' target='_blank' style='color:#888; text-decoration:none;'>🔗Yahoo來源</a></div>", unsafe_allow_html=True)
             with row1_c3.container(border=True):
                 st.markdown("**KDJ**")
                 st.markdown(f"K: `{data['K']}`")
                 st.markdown(f"D: `{data['D']}`")
                 st.markdown(f"J: `{data['J值']}`")
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align:right; font-size:0.75rem; color:#888;'>[🔗Yahoo來源]({yh_url}/technical-analysis)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:right; font-size:0.75rem;'><a href='{yh_url}/technical-analysis' target='_blank' style='color:#888; text-decoration:none;'>🔗Yahoo來源</a></div>", unsafe_allow_html=True)
 
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             adv1, adv2 = st.columns(2)
@@ -645,7 +645,7 @@ elif st.session_state.page == "analysis":
                 st.markdown(f"**布林上軌 (壓力):** `{data['BB_UP']}`")
                 st.markdown(f"**布林下軌 (支撐):** `{data['BB_DN']}`")
                 st.markdown(f"**月線乖離率:** `{data['BIAS']}%`")
-                st.markdown(f"<div style='text-align:right; font-size:0.75rem; color:#888;'>[🔗Yahoo來源]({yh_url}/technical-analysis)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align:right; font-size:0.75rem;'><a href='{yh_url}/technical-analysis' target='_blank' style='color:#888; text-decoration:none;'>🔗Yahoo來源</a></div>", unsafe_allow_html=True)
 
             with adv2.container(border=True):
                 st.markdown("##### 📑 基本面健檢")
@@ -656,9 +656,9 @@ elif st.session_state.page == "analysis":
                 else:
                     monthly_eps = "無"
                 
-                st.markdown(f"**近四季累計 EPS:** `{eps_val}` [🔗來源]({yh_url}/eps)")
+                st.markdown(f"**近四季累計 EPS:** `{eps_val}` <a href='{yh_url}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
                 st.markdown(f"**換算單月 EPS:** `{monthly_eps}`")
-                st.markdown(f"**目前本益比 (P/E):** `{fund_data['PE']}` [🔗來源]({yh_url}/profile)")
+                st.markdown(f"**目前本益比 (P/E):** `{fund_data['PE']}` <a href='{yh_url}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
                 st.markdown(f"**今日成交量:** `{data['成交量']}張`")
 
             st.divider()
