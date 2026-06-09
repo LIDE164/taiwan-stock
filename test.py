@@ -382,4 +382,3 @@ elif st.session_state.page == "analysis":
         with row2_c2.container(border=True):
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
-"""
