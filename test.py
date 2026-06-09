@@ -9,7 +9,7 @@ import os
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-st.markdown('''
+st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -44,7 +44,7 @@ st.markdown('''
         .tech-val { font-size: 0.85rem; }
     }
 </style>
-''', unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
@@ -117,7 +117,6 @@ def get_stock_data(ticker_number):
                 
         if df.empty or len(df) < 20: return None
         
-        # 修正：現在無論是大盤還是个股，都會統一計算這些均線指標
         df['5MA'] = df['Close'].rolling(window=5).mean()
         df['10MA'] = df['Close'].rolling(window=10).mean()
         df['20MA'] = df['Close'].rolling(window=20).mean()
@@ -147,9 +146,7 @@ def generate_mock_chips_html(df):
         change = row['Close'] - row['Open']
         base_vol = row['Volume'] / 1000
         
-        # 強制外資顯示紅字買超
         fi_buy = int(base_vol * 0.15) + 120 
-        
         it_buy = int(change * 80 + (base_vol * 0.03))
         if it_buy == 0: it_buy = -int(base_vol * 0.005) - 5
         
@@ -385,3 +382,4 @@ elif st.session_state.page == "analysis":
         with row2_c2.container(border=True):
             st.markdown("**籌碼(修改版)**")
             st.markdown(generate_mock_chips_html(df_chart), unsafe_allow_html=True)
+"""
