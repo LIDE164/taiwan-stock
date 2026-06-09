@@ -1,6 +1,7 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -9,7 +10,7 @@ import os
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
-st.markdown("""
+st.markdown('''
 <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -44,8 +45,9 @@ st.markdown("""
         .tech-val { font-size: 0.85rem; }
     }
 </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
+# 修復問題 1：補回完整的股票名稱字典
 STOCK_NAMES = {
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達",
     "3231": "緯創", "2356": "英業達", "3008": "大立光", "2324": "仁寶", "1802": "台玻",
@@ -78,12 +80,16 @@ if 'view_days' not in st.session_state: st.session_state.view_days = 60
 def fetch_twse_top_50():
     try:
         url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-        import requests
         res = requests.get(url, timeout=10)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
         df_stocks = df[df['Code'].str.match(r'^\d{4}$')]
         top_50 = df_stocks.sort_values(by='TradeVolume', ascending=False).head(50)
+        
+        # 動態將抓取到的股票名稱加入字典
+        for _, row in top_50.iterrows():
+            STOCK_NAMES[row['Code']] = row['Name']
+            
         return top_50['Code'].tolist()
     except:
         return list(STOCK_NAMES.keys())
@@ -91,7 +97,8 @@ def fetch_twse_top_50():
 st.sidebar.title("⭐ 我的自選股")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
-        if st.sidebar.button(f"📊 {fav}", key=f"side_fav_{fav}", use_container_width=True):
+        fav_name = STOCK_NAMES.get(fav, fav) # 顯示名稱
+        if st.sidebar.button(f"📊 {fav} {fav_name}", key=f"side_fav_{fav}", use_container_width=True):
             st.session_state.current_stock = fav
             st.session_state.page = "analysis"
             st.rerun()
@@ -165,11 +172,14 @@ def analyze_today(df, ticker_number):
     today = df.iloc[-1]
     prev = df.iloc[-2]
     
+    # 這裡也補上名稱抓取
+    c_name = STOCK_NAMES.get(ticker_number, "")
+    
     is_golden_pit = (today['Close'] > today['20MA']) and (today['Close'] < today['5MA']) and (today['J'] < 20)
     change_percent = (today['Close'] - prev['Close']) / prev['Close'] * 100
     
     return {
-        "代號": ticker_number, "ticker_raw": ticker_number,
+        "代號": ticker_number, "名稱": c_name, "ticker_raw": ticker_number,
         "收盤價": round(today['Close'], 2), "漲跌": round(today['Close'] - prev['Close'], 2),
         "漲跌幅": round(change_percent, 2), 
         "成交量": int(today['Volume'] / 1000),
@@ -180,7 +190,8 @@ def analyze_today(df, ticker_number):
         "訊號": is_golden_pit
     }
 
-def draw_professional_chart(df, latest_price, view_days):
+# 修復問題 2：確保函數接收 4 個參數 (df, ticker_name, latest_price, view_days)
+def draw_professional_chart(df, ticker_name, latest_price, view_days):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -312,7 +323,7 @@ if st.session_state.page == "home":
                 
                 c_title, c_star = st.columns([8, 2])
                 with c_title:
-                    st.markdown(f"### `{row['代號']}`")
+                    st.markdown(f"### `{row['代號']}` **{row['名稱']}**")
                 with c_star:
                     if st.button(star_icon, key=f"star_{row['ticker_raw']}", use_container_width=True):
                         if is_fav: st.session_state.favorites.remove(row['ticker_raw'])
@@ -344,7 +355,7 @@ elif st.session_state.page == "analysis":
         data = analyze_today(df_chart, target)
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         sign = "+" if data['漲跌'] > 0 else ""
-        st.markdown(f"<h2 style='text-align: center;'>🎯 {target}</h2>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='text-align: center;'>🎯 {target} {data['名稱']}</h2>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2rem;'>{data['收盤價']} ({sign}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         
         if data['訊號']:
@@ -365,6 +376,7 @@ elif st.session_state.page == "analysis":
         if d_col3.button("6個月"): st.session_state.view_days = 120
         if d_col4.button("1年"): st.session_state.view_days = 240
         
+        # 正確傳入 4 個參數 (df, ticker_name, latest_price, view_days)
         fig = draw_professional_chart(df_chart, target, data['收盤價'], st.session_state.view_days)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
