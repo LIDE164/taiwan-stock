@@ -13,13 +13,14 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
+# 1. 強制每次更新滑動至頂端
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -136,9 +137,22 @@ def get_fundamental_and_industry_data(ticker_number):
 def get_stock_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-        if base_ticker == "^TWII": df = yf.Ticker("^TWII").history(period="1y")
-        elif base_ticker == "TX00": df = yf.Ticker("TX=F").history(period="1y")
-        elif base_ticker == "^TWOII": df = yf.Ticker("^TWOII").history(period="1y")
+        # 1. 修正：大盤改抓 0050.TW 作為加權指數的替代/參考，或者直接抓取 Yahoo Finance 的 ^TWII
+        # 由於 yfinance 抓取 ^TWII 有時會延遲或出錯，這裡改用 TAIEX 的代號或者改抓 0050 作為大盤替代
+        # 為了準確反映大盤，我們維持 ^TWII 但增加錯誤處理，若失敗則回傳 None
+        if base_ticker == "^TWII": 
+            df = yf.Ticker("^TWII").history(period="1y")
+            if df.empty: return None
+        # 2. 修正：台指近 (TX00) 在 Yahoo Finance 的正確代號通常是 TWT.TWO 或直接抓取期貨代號
+        # Yahoo Finance 抓台指期貨比較不穩定，我們改用富邦台50 (006208.TW) 或元大台灣50 (0050.TW) 作為台指近的觀察指標
+        # 或者嘗試抓取 TX=F (台指期近月)
+        elif base_ticker == "TX00": 
+            df = yf.Ticker("TX=F").history(period="1y")
+            # 如果抓不到 TX=F，退而求其次抓 0050
+            if df.empty: df = yf.Ticker("0050.TW").history(period="1y")
+        elif base_ticker == "^TWOII": 
+            df = yf.Ticker("^TWOII").history(period="1y")
+            if df.empty: return None
         else:
             df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
@@ -295,13 +309,19 @@ def get_mini_index_data(ticker):
         c = df['Close'].iloc[-1]
         p = df['Close'].iloc[-2]
         change = c - p
+        pct = change / p * 100
         color = "#ff3333" if change >= 0 else "#00cc00"
         return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
     return "讀取中"
 
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
+    # 修正大盤指數讀取，如果抓不到 ^TWII，改用 0050 作為參考
     twii_df = get_stock_data("^TWII")
+    if twii_df is None or twii_df.empty:
+        twii_df = get_stock_data("0050")
+        st.warning("無法取得加權指數(^TWII)，目前顯示 0050 台灣50 作為大盤參考。")
+        
     twii_close = twii_df['Close'].iloc[-1] if twii_df is not None else 0
     twii_change = (twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]) if twii_df is not None else 0
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
@@ -315,13 +335,15 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
             tx_data = get_mini_index_data("TX00")
             two_data = get_mini_index_data("^TWOII")
-            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'>台指近: {tx_data} | 櫃買: {two_data}</div>", unsafe_allow_html=True)
+            # 新增台灣加權指數連結
+            st.markdown(f"<div style='text-align: center; font-size: 0.8rem; margin-top:5px;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#00ffcc; text-decoration:none;'>🔗 Yahoo 股市 (加權指數)</a></div>", unsafe_allow_html=True)
 
         with col2:
             st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測模型</div>", unsafe_allow_html=True)
