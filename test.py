@@ -278,36 +278,45 @@ def get_real_news(ticker, name):
 def get_institutional_trading(ticker):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{ticker}/institutional-trading"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
         data = []
-        for li in soup.find_all('li'):
-            raw = li.get_text(separator='|')
-            parts = [x.strip() for x in raw.split('|') if x.strip()]
-            if len(parts) >= 5 and len(parts[0]) == 5 and parts[0][2] == '/' and parts[0][:2].isdigit():
-                date_str = parts[0]
-                nums = []
-                for p in parts[1:]:
-                    if p in ["買超", "賣超"]: continue
-                    cln = p.replace(',', '').replace('-', '')
-                    if cln.isdigit() or (p == '0'): nums.append(p)
+        all_texts = list(soup.stripped_strings)
+        for i in range(len(all_texts)):
+            if re.match(r'^\d{2}/\d{2}$', all_texts[i]):
+                try:
+                    date_str = all_texts[i]
+                    nums = []
+                    offset = 1
+                    while len(nums) < 4 and i + offset < len(all_texts):
+                        txt = all_texts[i + offset]
+                        if txt in ['買超', '賣超', '平']:
+                            offset += 1
+                            continue
+                        clean_txt = txt.replace(',', '').replace('+', '')
+                        if re.match(r'^-?\d+$', clean_txt) or clean_txt == '0':
+                            nums.append(txt)
+                        offset += 1
+                        if offset > 15: break 
+                    
+                    if len(nums) == 4:
+                        data.append({
+                            "日期": date_str, "外資(張)": nums[0], "投信(張)": nums[1],
+                            "自營商(張)": nums[2], "合計(張)": nums[3]
+                        })
+                except: pass
                 
-                if len(nums) >= 4:
-                    data.append({
-                        "日期": date_str, "外資(張)": nums[0], "投信(張)": nums[1],
-                        "自營商(張)": nums[2], "合計(張)": nums[3]
-                    })
-        
         seen = set()
         res_data = []
         for d in data:
             if d['日期'] not in seen:
                 seen.add(d['日期'])
                 res_data.append(d)
+                
         return res_data[:10]
-    except Exception as e:
+    except:
         return []
 
 def analyze_today(df, ticker_number):
@@ -448,7 +457,7 @@ def render_index_board():
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
-            tx_data = get_mini_index_data("TX=F")
+            tx_data = get_mini_index_data("TX=F", "FITX1.TW")
             two_data = get_mini_index_data("^TWOII", "TWOII")
             st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://finance.yahoo.com/quote/TX=F' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/TWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
             
