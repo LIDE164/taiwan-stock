@@ -132,46 +132,78 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
+# --- 1. 極速報價引擎 (即時抓取三大指數) ---
+@st.cache_data(ttl=5) # 5秒更新，確保每次切換頁面都能抓到最新數據
+def get_quick_quote(ticker):
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.fast_info
+        last_price = info.get('lastPrice')
+        prev_close = info.get('previousClose')
+        if last_price and prev_close:
+            return last_price, last_price - prev_close
+    except: pass
+    
+    # 備援：向後拉 5 天歷史數據以防萬一
+    try:
+        df = yf.Ticker(ticker).history(period="5d")
+        df = df.dropna(subset=['Close'])
+        if len(df) >= 2:
+            return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
+    except: pass
+    return 0, 0
+
+# --- 3. 解決 1785 等 OTC 股票讀取崩潰問題 ---
 @st.cache_data(ttl=300) 
 def get_stock_data(ticker_number):
-    try:
-        base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-        if base_ticker == "^TWII": df = yf.Ticker("^TWII").history(period="1y")
-        elif base_ticker == "TX00": df = yf.Ticker("TX=F").history(period="1y")
-        elif base_ticker == "^TWOII": df = yf.Ticker("^TWOII").history(period="1y")
-        else:
-            df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
-            if df.empty or len(df)<20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
-            if df.empty or len(df)<20: df = yf.Ticker(base_ticker).history(period="1y")
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    
+    def fetch_clean(sym):
+        try:
+            d = yf.Ticker(sym).history(period="1y")
+            if d is not None and not d.empty:
+                # 關鍵修正：先剔除空值，再檢查長度，避免 Yahoo 傳回全是 NaN 的假資料
+                d = d.dropna(subset=['Close'])
+                if len(d) >= 20: 
+                    return d
+        except: pass
+        return None
+
+    df = None
+    if base_ticker == "^TWII": df = fetch_clean("^TWII")
+    elif base_ticker == "TX00": df = fetch_clean("TX=F")
+    elif base_ticker == "^TWOII": df = fetch_clean("^TWOII")
+    else:
+        df = fetch_clean(f"{base_ticker}.TW")
+        if df is None: df = fetch_clean(f"{base_ticker}.TWO")
+        if df is None: df = fetch_clean(base_ticker)
         
-        if df.empty or len(df)<20: return None
-        
-        # 使用安全的過濾方式，取代會報錯的 fillna
-        df = df.dropna(subset=['Close']) 
-        df['Volume'] = df['Volume'].fillna(0)
-        
-        if df.empty or len(df)<20: return None
-        
-        df['5MA'] = df['Close'].rolling(5).mean()
-        df['10MA'] = df['Close'].rolling(10).mean()
-        df['20MA'] = df['Close'].rolling(20).mean()
-        df['60MA'] = df['Close'].rolling(60).mean()
-        df['STD20'] = df['Close'].rolling(20).std()
-        df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
-        df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
-        df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
-        
-        df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
-        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['Signal']
-        
-        low_9, high_9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
-        rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
-        df['K'] = rsv.ewm(com=2, adjust=False).mean()
-        df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-        df['J'] = 3 * df['K'] - 2 * df['D']
-        return df
-    except: return None
+    if df is None: return None
+    
+    # 填補中間可能有缺漏的小缺口
+    df = df.fillna(method='ffill') 
+    df['Volume'] = df['Volume'].fillna(0)
+    
+    # 運算技術指標
+    df['5MA'] = df['Close'].rolling(5).mean()
+    df['10MA'] = df['Close'].rolling(10).mean()
+    df['20MA'] = df['Close'].rolling(20).mean()
+    df['60MA'] = df['Close'].rolling(60).mean()
+    df['STD20'] = df['Close'].rolling(20).std()
+    df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
+    df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
+    df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
+    
+    df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['Signal']
+    
+    low_9, high_9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
+    rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
+    df['K'] = rsv.ewm(com=2, adjust=False).mean()
+    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+    df['J'] = 3 * df['K'] - 2 * df['D']
+    return df
 
 @st.cache_data(ttl=600)
 def get_real_news(ticker, name):
@@ -195,6 +227,19 @@ def get_real_news(ticker, name):
         
     if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
+
+# --- 2. 首頁大盤專屬新聞 (穩定的 Yahoo 股市 RSS) ---
+@st.cache_data(ttl=600)
+def get_market_news():
+    try:
+        res = requests.get("https://tw.news.yahoo.com/rss/stock", timeout=5)
+        root = ET.fromstring(res.text)
+        news = []
+        for item in root.findall('.//item')[:4]:
+            news.append({"title": item.find('title').text, "link": item.find('link').text})
+        return news
+    except:
+        return [{"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"}]
 
 def analyze_today(df, ticker_number):
     if df is None or len(df) < 5: return None
@@ -289,35 +334,35 @@ def predict_tomorrow_open(twii_df, sox_df):
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
     else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
 
-def get_mini_index_data(ticker):
-    df = get_stock_data(ticker)
-    if df is not None and not df.empty:
-        c = df['Close'].iloc[-1]
-        p = df['Close'].iloc[-2]
-        change = c - p
-        color = "#ff3333" if change >= 0 else "#00cc00"
-        return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
-    return "讀取中"
-
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    # 使用安全的 get_stock_data()
-    twii_df = get_stock_data("^TWII")
-    if twii_df is not None and not twii_df.empty:
-        twii_close = twii_df['Close'].iloc[-1]
-        twii_change = twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]
-    else:
-        twii_close, twii_change = 0, 0
-        
+    # 使用極速即時報價引擎抓取指數
+    twii_close, twii_change = get_quick_quote("^TWII")
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
+    
+    tx_close, tx_change = get_quick_quote("TX=F")
+    if tx_close:
+        tx_col = '#ff3333' if tx_change >= 0 else '#00cc00'
+        tx_data = f"<span style='color:{tx_col}; font-weight:bold;'>{tx_close:,.0f} ({'+' if tx_change>0 else ''}{tx_change:.0f})</span>"
+    else:
+        tx_data = "讀取中"
+        
+    two_close, two_change = get_quick_quote("^TWOII")
+    if two_close:
+        two_col = '#ff3333' if two_change >= 0 else '#00cc00'
+        two_data = f"<span style='color:{two_col}; font-weight:bold;'>{two_close:,.2f} ({'+' if two_change>0 else ''}{two_change:.2f})</span>"
+    else:
+        two_data = "讀取中"
+    
+    # 預測模型需要歷史均線，使用穩定版獲取
+    twii_df_for_pred = get_stock_data("^TWII")
+    if twii_df_for_pred is None: twii_df_for_pred = get_stock_data("0050.TW")
     
     sox_df = None
     try: sox_df = yf.Ticker("^SOX").history(period="5d")
     except: pass
     
-    twii_df_for_pred = twii_df if twii_df is not None and not twii_df.empty else get_stock_data("0050.TW")
-        
     pred_title, pred_desc = predict_tomorrow_open(twii_df_for_pred, sox_df)
     
     with st.container(border=True):
@@ -326,9 +371,6 @@ def render_index_board():
             st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-            
-            tx_data = get_mini_index_data("TX00")
-            two_data = get_mini_index_data("^TWOII")
             st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
 
         with col2:
@@ -336,23 +378,14 @@ def render_index_board():
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
             
-    # 新聞區塊放置回首頁大看板下方
-    st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
-    st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
-    news_items = []
-    try:
-        yf_news = yf.Ticker("0050.TW").news
-        if not yf_news: yf_news = yf.Ticker("2330.TW").news
-        for n in yf_news[:3]: news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
-    except: pass
-    if not news_items: news_items = get_real_news("台股", "大盤")
-    
-    if news_items:
-        for n in news_items[:3]:
-            if n['title'] and n['title'] != "👉 Google 新聞搜尋":
-                st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
+        
+        home_news = get_market_news()
+        for n in home_news:
+            st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
             
-    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新: {now_time_str}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後即時更新: {now_time_str}</div>", unsafe_allow_html=True)
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
