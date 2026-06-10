@@ -162,22 +162,48 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-@st.cache_data(ttl=86400, show_spinner=False)
+# --- 核心修正1：徹底改用 Yahoo 台灣即時網頁爬蟲，精準獲取本益比與 EPS 數據 ---
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    eps_val, pe_val = "無", "無"
+    ind = "一般產業"
+    
+    # 向 Yahoo 台灣股市爬取不遞延的在地數據
     try:
-        base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+        url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        for li in soup.find_all('li'):
+            txt = li.text
+            if "本益比" in txt and len(txt) < 20:
+                val = txt.replace("本益比", "").strip()
+                if val and val != "-": pe_val = val
+            elif "每股盈餘" in txt and len(txt) < 20:
+                val = txt.replace("每股盈餘", "").replace("(連續4季)", "").strip()
+                if val and val != "-": eps_val = val
+    except: pass
+
+    # 產業分類退回歷史 Ticker 處理
+    try:
         info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'trailingEps' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
         
-        sec, ind = info.get("sector", ""), info.get("industry", "")
-        tw_sec, tw_ind = ENG_TO_TW_INDUSTRY.get(sec, sec), ENG_TO_TW_INDUSTRY.get(ind, ind)
-        full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
+        sec, ind_eng = info.get("sector", ""), info.get("industry", "")
+        tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
+        tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
+        ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         
-        if re.search(r'[a-zA-Z]', full_ind):
-            full_ind = "一般產業"
+        if not re.search(r'[a-zA-Z]', ind_temp):
+            ind = ind_temp
             
-        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
-    except: return {"EPS": "無", "PE": "無", "Industry": "一般產業"}
+        if pe_val == "無": pe_val = info.get("trailingPE", "無")
+        if eps_val == "無": eps_val = info.get("trailingEps", "無")
+    except: pass
+
+    return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
@@ -251,6 +277,7 @@ def get_twii_quote():
     
     return 0, 0
 
+# --- 核心修正2：完美豁免大盤指數的 Volume 限制，防範台股收盤後當日歷史K線被刪除的 Bug ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -260,7 +287,9 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
-                d = d[d['Volume'] > 0] 
+                # 如果不是大盤代號，才進行成交量大於0的過濾
+                if not sym.startswith('^'):
+                    d = d[d['Volume'] > 0] 
                 if len(d) >= 20: return d
         except: pass
         return None
@@ -335,7 +364,7 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
         
-    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -393,14 +422,19 @@ def get_decision_score(data, fund_data):
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
-    if isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0: sc+=2; rs.append("✅ 基本面獲利")
+    
+    # 完美相容字串型態的台灣在地網頁版 EPS 數值
+    try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
+    except: eps_f = 0.0
+        
+    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     if data['成交量'] / (data['5日均量'] + 0.001) > 1.5 and data['漲跌'] > 0: sc+=2; rs.append("✅ 量價配合")
     
     if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
     if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌")
     if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
-    if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
+    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
     return sc, rs
 
 def analyze_today(df, ticker_number):
@@ -442,7 +476,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -484,24 +518,24 @@ def predict_tomorrow_open(twii_df, sox_df):
     if t_open > p_close * 1.003:
         if t_close > t_open:
             today_title = "🔥 開高走高"
-            today_desc = "大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
+            today_desc = "今日大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
         else:
             today_title = "⚠️ 開高走低"
-            today_desc = "大盤跳空開高後遭遇賣壓，呈現開高走低現象。"
+            today_desc = "今日大盤跳空開高後遭遇賣壓，呈現開高走低現象。"
     elif t_open < p_close * 0.997:
         if t_close > t_open:
             today_title = "💪 開低走高"
-            today_desc = "大盤開低但低檔承接買盤強勁，出現開低走高紅K。"
+            today_desc = "今日大盤受利空影響開低，但低檔承接買盤強勁，出現開低走高紅K。"
         else:
             today_title = "🩸 開低走低"
-            today_desc = "大盤弱勢開低且賣壓沉重一路向下，盤勢極度偏空。"
+            today_desc = "今日大盤弱勢開低且賣壓沉重一路向下，盤勢極度偏空。"
     else:
         if t_close > p_close * 1.003:
             today_title = "📈 平盤走高"
-            today_desc = "大盤開平盤附近，隨後多方發力穩步墊高。"
+            today_desc = "今日大盤開平盤附近，隨後多方發力穩步墊高。"
         elif t_close < p_close * 0.997:
             today_title = "📉 平盤走低"
-            today_desc = "大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
+            today_desc = "今日大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
 
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
     
@@ -553,11 +587,12 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析</div>", unsafe_allow_html=True)
+            # --- 核心修正3：在標題後方加上清楚的數據分析資料來源提示 ---
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: Google Finance / 證交所)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
-            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: 歷史短均與費半連動)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
             
@@ -625,7 +660,7 @@ if st.session_state.page == "home":
                 
                 st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
                 
-                st.markdown(f"<div style='text-align: center; font-size: 1rem; color: {text_col}; line-height: 1.8;'>產業: <b>{r['產業']}</b><br>昨收: <b>{r['昨日收盤價']}</b><br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1rem; color: {text_col}; line-height: 1.6;'>產業: <b>{r['產業']}</b><br>昨收: <b>{r['昨日收盤價']}</b><br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
@@ -762,7 +797,7 @@ elif st.session_state.page == "analysis":
             with a2.container(border=True):
                 eps = f_data['EPS']
                 m_eps = round(eps/12, 2) if isinstance(eps, (int, float)) else "無"
-                st.markdown(f"##### 📑 基本面健檢 \n\n **近四季 EPS:** `{eps}` <a href='{yh}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a> \n\n **換算單月 EPS:** `{m_eps}` \n\n **本益比 (P/E):** `{f_data['PE']}` <a href='{yh}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 🌞 在地即時基本面健檢 \n\n **近四季 EPS:** `{eps}` <a href='{yh}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a> \n\n **換算單月 EPS:** `{m_eps}` \n\n **最新即時本益比 (P/E):** `{f_data['PE']}` <a href='{yh}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             st.divider()
             st.subheader("🔗 同產業關聯股動態")
