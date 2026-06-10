@@ -185,10 +185,8 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
-# --- 徹底修復的大盤抓取邏輯 (4道防火牆防呆) ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
-    # 策略 1: 嘗試爬取 Google Finance (最快速無延遲)
     try:
         url = "https://www.google.com/finance/quote/TAIEX:TPE"
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=3)
@@ -196,7 +194,7 @@ def get_twii_quote():
         price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
         if price_div:
             price = float(price_div.text.replace(',', ''))
-            if price > 10000: # 確保數字合理
+            if price > 10000:
                 change_div = soup.find('div', {'class': 'P6K39c'})
                 change = 0
                 if change_div:
@@ -206,7 +204,6 @@ def get_twii_quote():
                 return price, change
     except: pass
 
-    # 策略 2: 台灣證券交易所官方 API (最穩定備援)
     try:
         ts = int(datetime.now().timestamp() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
@@ -220,29 +217,23 @@ def get_twii_quote():
                 y = info.get('y')
                 prev = float(y) if y and y != '-' else 0
                 curr = float(z) if z and z != '-' else prev
-                
-                if curr > 10000:
-                    return curr, curr - prev
+                if curr > 10000: return curr, curr - prev
     except: pass
     
-    # 策略 3: yfinance 歷史線圖防護
     try:
         df = yf.Ticker("^TWII").history(period="5d")
         df = df.dropna(subset=['Close'])
         if not df.empty and len(df) >= 2:
             curr = df['Close'].iloc[-1]
             prev = df['Close'].iloc[-2]
-            if curr > 10000:
-                return curr, curr - prev
+            if curr > 10000: return curr, curr - prev
     except: pass
     
-    # 策略 4: yfinance 極速資訊
     try:
         tk = yf.Ticker("^TWII")
         curr = tk.fast_info.get('lastPrice')
         prev = tk.fast_info.get('previousClose')
-        if curr and prev and curr > 10000:
-            return curr, curr - prev
+        if curr and prev and curr > 10000: return curr, curr - prev
     except: pass
     
     return 0, 0
@@ -617,7 +608,7 @@ if st.session_state.page == "home":
                 
                 st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
                 
-                st.markdown(f"<div style='text-align: center; font-size: 0.95rem; color: #888;'>📊 產業: `{r['產業']}` &nbsp;|&nbsp; 昨收: `{r['昨日收盤價']}` &nbsp;|&nbsp; 近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1rem; color: #888; line-height: 1.6;'>📊 產業: {r['產業']}<br>昨收: {r['昨日收盤價']}<br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
