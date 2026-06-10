@@ -138,39 +138,51 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-# --- 全新 100% 可靠大盤抓取引擎 ---
+@st.cache_data(ttl=5, show_spinner=False)
+def get_yahoo_tw_quote(symbol):
+    try:
+        url_sym = urllib.parse.quote(symbol)
+        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
+        if not price_tag: return None, None
+        price = float(price_tag.text.replace(',', ''))
+        
+        change = 0
+        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
+        for tag in change_tags:
+            classes = tag.get('class', [])
+            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
+                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
+                try:
+                    change = float(txt)
+                    if 'C($c-trend-down)' in classes: change = -abs(change)
+                    break
+                except: pass
+        return price, change
+    except:
+        return None, None
+
 @st.cache_data(ttl=5, show_spinner=False) 
-def get_twii_quote():
-    # 策略 1: 台灣證券交易所官方 API (最即時、最穩定)
+def get_quick_quote(ticker):
     try:
-        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0"
-        res = requests.get(url, timeout=3)
-        data = res.json()
-        if 'msgArray' in data and len(data['msgArray']) > 0:
-            info = data['msgArray'][0]
-            # 若 z (當盤價) 為 '-' 表示開盤前，改用 y (昨收)
-            curr_str = info.get('z')
-            curr = float(curr_str) if curr_str != '-' else float(info.get('y'))
-            prev = float(info.get('y'))
-            if curr and prev: return curr, curr - prev
+        tk = yf.Ticker(ticker)
+        info = tk.fast_info
+        last_price = info.get('lastPrice')
+        prev_close = info.get('previousClose')
+        if last_price and prev_close:
+            return last_price, last_price - prev_close
     except: pass
     
-    # 策略 2: yfinance 極速資訊
     try:
-        info = yf.Ticker("^TWII").fast_info
-        curr = info.get('lastPrice')
-        prev = info.get('previousClose')
-        if curr and prev: return curr, curr - prev
-    except: pass
-    
-    # 策略 3: yfinance 歷史線圖防護
-    try:
-        df = yf.Ticker("^TWII").history(period="5d")
+        df = yf.Ticker(ticker).history(period="5d")
         df = df.dropna(subset=['Close'])
         if len(df) >= 2:
             return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
     except: pass
-    
     return 0, 0
 
 @st.cache_data(ttl=60, show_spinner=False) 
@@ -262,25 +274,22 @@ def get_real_news(ticker, name):
     if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
 
-# --- 強化版：純文字正則掃描，完美破解 Yahoo 阻擋 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{ticker}/institutional-trading"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
         data = []
         all_texts = list(soup.stripped_strings)
         for i in range(len(all_texts)):
-            # 尋找日期，例如 06/10 或 2024/06/10
             if re.match(r'^(\d{4}/)?\d{2}/\d{2}$', all_texts[i]):
                 date_str = all_texts[i]
                 nums = []
                 offset = 1
                 
-                # 往後掃描最近的 4 個有效數字
                 while len(nums) < 4 and i + offset < len(all_texts):
                     txt = all_texts[i + offset]
                     if txt in ['買超', '賣超', '平', '更新']:
@@ -292,7 +301,7 @@ def get_institutional_trading(ticker):
                         nums.append(txt)
                         
                     offset += 1
-                    if offset > 20: break # 防止死迴圈
+                    if offset > 20: break 
                 
                 if len(nums) == 4:
                     data.append({
@@ -359,12 +368,13 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     line_k, line_d, line_j = ("#0066cc", "#ff9900", "#9900cc") if is_light_mode else ("white", "yellow", "magenta")
     grid_c = "rgba(0,0,0,0.1)" if is_light_mode else "rgba(255,255,255,0.1)"
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
+    text_c = "#333" if is_light_mode else "#ccc"
     
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤價: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -376,6 +386,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+
+    ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
     fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
@@ -413,7 +429,12 @@ def predict_tomorrow_open(twii_df, sox_df):
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_twii_quote()
+    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
+    if twii_close is None:
+        twii_close, twii_change = get_quick_quote("^TWII")
+        if not twii_close:
+            twii_close, twii_change = 0, 0
+            
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -428,11 +449,9 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-            
-            # --- 首頁只保留台灣加權指數，按要求刪除台指近與櫃買 ---
             
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄 更新大盤即時報價", use_container_width=True):
