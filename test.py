@@ -185,6 +185,69 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
+# --- 徹底修復的大盤抓取邏輯 (4道防火牆防呆) ---
+@st.cache_data(ttl=5, show_spinner=False) 
+def get_twii_quote():
+    # 策略 1: 嘗試爬取 Google Finance (最快速無延遲)
+    try:
+        url = "https://www.google.com/finance/quote/TAIEX:TPE"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
+        if price_div:
+            price = float(price_div.text.replace(',', ''))
+            if price > 10000: # 確保數字合理
+                change_div = soup.find('div', {'class': 'P6K39c'})
+                change = 0
+                if change_div:
+                    change_text = change_div.text.replace('+', '').replace(',', '')
+                    change = float(change_text)
+                    if 'JwB6zf' in change_div.parent.get('class', []): change = -abs(change)
+                return price, change
+    except: pass
+
+    # 策略 2: 台灣證券交易所官方 API (最穩定備援)
+    try:
+        ts = int(datetime.now().timestamp() * 1000)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            if 'msgArray' in data and len(data['msgArray']) > 0:
+                info = data['msgArray'][0]
+                z = info.get('z')
+                y = info.get('y')
+                prev = float(y) if y and y != '-' else 0
+                curr = float(z) if z and z != '-' else prev
+                
+                # 防呆機制：確保不會抓到不合理的數字(如 12)
+                if curr > 10000:
+                    return curr, curr - prev
+    except: pass
+    
+    # 策略 3: yfinance 歷史線圖防護
+    try:
+        df = yf.Ticker("^TWII").history(period="5d")
+        df = df.dropna(subset=['Close'])
+        if not df.empty and len(df) >= 2:
+            curr = df['Close'].iloc[-1]
+            prev = df['Close'].iloc[-2]
+            if curr > 10000:
+                return curr, curr - prev
+    except: pass
+    
+    # 策略 4: yfinance 極速資訊
+    try:
+        tk = yf.Ticker("^TWII")
+        curr = tk.fast_info.get('lastPrice')
+        prev = tk.fast_info.get('previousClose')
+        if curr and prev and curr > 10000:
+            return curr, curr - prev
+    except: pass
+    
+    return 0, 0
+
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -201,8 +264,6 @@ def get_stock_data(ticker_number):
 
     df = None
     if base_ticker == "^TWII": df = fetch_clean("^TWII")
-    elif base_ticker == "TX00": df = fetch_clean("TX=F")
-    elif base_ticker == "^TWOII": df = fetch_clean("^TWOII")
     else:
         df = fetch_clean(f"{base_ticker}.TW")
         if df is None: df = fetch_clean(f"{base_ticker}.TWO")
@@ -460,12 +521,7 @@ def render_index_board():
     tz_tpe = timezone(timedelta(hours=8))
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
-    if twii_close is None:
-        twii_close, twii_change = get_quick_quote("^TWII")
-        if not twii_close:
-            twii_close, twii_change = 0, 0
-            
+    twii_close, twii_change = get_twii_quote()
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -480,7 +536,7 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
