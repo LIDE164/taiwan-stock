@@ -26,7 +26,6 @@ components.html(
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
-# 新增：強制清除快取按鈕 (用來對付 Yahoo 資料卡死)
 if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True):
     st.cache_data.clear()
     st.sidebar.success("已清除暫存，請重整網頁！")
@@ -137,9 +136,6 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-from bs4 import BeautifulSoup
-
-# --- 極速開盤抓取 (5秒更新) ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
     try:
@@ -159,7 +155,6 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
-# --- 強固型歷史資料抓取 ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -168,7 +163,6 @@ def get_stock_data(ticker_number):
         try:
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
-                # 嚴格過濾：一定要有交易量跟收盤價才算數
                 d = d.dropna(subset=['Close'])
                 d = d[d['Volume'] > 0] 
                 if len(d) >= 20: return d
@@ -208,15 +202,24 @@ def get_stock_data(ticker_number):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_market_news():
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    news = []
     try:
-        res = requests.get("https://tw.news.yahoo.com/rss/stock", timeout=5)
-        root = ET.fromstring(res.text)
-        news = []
-        for item in root.findall('.//item')[:4]:
-            news.append({"title": item.find('title').text, "link": item.find('link').text})
-        return news
-    except:
-        return [{"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"}]
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                title = item.find('title').text
+                link = item.find('link').text
+                news.append({"title": title, "link": link})
+                if len(news) >= 3:
+                    break
+    except: pass
+    
+    if not news:
+        news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
+    return news
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
@@ -344,10 +347,8 @@ def get_mini_index_data(ticker):
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    # 大盤即時抓取
     twii_close, twii_change = get_quick_quote("^TWII")
     if not twii_close:
-        # 防護：抓台灣50代替
         twii_close, twii_change = get_quick_quote("0050.TW")
         
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
@@ -371,20 +372,25 @@ def render_index_board():
             tx_data = get_mini_index_data("TX=F")
             two_data = get_mini_index_data("^TWOII")
             st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄 更新大盤即時報價", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
         with col2:
             st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測模型</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
             
-    st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
-    st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
-    
-    home_news = get_market_news()
-    for n in home_news:
-        st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
+            st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
             
-    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 即時數據最後更新: {now_time_str}</div>", unsafe_allow_html=True)
+            home_news = get_market_news()
+            for n in home_news:
+                st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+            
+    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 系統最後即時更新: {now_time_str}</div>", unsafe_allow_html=True)
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
@@ -499,7 +505,13 @@ elif st.session_state.page == "analysis":
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 15px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
+            
+            _, up_c, _ = st.columns([1, 2, 1])
+            if up_c.button("🔄 更新個股即時數值", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+            st.markdown("<br>", unsafe_allow_html=True)
             
             tc1, tc2, tc3, tc4 = st.columns([1, 1, 1, 1])
             with tc1:
