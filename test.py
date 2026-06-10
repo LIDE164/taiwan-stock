@@ -16,12 +16,12 @@ import re
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -221,7 +221,6 @@ def get_twii_quote():
                 prev = float(y) if y and y != '-' else 0
                 curr = float(z) if z and z != '-' else prev
                 
-                # 防呆機制：確保不會抓到不合理的數字(如 12)
                 if curr > 10000:
                     return curr, curr - prev
     except: pass
@@ -536,7 +535,7 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -571,7 +570,7 @@ if st.session_state.page == "home":
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     if btn_col1.button("✅ 尋找買點", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
     if btn_col2.button("📋 熱門名單", use_container_width=True): st.session_state.scan_mode = "hot"; st.rerun()
-    if btn_col3.button("🔥 近日熱力", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
+    if btn_col3.button("🔥 近五日熱門", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
         
     search_val = st.text_input("隱藏", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
     if search_val:
@@ -590,49 +589,40 @@ if st.session_state.page == "home":
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
+        elif st.session_state.scan_mode == "buy":
+            st.markdown("##### 🎯 尋找買點榜單")
+            df_disp = df_results[df_results['訊號'] == True]
+            if len(df_disp) < 5:
+                pot = df_results[(df_results['訊號']==False) & (df_results['J值']<30)].sort_values(by='J值')
+                df_disp = pd.concat([df_disp, pot.head(5 - len(df_disp))])
+        else:
+            st.markdown("##### 📋 熱門名單")
+            df_disp = df_results.sort_values(by="成交量", ascending=False).head(10)
             
-            st.markdown("---")
-            ca, cb, cc, cd, ce, cf = st.columns([1.5, 2.5, 1.5, 1.5, 2, 1.5])
-            ca.markdown("**代號**"); cb.markdown("**名稱**"); cc.markdown("**昨收**"); cd.markdown("**今收**"); ce.markdown("**近5日漲幅**"); cf.markdown("**動作**")
-            st.markdown("---")
-            
-            for _, r in df_disp.iterrows():
-                ca, cb, cc, cd, ce, cf = st.columns([1.5, 2.5, 1.5, 1.5, 2, 1.5])
-                ca.markdown(f"`{r['代號']}`")
-                cb.markdown(f"**{r['名稱']}**<br><span style='font-size:0.75rem; color:#888;'>{r['產業']}</span>", unsafe_allow_html=True)
-                cc.markdown(f"{r['昨日收盤價']}")
-                cd.markdown(f"{r['收盤價']}")
+        for _, r in df_disp.iterrows():
+            with st.container(border=True):
+                c1, c2 = st.columns([8, 2])
+                with c1: st.markdown(f"### `{r['代號']}` **{r['名稱']}**")
+                with c2:
+                    if st.button("⭐ 移除" if r['ticker_raw'] in st.session_state.favorites else "☆ 收藏", key=f"s_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+                        if r['ticker_raw'] in st.session_state.favorites: st.session_state.favorites.remove(r['ticker_raw'])
+                        else: st.session_state.favorites.append(r['ticker_raw'])
+                        save_json(FAV_FILE, st.session_state.favorites); st.rerun()
+                
+                bg_c = "#ffffff" if is_light_mode else "#1a1c24"
+                border_c = "#ddd" if is_light_mode else "#333"
+                p_color = "#ff3333" if r['漲跌'] >= 0 else "#00cc00"
                 v5 = float(r['近5日漲幅(%)'].strip('%'))
                 c5 = "#ff3333" if v5 > 0 else "#00cc00" if v5 < 0 else text_col
-                ce.markdown(f"<span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span>", unsafe_allow_html=True)
-                with cf:
-                    if st.button("📊 解析", key=f"br_{r['ticker_raw']}", use_container_width=True):
-                        st.session_state.update({"current_stock": r['ticker_raw'], "date_offset": 0, "page": "analysis"}); st.rerun()
-                st.markdown("<hr style='margin:0; padding:0;'>", unsafe_allow_html=True)
-        else:
-            if st.session_state.scan_mode == "buy":
-                df_disp = df_results[df_results['訊號'] == True]
-                if len(df_disp) < 5:
-                    pot = df_results[(df_results['訊號']==False) & (df_results['J值']<30)].sort_values(by='J值')
-                    df_disp = pd.concat([df_disp, pot.head(5 - len(df_disp))])
-            else: df_disp = df_results.sort_values(by="成交量", ascending=False).head(10)
-            
-            for _, r in df_disp.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([8, 2])
-                    with c1: st.markdown(f"### `{r['代號']}` **{r['名稱']}**")
-                    with c2:
-                        if st.button("⭐ 移除" if r['ticker_raw'] in st.session_state.favorites else "☆ 收藏", key=f"s_{r['ticker_raw']}", use_container_width=True):
-                            if r['ticker_raw'] in st.session_state.favorites: st.session_state.favorites.remove(r['ticker_raw'])
-                            else: st.session_state.favorites.append(r['ticker_raw'])
-                            save_json(FAV_FILE, st.session_state.favorites); st.rerun()
-                    
-                    bg_c = "#ffffff" if is_light_mode else "#1a1c24"
-                    border_c = "#ddd" if is_light_mode else "#333"
-                    p_color = "#ff3333" if r['漲跌'] >= 0 else "#00cc00"
-                    st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
-                    if st.button("📊 解析", key=f"bp_{r['ticker_raw']}", use_container_width=True):
-                        st.session_state.update({"current_stock": r['ticker_raw'], "date_offset": 0, "page": "analysis"}); st.rerun()
+                
+                st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
+                
+                st.markdown(f"<div style='text-align: center; font-size: 0.95rem; color: #888;'>📊 產業: `{r['產業']}` &nbsp;|&nbsp; 昨收: `{r['昨日收盤價']}` &nbsp;|&nbsp; 近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                if st.button("📊 解析", key=f"bp_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+                    st.session_state.update({"current_stock": r['ticker_raw'], "date_offset": 0, "page": "analysis"}); st.rerun()
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
