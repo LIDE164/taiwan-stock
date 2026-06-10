@@ -11,6 +11,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
+import re
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
@@ -137,7 +138,6 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-# --- 全新極速爬蟲：專注於 Yahoo Taiwan 台灣特有指數 ---
 @st.cache_data(ttl=5, show_spinner=False)
 def get_yahoo_tw_quote(symbol):
     try:
@@ -235,7 +235,7 @@ def get_market_news():
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             root = ET.fromstring(res.text)
@@ -273,6 +273,42 @@ def get_real_news(ticker, name):
         
     if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_institutional_trading(ticker):
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{ticker}/institutional-trading"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        data = []
+        for li in soup.find_all('li'):
+            raw = li.get_text(separator='|')
+            parts = [x.strip() for x in raw.split('|') if x.strip()]
+            if len(parts) >= 5 and len(parts[0]) == 5 and parts[0][2] == '/' and parts[0][:2].isdigit():
+                date_str = parts[0]
+                nums = []
+                for p in parts[1:]:
+                    if p in ["買超", "賣超"]: continue
+                    cln = p.replace(',', '').replace('-', '')
+                    if cln.isdigit() or (p == '0'): nums.append(p)
+                
+                if len(nums) >= 4:
+                    data.append({
+                        "日期": date_str, "外資(張)": nums[0], "投信(張)": nums[1],
+                        "自營商(張)": nums[2], "合計(張)": nums[3]
+                    })
+        
+        seen = set()
+        res_data = []
+        for d in data:
+            if d['日期'] not in seen:
+                seen.add(d['日期'])
+                res_data.append(d)
+        return res_data[:10]
+    except Exception as e:
+        return []
 
 def analyze_today(df, ticker_number):
     if df is None or len(df) < 5: return None
@@ -388,8 +424,7 @@ def get_mini_index_data(ticker, tw_symbol=None):
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    # 優先使用極速爬蟲抓取大盤
-    twii_close, twii_change = get_yahoo_tw_quote("^TWII")
+    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
     if twii_close is None:
         twii_close, twii_change = get_quick_quote("^TWII")
         if not twii_close:
@@ -409,13 +444,13 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
-            tx_data = get_mini_index_data("TX=F", "FITX1.TW")
-            two_data = get_mini_index_data("^TWOII", "^TWOII")
-            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
+            tx_data = get_mini_index_data("TX=F")
+            two_data = get_mini_index_data("^TWOII", "TWOII")
+            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://finance.yahoo.com/quote/TX=F' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/TWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄 更新大盤即時報價", use_container_width=True):
@@ -658,9 +693,15 @@ elif st.session_state.page == "analysis":
             else: st.info("無法識別該股產業。")
 
             st.divider()
-            st.markdown("**🏦 真實籌碼與主力動向查詢**")
-            st.markdown(f"[➤ 點擊前往 Yahoo 股市看【外資投信買賣超】](https://tw.stock.yahoo.com/quote/{target}/institutional-trading)")
-            st.markdown(f"[➤ 點擊前往 Goodinfo 看【主力進出明細】](https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target})")
+            st.subheader("🏦 近期三大法人買賣超")
+            inst_data = get_institutional_trading(target)
+            if inst_data:
+                st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
+            else:
+                st.info("目前無法自動抓取籌碼資料，請點擊下方連結前往查看。")
+                
+            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='{yh}/institutional-trading' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Yahoo 股市 (外資投信買賣超)</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target}' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Goodinfo (主力進出明細)</a></div>", unsafe_allow_html=True)
             
             st.divider()
             st.subheader("📰 相關新聞")
