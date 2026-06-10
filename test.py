@@ -136,6 +136,8 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
+from bs4 import BeautifulSoup
+
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
     try:
@@ -226,7 +228,7 @@ def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
@@ -281,30 +283,33 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
     
+    # 解決1：將 x 軸轉換為字串，強制 Plotly 將其視為類別軸，徹底去除假日空白
+    x_vals = df_view.index.strftime('%Y-%m-%d')
+    
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     
     line_k, line_d, line_j = ("#0066cc", "#ff9900", "#9900cc") if is_light_mode else ("white", "yellow", "magenta")
     grid_c = "rgba(0,0,0,0.1)" if is_light_mode else "rgba(255,255,255,0.1)"
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     
-    fig.add_trace(go.Candlestick(x=df_view.index, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
     
-    fig.add_trace(go.Bar(x=df_view.index, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=df_view.index, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC (柱)"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC (柱)"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
     
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df_view.index, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
 
-    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
+    fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_layout(
         xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, 
@@ -365,7 +370,7 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -495,11 +500,24 @@ elif st.session_state.page == "analysis":
             v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             sc, rs = get_decision_score(data, f_data)
 
-            if sc >= 5: v_t, v_a, v_c = "🟢 【S級買點】強烈建議佈局", f"建議於 {data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批建倉。", "#00cc00"
-            elif sc >= 2: v_t, v_a, v_c = "🟡 【A級機會】偏多試單", f"可於 {data['收盤價']:.2f} 附近試單，跌破 {data['BB_DN']:.2f} 停損。", "#ffcc00"
-            elif sc >= -1: v_t, v_a, v_c = "⚪ 【中性觀望】多空不明", f"建議等待突破 {data['20MA']:.2f} 或回測 {data['BB_DN']:.2f}。", text_col
-            elif sc >= -4: v_t, v_a, v_c = "🟠 【風險警示】逢高減碼", f"追高風險大，若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 獲利了結。", "#ff9900"
-            else: v_t, v_a, v_c = "🔴 【極度危險】嚴禁做多", "強烈建議空手觀望，切勿接刀。", "#ff3333"
+            if sc >= 5: 
+                v_t, v_c = "🟢 【S級買點】強烈建議佈局", "#00cc00"
+                v_a = f"勝率極高！建議於 {data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批建倉。"
+            elif sc >= 2: 
+                v_t, v_c = "🟡 【A級機會】偏多試單", "#ffcc00"
+                v_a = f"具備反彈契機，可於 {data['收盤價']:.2f} 附近試單，跌破 {data['BB_DN']:.2f} 停損。"
+            elif sc >= -1: 
+                v_t, v_c = "⚪ 【中性觀望】多空不明", text_col
+                if data['收盤價'] > data['20MA']:
+                    v_a = f"股價在月線 ({data['20MA']:.2f}) 之上震盪，無明顯表態，建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線可嘗試建倉。"
+                else:
+                    v_a = f"股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱，建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐。"
+            elif sc >= -4: 
+                v_t, v_c = "🟠 【風險警示】逢高減碼", "#ff9900"
+                v_a = f"追高風險較大，若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 之間視情況分批獲利了結。"
+            else: 
+                v_t, v_c = "🔴 【極度危險】嚴禁做多", "#ff3333"
+                v_a = "強烈建議空手觀望，切勿接刀。"
 
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
