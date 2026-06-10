@@ -90,6 +90,31 @@ def get_all_tw_stock_names():
     return names
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_yahoo_chinese_name(ticker):
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title = soup.find('title')
+        if title:
+            name = title.text.split('(')[0].strip()
+            if name and name != "Yahoo奇摩股市":
+                return name
+    except: pass
+    return ""
+
+def get_stock_name(ticker):
+    if not ticker: return ""
+    ticker_str = str(ticker).strip()
+    if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
+    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
+    html_name = get_yahoo_chinese_name(ticker_str)
+    if html_name: return html_name
+    return ticker_str
+
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
 
@@ -125,7 +150,7 @@ st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選股")
 if st.session_state.favorites:
     for fav in st.session_state.favorites:
-        st.sidebar.button(f"📊 {fav} {CURRENT_STOCK_NAMES.get(fav, '')}", key=f"sf_{fav}", on_click=lambda f=fav: st.session_state.update({"current_stock": f, "page": "analysis", "date_offset": 0}))
+        st.sidebar.button(f"📊 {fav} {get_stock_name(fav)}", key=f"sf_{fav}", on_click=lambda f=fav: st.session_state.update({"current_stock": f, "page": "analysis", "date_offset": 0}))
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
@@ -136,22 +161,6 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
-
-# --- 新增：強制擷取繁體中文名稱防護網 ---
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_yahoo_chinese_name(ticker):
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
-            if name and name != "Yahoo奇摩股市":
-                return name
-    except: pass
-    return ""
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
@@ -164,40 +173,11 @@ def get_fundamental_and_industry_data(ticker_number):
         tw_sec, tw_ind = ENG_TO_TW_INDUSTRY.get(sec, sec), ENG_TO_TW_INDUSTRY.get(ind, ind)
         full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         
-        # 英文攔截過濾器：若出現英文字母，直接改為「一般產業」
         if re.search(r'[a-zA-Z]', full_ind):
             full_ind = "一般產業"
             
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "一般產業"}
-
-@st.cache_data(ttl=5, show_spinner=False)
-def get_yahoo_tw_quote(symbol):
-    try:
-        url_sym = urllib.parse.quote(symbol)
-        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change = 0
-        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
-        for tag in change_tags:
-            classes = tag.get('class', [])
-            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
-                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
-                try:
-                    change = float(txt)
-                    if 'C($c-trend-down)' in classes: change = -abs(change)
-                    break
-                except: pass
-        return price, change
-    except:
-        return None, None
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
@@ -335,7 +315,6 @@ def get_market_news():
         news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
     return news
 
-# --- 徹底移除英文全球新聞的抓取 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -348,8 +327,15 @@ def get_real_news(ticker, name):
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
     except: pass
     
-    if not news_list: 
-        news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
+    if not news_list:
+        try:
+            yf_news = yf.Ticker(f"{ticker}.TW").news
+            if not yf_news: yf_news = yf.Ticker(f"{ticker}.TWO").news
+            for n in yf_news[:3]:
+                news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
+        except: pass
+        
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -402,32 +388,6 @@ def get_institutional_trading(ticker):
     except Exception as e:
         return []
 
-def analyze_today(df, ticker_number):
-    if df is None or len(df) < 5: return None
-    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
-    fund = get_fundamental_and_industry_data(ticker_number)
-    
-    # 完美中文名稱防護機制
-    c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
-    if not c_name: c_name = get_yahoo_chinese_name(ticker_number)
-    if not c_name: c_name = ticker_number
-    
-    data = {
-        "代號": ticker_number, "名稱": c_name, "ticker_raw": ticker_number,
-        "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
-        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
-        "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
-        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
-        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
-        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
-        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3),
-        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20)
-    }
-    sc, _ = get_decision_score(data, fund)
-    data['Score'] = sc
-    return data
-
 def get_decision_score(data, fund_data):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -442,6 +402,27 @@ def get_decision_score(data, fund_data):
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
     if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
     return sc, rs
+
+def analyze_today(df, ticker_number):
+    if df is None or len(df) < 5: return None
+    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
+    fund = get_fundamental_and_industry_data(ticker_number)
+    
+    data = {
+        "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
+        "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
+        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
+        "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
+        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
+        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
+        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
+        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3),
+        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
+        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20)
+    }
+    sc, _ = get_decision_score(data, fund)
+    data['Score'] = sc
+    return data
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
@@ -654,7 +635,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
-    c_name = CURRENT_STOCK_NAMES.get(target, "")
+    c_name = get_stock_name(target)
     f_data = get_fundamental_and_industry_data(target)
     yh = f"https://tw.stock.yahoo.com/quote/{target}"
     
@@ -796,7 +777,7 @@ elif st.session_state.page == "analysis":
                             if r_df is not None:
                                 rc, rp = round(r_df['Close'].iloc[-1], 2), round((r_df['Close'].iloc[-1] - r_df['Close'].iloc[-2])/r_df['Close'].iloc[-2]*100, 2)
                                 rcol = "#ff3333" if rp >= 0 else "#00cc00"
-                                st.markdown(f"**{r} {CURRENT_STOCK_NAMES.get(r, '')}** <br> <span style='color:{rcol}; font-weight:bold;'>{rc} ({'+' if rp>0 else ''}{rp}%)</span>", unsafe_allow_html=True)
+                                st.markdown(f"**{r} {get_stock_name(r)}** <br> <span style='color:{rcol}; font-weight:bold;'>{rc} ({'+' if rp>0 else ''}{rp}%)</span>", unsafe_allow_html=True)
                                 if st.button("分析", key=f"b_r_{r}"): st.session_state.update({"current_stock": r, "date_offset": 0, "page": "analysis"}); st.rerun()
                 else: st.info("無其他同產業標的。")
             else: st.info("無法識別該股產業。")
