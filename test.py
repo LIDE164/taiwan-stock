@@ -63,7 +63,19 @@ ENG_TO_TW_INDUSTRY = {
     "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意業", "Technology": "電子科技",
     "Industrials": "工業", "Basic Materials": "原物料", "Financial Services": "金融業",
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
-    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
+    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路",
+    "Auto Manufacturers": "汽車工業", "Auto Parts": "汽車零組件",
+    "Banks - Regional": "銀行業", "Biotechnology": "生技醫療",
+    "Chemicals": "化學工業", "Electronic Gaming & Multimedia": "遊戲及多媒體",
+    "Food": "食品工業", "Insurance - Life": "保險業", "Insurance": "保險業",
+    "Internet Content & Information": "資訊服務業", "Packaged Foods": "食品工業",
+    "Software - Application": "軟體業", "Software - Infrastructure": "軟體業",
+    "Specialty Retail": "貿易百貨", "Telecom Services": "通信網路",
+    "Aerospace & Defense": "航太與國防", "Airlines": "航空業",
+    "Apparel Retail": "服飾零售", "Apparel Manufacturing": "紡織纖維",
+    "Construction Materials": "建材營造", "Diagnostics & Research": "生技醫療",
+    "Medical Care Facilities": "醫療保健", "Medical Devices": "生技醫療",
+    "Paper & Paper Products": "造紙業", "Restaurants": "餐飲業", "Steel": "鋼鐵業"
 }
 
 @st.cache_data(ttl=86400)
@@ -125,8 +137,23 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-# 加入姓名抓取防護機制
-@st.cache_data(ttl=86400)
+# --- 新增：強制擷取繁體中文名稱防護網 ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_yahoo_chinese_name(ticker):
+    try:
+        url = f"https://tw.stock.yahoo.com/quote/{ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title = soup.find('title')
+        if title:
+            name = title.text.split('(')[0].strip()
+            if name and name != "Yahoo奇摩股市":
+                return name
+    except: pass
+    return ""
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -135,13 +162,14 @@ def get_fundamental_and_industry_data(ticker_number):
         
         sec, ind = info.get("sector", ""), info.get("industry", "")
         tw_sec, tw_ind = ENG_TO_TW_INDUSTRY.get(sec, sec), ENG_TO_TW_INDUSTRY.get(ind, ind)
-        full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "未提供產業資訊"
+        full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         
-        name = info.get('shortName', '')
-        if not name: name = info.get('longName', '')
-        
-        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind, "Name": name}
-    except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊", "Name": ""}
+        # 英文攔截過濾器：若出現英文字母，直接改為「一般產業」
+        if re.search(r'[a-zA-Z]', full_ind):
+            full_ind = "一般產業"
+            
+        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
+    except: return {"EPS": "無", "PE": "無", "Industry": "一般產業"}
 
 @st.cache_data(ttl=5, show_spinner=False)
 def get_yahoo_tw_quote(symbol):
@@ -307,6 +335,7 @@ def get_market_news():
         news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
     return news
 
+# --- 徹底移除英文全球新聞的抓取 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -319,15 +348,8 @@ def get_real_news(ticker, name):
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
     except: pass
     
-    if not news_list:
-        try:
-            yf_news = yf.Ticker(f"{ticker}.TW").news
-            if not yf_news: yf_news = yf.Ticker(f"{ticker}.TWO").news
-            for n in yf_news[:3]:
-                news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
-        except: pass
-        
-    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
+    if not news_list: 
+        news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -380,29 +402,15 @@ def get_institutional_trading(ticker):
     except Exception as e:
         return []
 
-def get_decision_score(data, fund_data):
-    sc, rs = 0, []
-    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
-    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
-    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
-    if isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0: sc+=2; rs.append("✅ 基本面獲利")
-    if data['成交量'] / (data['5日均量'] + 0.001) > 1.5 and data['漲跌'] > 0: sc+=2; rs.append("✅ 量價配合")
-    
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
-    if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
-    return sc, rs
-
 def analyze_today(df, ticker_number):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
     fund = get_fundamental_and_industry_data(ticker_number)
     
-    # 解決找不到名稱的問題
+    # 完美中文名稱防護機制
     c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
-    if not c_name: c_name = fund.get("Name", ticker_number)
+    if not c_name: c_name = get_yahoo_chinese_name(ticker_number)
+    if not c_name: c_name = ticker_number
     
     data = {
         "代號": ticker_number, "名稱": c_name, "ticker_raw": ticker_number,
@@ -419,6 +427,21 @@ def analyze_today(df, ticker_number):
     sc, _ = get_decision_score(data, fund)
     data['Score'] = sc
     return data
+
+def get_decision_score(data, fund_data):
+    sc, rs = 0, []
+    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
+    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
+    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
+    if isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0: sc+=2; rs.append("✅ 基本面獲利")
+    if data['成交量'] / (data['5日均量'] + 0.001) > 1.5 and data['漲跌'] > 0: sc+=2; rs.append("✅ 量價配合")
+    
+    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
+    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌")
+    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
+    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
+    if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
+    return sc, rs
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
