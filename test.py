@@ -10,6 +10,7 @@ import os
 import urllib.parse
 import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
@@ -136,7 +137,34 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-from bs4 import BeautifulSoup
+# --- 全新極速爬蟲：專注於 Yahoo Taiwan 台灣特有指數 ---
+@st.cache_data(ttl=5, show_spinner=False)
+def get_yahoo_tw_quote(symbol):
+    try:
+        url_sym = urllib.parse.quote(symbol)
+        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
+        if not price_tag: return None, None
+        price = float(price_tag.text.replace(',', ''))
+        
+        change = 0
+        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
+        for tag in change_tags:
+            classes = tag.get('class', [])
+            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
+                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
+                try:
+                    change = float(txt)
+                    if 'C($c-trend-down)' in classes: change = -abs(change)
+                    break
+                except: pass
+        return price, change
+    except:
+        return None, None
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
@@ -207,7 +235,7 @@ def get_market_news():
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             root = ET.fromstring(res.text)
@@ -228,7 +256,7 @@ def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
@@ -283,7 +311,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
     
-    # 解決1：將 x 軸轉換為字串，強制 Plotly 將其視為類別軸，徹底去除假日空白
     x_vals = df_view.index.strftime('%Y-%m-%d')
     
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
@@ -342,20 +369,32 @@ def predict_tomorrow_open(twii_df, sox_df):
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
     else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
 
-def get_mini_index_data(ticker):
+def get_mini_index_data(ticker, tw_symbol=None):
+    if tw_symbol:
+        c, change = get_yahoo_tw_quote(tw_symbol)
+        if c is not None:
+            color = "#ff3333" if change >= 0 else "#00cc00"
+            if tw_symbol == "^TWOII":
+                return f"<span style='color:{color}; font-weight:bold;'>{c:,.2f} ({'+' if change>0 else ''}{change:.2f})</span>"
+            else:
+                return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
+    
     c, change = get_quick_quote(ticker)
     if c:
         color = "#ff3333" if change >= 0 else "#00cc00"
-        return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
+        return f"<span style='color:{color}; font-weight:bold;'>{c:,.2f} ({'+' if change>0 else ''}{change:.2f})</span>".replace('.00', '')
     return "讀取中"
 
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_quick_quote("^TWII")
-    if not twii_close:
-        twii_close, twii_change = get_quick_quote("0050.TW")
-        
+    # 優先使用極速爬蟲抓取大盤
+    twii_close, twii_change = get_yahoo_tw_quote("^TWII")
+    if twii_close is None:
+        twii_close, twii_change = get_quick_quote("^TWII")
+        if not twii_close:
+            twii_close, twii_change = 0, 0
+            
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -370,12 +409,12 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
-            tx_data = get_mini_index_data("TX=F")
-            two_data = get_mini_index_data("^TWOII")
+            tx_data = get_mini_index_data("TX=F", "FITX1.TW")
+            two_data = get_mini_index_data("^TWOII", "^TWOII")
             st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
