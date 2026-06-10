@@ -14,12 +14,12 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -136,8 +136,6 @@ def get_fundamental_and_industry_data(ticker_number):
 def get_stock_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-        
-        # 修正：所有指數都必須先經過強力的空值過濾，才能確保回傳正確的數值
         if base_ticker == "^TWII": df = yf.Ticker("^TWII").history(period="1y")
         elif base_ticker == "TX00": df = yf.Ticker("TX=F").history(period="1y")
         elif base_ticker == "^TWOII": df = yf.Ticker("^TWOII").history(period="1y")
@@ -148,8 +146,8 @@ def get_stock_data(ticker_number):
         
         if df.empty or len(df)<20: return None
         
-        df = df.dropna(subset=['Close'])
-        df = df.fillna(method='ffill')
+        df = df.fillna(method='ffill') 
+        df = df.dropna(subset=['Close']) 
         df['Volume'] = df['Volume'].fillna(0)
         
         if df.empty or len(df)<20: return None
@@ -269,8 +267,23 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
 tz_tpe = timezone(timedelta(hours=8))
 
+# 3. 超級穩定的即時指數抓取 API (直接對接 Yahoo 原始 JSON)
+@st.cache_data(ttl=60)
+def get_realtime_index(ticker_symbol):
+    try:
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker_symbol)}?interval=1d&range=1d"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        meta = data['chart']['result'][0]['meta']
+        c = meta['regularMarketPrice']
+        p = meta['chartPreviousClose']
+        return float(c), float(c - p)
+    except:
+        return None, None
+
 def predict_tomorrow_open(twii_df, sox_df):
-    if twii_df is None or twii_df.empty: return "資料不足", ""
+    if twii_df is None or twii_df.empty: return "資料不足", "目前無法取得足夠資料進行預測。"
     t_val = twii_df['Close'].iloc[-1]
     ma5 = twii_df['5MA'].iloc[-1]
     
@@ -291,12 +304,18 @@ def predict_tomorrow_open(twii_df, sox_df):
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
     else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
 
-def get_mini_index_data(ticker):
-    df = get_stock_data(ticker)
-    if df is not None and not df.empty:
-        c = df['Close'].iloc[-1]
-        p = df['Close'].iloc[-2]
-        change = c - p
+def get_mini_index_data(ticker, display_ticker=None):
+    search_ticker = display_ticker if display_ticker else ticker
+    c, change = get_realtime_index(search_ticker)
+    
+    if c is None:
+        df = get_stock_data(search_ticker)
+        if df is not None and not df.empty:
+            c = df['Close'].iloc[-1]
+            p = df['Close'].iloc[-2]
+            change = c - p
+            
+    if c is not None:
         color = "#ff3333" if change >= 0 else "#00cc00"
         return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
     return "讀取中"
@@ -304,20 +323,28 @@ def get_mini_index_data(ticker):
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_df = get_stock_data("^TWII")
-    if twii_df is not None and not twii_df.empty:
-        twii_close = twii_df['Close'].iloc[-1]
-        twii_change = twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]
-    else:
-        twii_close, twii_change = 0, 0
-        
+    # 強力抓取台灣加權指數
+    twii_close, twii_change = get_realtime_index("^TWII")
+    if twii_close is None:
+        twii_df = get_stock_data("^TWII")
+        if twii_df is not None and not twii_df.empty:
+            twii_close = twii_df['Close'].iloc[-1]
+            twii_change = twii_df['Close'].iloc[-1] - twii_df['Close'].iloc[-2]
+        else:
+            twii_close, twii_change = 0, 0
+            
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
     try: sox_df = yf.Ticker("^SOX").history(period="5d")
     except: pass
     
-    pred_title, pred_desc = predict_tomorrow_open(twii_df, sox_df)
+    # 預測模型使用歷史 df
+    twii_df_for_pred = get_stock_data("^TWII")
+    if twii_df_for_pred is None or twii_df_for_pred.empty:
+        twii_df_for_pred = get_stock_data("0050")
+        
+    pred_title, pred_desc = predict_tomorrow_open(twii_df_for_pred, sox_df)
     
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
@@ -326,7 +353,7 @@ def render_index_board():
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
-            tx_data = get_mini_index_data("TX00")
+            tx_data = get_mini_index_data("TX00", "TX=F") # 修正台指取代號
             two_data = get_mini_index_data("^TWOII")
             st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
 
@@ -335,20 +362,20 @@ def render_index_board():
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
             
-    st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
-    st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
-    news_items = []
-    try:
-        yf_news = yf.Ticker("0050.TW").news
-        if not yf_news: yf_news = yf.Ticker("2330.TW").news
-        for n in yf_news[:3]: news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
-    except: pass
-    if not news_items: news_items = get_real_news("台股", "大盤")
-    
-    if news_items:
-        for n in news_items[:3]:
-            if n['title'] and n['title'] != "👉 Google 新聞搜尋":
-                st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
+        st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
+        news_items = []
+        try:
+            yf_news = yf.Ticker("0050.TW").news
+            if not yf_news: yf_news = yf.Ticker("2330.TW").news
+            for n in yf_news[:3]: news_items.append({"title": n.get("title", ""), "link": n.get("link", "")})
+        except: pass
+        if not news_items: news_items = get_real_news("台股", "大盤")
+        
+        if news_items:
+            for n in news_items[:3]:
+                if n['title'] and n['title'] != "👉 Google 新聞搜尋":
+                    st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
             
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: -10px;'>🔄 系統最後更新: {now_time_str}</div>", unsafe_allow_html=True)
 
