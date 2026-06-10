@@ -1,4 +1,4 @@
-code = """import yfinance as yf
+import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
@@ -16,12 +16,12 @@ import re
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    \"\"\"
+    """
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    \"\"\",
+    """,
     height=0, width=0
 )
 
@@ -138,49 +138,51 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-# --- 全新 100% 可靠大盤抓取引擎，徹底拋棄會報錯的 HTML Scraping ---
+@st.cache_data(ttl=5, show_spinner=False)
+def get_yahoo_tw_quote(symbol):
+    try:
+        url_sym = urllib.parse.quote(symbol)
+        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
+        if not price_tag: return None, None
+        price = float(price_tag.text.replace(',', ''))
+        
+        change = 0
+        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
+        for tag in change_tags:
+            classes = tag.get('class', [])
+            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
+                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
+                try:
+                    change = float(txt)
+                    if 'C($c-trend-down)' in classes: change = -abs(change)
+                    break
+                except: pass
+        return price, change
+    except:
+        return None, None
+
 @st.cache_data(ttl=5, show_spinner=False) 
-def get_twii_quote():
-    # 策略 1: 台灣證券交易所官方 API (最即時、最穩定)
+def get_quick_quote(ticker):
     try:
-        ts = int(datetime.now().timestamp() * 1000)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            if 'msgArray' in data and len(data['msgArray']) > 0:
-                info = data['msgArray'][0]
-                z = info.get('z')
-                y = info.get('y')
-                prev = float(y) if y and y != '-' else 0
-                curr = float(z) if z and z != '-' else prev
-                
-                # 防呆機制：確保不會抓到不合理的數字(如 12)
-                if curr > 10000:
-                    return curr, curr - prev
+        tk = yf.Ticker(ticker)
+        info = tk.fast_info
+        last_price = info.get('lastPrice')
+        prev_close = info.get('previousClose')
+        if last_price and prev_close:
+            return last_price, last_price - prev_close
     except: pass
     
-    # 策略 2: yfinance 歷史線圖防護
     try:
-        df = yf.Ticker("^TWII").history(period="5d")
+        df = yf.Ticker(ticker).history(period="5d")
         df = df.dropna(subset=['Close'])
-        if not df.empty and len(df) >= 2:
-            curr = df['Close'].iloc[-1]
-            prev = df['Close'].iloc[-2]
-            if curr > 10000:
-                return curr, curr - prev
+        if len(df) >= 2:
+            return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
     except: pass
-    
-    # 策略 3: yfinance 極速資訊
-    try:
-        tk = yf.Ticker("^TWII")
-        curr = tk.fast_info.get('lastPrice')
-        prev = tk.fast_info.get('previousClose')
-        if curr and prev and curr > 10000:
-            return curr, curr - prev
-    except: pass
-    
     return 0, 0
 
 @st.cache_data(ttl=60, show_spinner=False) 
@@ -199,6 +201,8 @@ def get_stock_data(ticker_number):
 
     df = None
     if base_ticker == "^TWII": df = fetch_clean("^TWII")
+    elif base_ticker == "TX00": df = fetch_clean("TX=F")
+    elif base_ticker == "^TWOII": df = fetch_clean("^TWOII")
     else:
         df = fetch_clean(f"{base_ticker}.TW")
         if df is None: df = fetch_clean(f"{base_ticker}.TWO")
@@ -370,7 +374,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -456,7 +460,12 @@ def render_index_board():
     tz_tpe = timezone(timedelta(hours=8))
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_twii_quote()
+    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
+    if twii_close is None:
+        twii_close, twii_change = get_quick_quote("^TWII")
+        if not twii_close:
+            twii_close, twii_change = 0, 0
+            
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -694,7 +703,7 @@ elif st.session_state.page == "analysis":
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True):
-                st.markdown(f"##### 📊 布林通道 & 乖離率 \n\n **上軌 (壓力):** `{data['BB_UP']}` \n\n **下軌 (支 হত্যার):** `{data['BB_DN']}` \n\n **月線乖離率:** `{data['BIAS']}%` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📊 布林通道 & 乖離率 \n\n **上軌 (壓力):** `{data['BB_UP']}` \n\n **下軌 (支撐):** `{data['BB_DN']}` \n\n **月線乖離率:** `{data['BIAS']}%` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
 
             with a2.container(border=True):
                 eps = f_data['EPS']
