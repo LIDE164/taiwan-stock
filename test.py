@@ -16,12 +16,12 @@ import re
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -138,51 +138,47 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-@st.cache_data(ttl=5, show_spinner=False)
-def get_yahoo_tw_quote(symbol):
-    try:
-        url_sym = urllib.parse.quote(symbol)
-        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change = 0
-        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
-        for tag in change_tags:
-            classes = tag.get('class', [])
-            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
-                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
-                try:
-                    change = float(txt)
-                    if 'C($c-trend-down)' in classes: change = -abs(change)
-                    break
-                except: pass
-        return price, change
-    except:
-        return None, None
-
+# --- 全新 100% 可靠大盤抓取引擎 ---
 @st.cache_data(ttl=5, show_spinner=False) 
-def get_quick_quote(ticker):
+def get_twii_quote():
+    # 策略 1: 嘗試爬取 Google Finance (最快速無延遲)
     try:
-        tk = yf.Ticker(ticker)
-        info = tk.fast_info
-        last_price = info.get('lastPrice')
-        prev_close = info.get('previousClose')
-        if last_price and prev_close:
-            return last_price, last_price - prev_close
+        url = "https://www.google.com/finance/quote/TAIEX:TPE"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
+        if price_div:
+            price = float(price_div.text.replace(',', ''))
+            change_div = soup.find('div', {'class': 'P6K39c'})
+            change = 0
+            if change_div:
+                change_text = change_div.text.replace('+', '').replace(',', '')
+                change = float(change_text)
+                if 'JwB6zf' in change_div.parent.get('class', []): change = -abs(change)
+            return price, change
+    except: pass
+
+    # 策略 2: 台灣證券交易所官方 API (最穩定備援)
+    try:
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0"
+        res = requests.get(url, timeout=3)
+        data = res.json()
+        if 'msgArray' in data and len(data['msgArray']) > 0:
+            info = data['msgArray'][0]
+            curr_str = info.get('z')
+            curr = float(curr_str) if curr_str != '-' else float(info.get('y'))
+            prev = float(info.get('y'))
+            if curr and prev: return curr, curr - prev
     except: pass
     
+    # 策略 3: yfinance 歷史線圖防護
     try:
-        df = yf.Ticker(ticker).history(period="5d")
+        df = yf.Ticker("^TWII").history(period="5d")
         df = df.dropna(subset=['Close'])
         if len(df) >= 2:
             return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
     except: pass
+    
     return 0, 0
 
 @st.cache_data(ttl=60, show_spinner=False) 
@@ -374,7 +370,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤價: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -404,37 +400,63 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
 tz_tpe = timezone(timedelta(hours=8))
 
-def predict_tomorrow_open(twii_df, sox_df):
-    if twii_df is None or twii_df.empty: return "資料不足", ""
-    t_val = twii_df['Close'].iloc[-1]
-    ma5 = twii_df['5MA'].iloc[-1]
+def get_market_analysis(twii_df, sox_df):
+    if twii_df is None or len(twii_df) < 2:
+        return "資料不足", "無法分析", "資料不足", "無法預測"
+
+    t_open = twii_df['Open'].iloc[-1]
+    t_close = twii_df['Close'].iloc[-1]
+    p_close = twii_df['Close'].iloc[-2]
     
+    today_title = "⚖️ 平盤震盪"
+    today_desc = "今日大盤開在平盤附近，目前呈現震盪格局。"
+    
+    if t_open > p_close * 1.003:
+        if t_close > t_open:
+            today_title = "🔥 開高走高"
+            today_desc = "今日大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
+        else:
+            today_title = "⚠️ 開高走低"
+            today_desc = "今日大盤雖然跳空開高，但隨後遭遇賣壓，呈現開高走低出貨現象。"
+    elif t_open < p_close * 0.997:
+        if t_close > t_open:
+            today_title = "💪 開低走高"
+            today_desc = "今日大盤受利空影響開低，但低檔承接買盤強勁，出現開低走高紅K。"
+        else:
+            today_title = "🩸 開低走低"
+            today_desc = "今日大盤弱勢開低，且賣壓沉重一路走低，盤勢極度偏空。"
+    else:
+        if t_close > p_close:
+            today_title = "📈 平盤走高"
+            today_desc = "今日大盤開平盤附近，隨後多方發力穩步墊高。"
+        else:
+            today_title = "📉 平盤走低"
+            today_desc = "今日大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
+
+    ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
     score = 0
-    if t_val > ma5: score += 1
+    if t_close > ma5: score += 1
     else: score -= 1
     
-    if sox_df is not None and not sox_df.empty:
+    if sox_df is not None and not sox_df.empty and len(sox_df) >= 2:
         s_change = (sox_df['Close'].iloc[-1] - sox_df['Close'].iloc[-2]) / sox_df['Close'].iloc[-2] * 100
         if s_change > 1.5: score += 2
         elif s_change < -1.5: score -= 2
         elif s_change > 0: score += 1
         else: score -= 1
         
-    if score >= 2: return "🚀 高機率開高", "美股強勢且台股站穩短均線，預估明日早盤有機會跳空開高。"
-    elif score == 1: return "📈 偏多震盪", "國際局勢穩定，台股具備抗跌韌性，預估開平高盤後震盪走高。"
-    elif score == 0: return "⚖️ 觀望平盤", "多空力道均衡，預估開平盤附近，需觀察開盤後主力買賣超方向。"
-    elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
-    else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
+    if score >= 2: tmr_title, tmr_desc = "🚀 高機率開高", "美股強勢且台股站穩短均線，預估明日早盤有機會跳空開高。"
+    elif score == 1: tmr_title, tmr_desc = "📈 偏多震盪", "國際局勢穩定，台股具備抗跌韌性，預估開平高盤後震盪走高。"
+    elif score == 0: tmr_title, tmr_desc = "⚖️ 觀望平盤", "多空力道均衡，預估開平盤附近，需觀察開盤後主力買賣超方向。"
+    elif score == -1: tmr_title, tmr_desc = "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
+    else: tmr_title, tmr_desc = "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
+
+    return today_title, today_desc, tmr_title, tmr_desc
 
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
-    if twii_close is None:
-        twii_close, twii_change = get_quick_quote("^TWII")
-        if not twii_close:
-            twii_close, twii_change = 0, 0
-            
+    twii_close, twii_change = get_twii_quote()
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -444,12 +466,12 @@ def render_index_board():
     twii_df_for_pred = get_stock_data("^TWII")
     if twii_df_for_pred is None: twii_df_for_pred = get_stock_data("0050.TW")
         
-    pred_title, pred_desc = predict_tomorrow_open(twii_df_for_pred, sox_df)
+    today_title, today_desc, tmr_title, tmr_desc = predict_tomorrow_open(twii_df_for_pred, sox_df)
     
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -459,9 +481,13 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測模型</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{pred_title}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 5px; line-height: 1.4;'>{pred_desc}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
+
+            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
             
             st.markdown("<hr style='margin: 10px 0; border-color: #444;'>", unsafe_allow_html=True)
             st.markdown("<span style='font-size:0.95rem; font-weight:bold; color:#ffcc00;'>📰 財經焦點新聞：</span>", unsafe_allow_html=True)
