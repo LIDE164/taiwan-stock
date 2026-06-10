@@ -136,6 +136,8 @@ def get_fundamental_and_industry_data(ticker_number):
 def get_stock_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+        
+        # 1. 大盤與期貨的抓取邏輯 (全數使用 yf 確保穩定度與回推功能)
         if base_ticker == "^TWII": df = yf.Ticker("^TWII").history(period="1y")
         elif base_ticker == "TX00": df = yf.Ticker("TX=F").history(period="1y")
         elif base_ticker == "^TWOII": df = yf.Ticker("^TWOII").history(period="1y")
@@ -146,6 +148,7 @@ def get_stock_data(ticker_number):
         
         if df.empty or len(df)<20: return None
         
+        # 自動向前填補空缺值 (處理國定假日與資料延遲)
         df = df.fillna(method='ffill') 
         df = df.dropna(subset=['Close']) 
         df['Volume'] = df['Volume'].fillna(0)
