@@ -94,13 +94,14 @@ CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_yahoo_chinese_name(ticker):
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{ticker}"
+        base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+        url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
+        h1 = soup.find('h1')
+        if h1:
+            name = h1.text.strip()
             if name and name != "Yahoo奇摩股市":
                 return name
     except: pass
@@ -108,7 +109,7 @@ def get_yahoo_chinese_name(ticker):
 
 def get_stock_name(ticker):
     if not ticker: return ""
-    ticker_str = str(ticker).strip()
+    ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
     if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
     html_name = get_yahoo_chinese_name(ticker_str)
@@ -162,14 +163,13 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-# --- 核心修正1：徹底改用 Yahoo 台灣即時網頁爬蟲，精準獲取本益比與 EPS 數據 ---
+# --- 核心優化：引入正則過濾器，徹底解決 [河流圖] 等網格文字雜質問題 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
     
-    # 向 Yahoo 台灣股市爬取不遞延的在地數據
     try:
         url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -178,15 +178,16 @@ def get_fundamental_and_industry_data(ticker_number):
         
         for li in soup.find_all('li'):
             txt = li.text
-            if "本益比" in txt and len(txt) < 20:
+            if "本益比" in txt and len(txt) < 30:
                 val = txt.replace("本益比", "").strip()
-                if val and val != "-": pe_val = val
-            elif "每股盈餘" in txt and len(txt) < 20:
+                val = re.sub(r'[^\d\.]', '', val)  # 強制只保留純數字與小數點，完美剔除 (河流圖)
+                if val: pe_val = val
+            elif "每股盈餘" in txt and len(txt) < 30:
                 val = txt.replace("每股盈餘", "").replace("(連續4季)", "").strip()
-                if val and val != "-": eps_val = val
+                val = re.sub(r'[^\d\.\-]', '', val) # 僅保留數字、小數點及負號
+                if val: eps_val = val
     except: pass
 
-    # 產業分類退回歷史 Ticker 處理
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
@@ -277,7 +278,6 @@ def get_twii_quote():
     
     return 0, 0
 
-# --- 核心修正2：完美豁免大盤指數的 Volume 限制，防範台股收盤後當日歷史K線被刪除的 Bug ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -287,7 +287,6 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
-                # 如果不是大盤代號，才進行成交量大於0的過濾
                 if not sym.startswith('^'):
                     d = d[d['Volume'] > 0] 
                 if len(d) >= 20: return d
@@ -423,7 +422,6 @@ def get_decision_score(data, fund_data):
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
     
-    # 完美相容字串型態的台灣在地網頁版 EPS 數值
     try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
     except: eps_f = 0.0
         
@@ -518,24 +516,24 @@ def predict_tomorrow_open(twii_df, sox_df):
     if t_open > p_close * 1.003:
         if t_close > t_open:
             today_title = "🔥 開高走高"
-            today_desc = "今日大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
+            today_desc = "大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
         else:
             today_title = "⚠️ 開高走低"
-            today_desc = "今日大盤跳空開高後遭遇賣壓，呈現開高走低現象。"
+            today_desc = "大盤跳空開高後遭遇賣壓，呈現開高走低現象。"
     elif t_open < p_close * 0.997:
         if t_close > t_open:
             today_title = "💪 開低走高"
-            today_desc = "今日大盤受利空影響開低，但低檔承接買盤強勁，出現開低走高紅K。"
+            today_desc = "大盤開低但低檔承接買盤強勁，出現開低走高紅K。"
         else:
             today_title = "🩸 開低走低"
-            today_desc = "今日大盤弱勢開低且賣壓沉重一路向下，盤勢極度偏空。"
+            today_desc = "大盤弱勢開低且賣壓沉重一路向下，盤勢極度偏空。"
     else:
         if t_close > p_close * 1.003:
             today_title = "📈 平盤走高"
-            today_desc = "今日大盤開平盤附近，隨後多方發力穩步墊高。"
+            today_desc = "大盤開平盤附近，隨後多方發力穩步墊高。"
         elif t_close < p_close * 0.997:
             today_title = "📉 平盤走低"
-            today_desc = "今日大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
+            today_desc = "大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
 
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
     
@@ -587,7 +585,6 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            # --- 核心修正3：在標題後方加上清楚的數據分析資料來源提示 ---
             st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: Google Finance / 證交所)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
@@ -699,12 +696,13 @@ elif st.session_state.page == "analysis":
             v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             sc, rs = get_decision_score(data, f_data)
 
+            # --- 核心修正2：在 S 級與 A 級判定文字中，精準新增賣出目標價提示 ---
             if sc >= 5: 
                 v_t, v_c = "🟢 【S級買點】強烈建議佈局", "#00cc00"
-                v_a = f"勝率極高！建議於 {data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批建倉。"
+                v_a = f"勝率極高！筑底完成。建議波段建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。波段建議分批賣出目標價：{data['BB_UP']:.2f} (布林上軌強壓力區)。"
             elif sc >= 2: 
                 v_t, v_c = "🟡 【A級機會】偏多試單", "#ffcc00"
-                v_a = f"具備反彈契機，可於 {data['收盤價']:.2f} 附近試單，跌破 {data['BB_DN']:.2f} 停損。"
+                v_a = f"具備技術面反彈契機！建議短線建倉點：{data['收盤價']:.2f} 附近，嚴守跌破 {data['BB_DN']:.2f} 停損。短線建議分批賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)。"
             elif sc >= -1: 
                 v_t, v_c = "⚪ 【中性觀望】多空不明", text_col
                 if data['收盤價'] > data['20MA']:
@@ -797,7 +795,7 @@ elif st.session_state.page == "analysis":
             with a2.container(border=True):
                 eps = f_data['EPS']
                 m_eps = round(eps/12, 2) if isinstance(eps, (int, float)) else "無"
-                st.markdown(f"##### 🌞 在地即時基本面健檢 \n\n **近四季 EPS:** `{eps}` <a href='{yh}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a> \n\n **換算單月 EPS:** `{m_eps}` \n\n **最新即時本益比 (P/E):** `{f_data['PE']}` <a href='{yh}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📑 臺灣在地即時基本面健檢 \n\n **近四季 EPS:** `{eps}` <a href='{yh}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a> \n\n **換算單月 EPS:** `{m_eps}` \n\n **最新即時本益比 (P/E):** `{f_data['PE']}` <a href='{yh}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             st.divider()
             st.subheader("🔗 同產業關聯股動態")
