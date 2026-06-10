@@ -125,6 +125,7 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
+# 加入姓名抓取防護機制
 @st.cache_data(ttl=86400)
 def get_fundamental_and_industry_data(ticker_number):
     try:
@@ -135,8 +136,12 @@ def get_fundamental_and_industry_data(ticker_number):
         sec, ind = info.get("sector", ""), info.get("industry", "")
         tw_sec, tw_ind = ENG_TO_TW_INDUSTRY.get(sec, sec), ENG_TO_TW_INDUSTRY.get(ind, ind)
         full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "未提供產業資訊"
-        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
-    except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
+        
+        name = info.get('shortName', '')
+        if not name: name = info.get('longName', '')
+        
+        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind, "Name": name}
+    except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊", "Name": ""}
 
 @st.cache_data(ttl=5, show_spinner=False)
 def get_yahoo_tw_quote(symbol):
@@ -375,23 +380,6 @@ def get_institutional_trading(ticker):
     except Exception as e:
         return []
 
-def analyze_today(df, ticker_number):
-    if df is None or len(df) < 5: return None
-    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
-    fund = get_fundamental_and_industry_data(ticker_number)
-    return {
-        "代號": ticker_number, "名稱": CURRENT_STOCK_NAMES.get(ticker_number, ""), "ticker_raw": ticker_number,
-        "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
-        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
-        "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
-        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
-        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
-        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
-        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3),
-        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20)
-    }
-
 def get_decision_score(data, fund_data):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -406,6 +394,31 @@ def get_decision_score(data, fund_data):
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
     if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
     return sc, rs
+
+def analyze_today(df, ticker_number):
+    if df is None or len(df) < 5: return None
+    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
+    fund = get_fundamental_and_industry_data(ticker_number)
+    
+    # 解決找不到名稱的問題
+    c_name = CURRENT_STOCK_NAMES.get(ticker_number, "")
+    if not c_name: c_name = fund.get("Name", ticker_number)
+    
+    data = {
+        "代號": ticker_number, "名稱": c_name, "ticker_raw": ticker_number,
+        "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
+        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
+        "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
+        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
+        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
+        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
+        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3),
+        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
+        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20)
+    }
+    sc, _ = get_decision_score(data, fund)
+    data['Score'] = sc
+    return data
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
@@ -581,11 +594,11 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單")
-            df_disp = df_results[df_results['訊號'] == True]
-            if len(df_disp) < 5:
-                pot = df_results[(df_results['訊號']==False) & (df_results['J值']<30)].sort_values(by='J值')
-                df_disp = pd.concat([df_disp, pot.head(5 - len(df_disp))])
+            st.markdown("##### 🎯 尋找買點榜單 (S級強烈建議佈局)")
+            df_disp = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
+            if df_disp.empty:
+                st.info("目前雷達池內沒有符合【S級買點】的標的。以下為您列出次佳的【A級機會】：")
+                df_disp = df_results[df_results['Score'] >= 2].sort_values(by='Score', ascending=False)
         else:
             st.markdown("##### 📋 熱門名單")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(10)
@@ -593,7 +606,7 @@ if st.session_state.page == "home":
         for _, r in df_disp.iterrows():
             with st.container(border=True):
                 c1, c2 = st.columns([8, 2])
-                with c1: st.markdown(f"### `{r['代號']}` **{r['名稱']}**")
+                with c1: st.markdown(f"### {r['代號']} **{r['名稱']}**")
                 with c2:
                     if st.button("⭐ 移除" if r['ticker_raw'] in st.session_state.favorites else "☆ 收藏", key=f"s_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                         if r['ticker_raw'] in st.session_state.favorites: st.session_state.favorites.remove(r['ticker_raw'])
@@ -608,7 +621,7 @@ if st.session_state.page == "home":
                 
                 st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
                 
-                st.markdown(f"<div style='text-align: center; font-size: 1rem; color: #888; line-height: 1.6;'>📊 產業: {r['產業']}<br>昨收: {r['昨日收盤價']}<br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1rem; color: {text_col}; line-height: 1.8;'>產業: <b>{r['產業']}</b><br>昨收: <b>{r['昨日收盤價']}</b><br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
