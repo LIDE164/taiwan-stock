@@ -94,13 +94,14 @@ CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_yahoo_chinese_name(ticker):
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{ticker}"
+        base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+        url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
+        h1 = soup.find('h1')
+        if h1:
+            name = h1.text.strip()
             if name and name != "Yahoo奇摩股市":
                 return name
     except: pass
@@ -108,7 +109,7 @@ def get_yahoo_chinese_name(ticker):
 
 def get_stock_name(ticker):
     if not ticker: return ""
-    ticker_str = str(ticker).strip()
+    ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
     if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
     html_name = get_yahoo_chinese_name(ticker_str)
@@ -162,22 +163,76 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-@st.cache_data(ttl=86400, show_spinner=False)
+# --- 修復1：強勢爬取即時本益比與 EPS ---
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    eps_val, pe_val = "無", "無"
+    ind = "一般產業"
+    
+    # 爬取 Yahoo Taiwan 最準確的 PE 和 EPS
     try:
-        base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+        url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        for li in soup.find_all('li'):
+            txt = li.text
+            if "本益比" in txt and len(txt) < 20:
+                val = txt.replace("本益比", "").strip()
+                if val and val != "-": pe_val = val
+            elif "每股盈餘" in txt and len(txt) < 20:
+                val = txt.replace("每股盈餘", "").replace("(連續4季)", "").strip()
+                if val and val != "-": eps_val = val
+    except: pass
+
+    # 產業分類退回 yfinance 抓取
+    try:
         info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'trailingEps' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
         
-        sec, ind = info.get("sector", ""), info.get("industry", "")
-        tw_sec, tw_ind = ENG_TO_TW_INDUSTRY.get(sec, sec), ENG_TO_TW_INDUSTRY.get(ind, ind)
-        full_ind = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
+        sec, ind_eng = info.get("sector", ""), info.get("industry", "")
+        tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
+        tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
+        ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         
-        if re.search(r'[a-zA-Z]', full_ind):
-            full_ind = "一般產業"
+        if not re.search(r'[a-zA-Z]', ind_temp):
+            ind = ind_temp
             
-        return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
-    except: return {"EPS": "無", "PE": "無", "Industry": "一般產業"}
+        if pe_val == "無": pe_val = info.get("trailingPE", "無")
+        if eps_val == "無": eps_val = info.get("trailingEps", "無")
+    except: pass
+
+    return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
+
+@st.cache_data(ttl=5, show_spinner=False)
+def get_yahoo_tw_quote(symbol):
+    try:
+        url_sym = urllib.parse.quote(symbol)
+        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
+        if not price_tag: return None, None
+        price = float(price_tag.text.replace(',', ''))
+        
+        change = 0
+        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
+        for tag in change_tags:
+            classes = tag.get('class', [])
+            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
+                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
+                try:
+                    change = float(txt)
+                    if 'C($c-trend-down)' in classes: change = -abs(change)
+                    break
+                except: pass
+        return price, change
+    except:
+        return None, None
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
@@ -251,6 +306,7 @@ def get_twii_quote():
     
     return 0, 0
 
+# --- 修復2：修正過濾器，確保大盤在盤後不被刪除 ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -260,7 +316,9 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
-                d = d[d['Volume'] > 0] 
+                # 大盤指數常常沒有成交量，避免盤後將當天判定為無效而被刪除
+                if not sym.startswith('^'):
+                    d = d[d['Volume'] > 0] 
                 if len(d) >= 20: return d
         except: pass
         return None
@@ -335,7 +393,7 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
         
-    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -393,14 +451,19 @@ def get_decision_score(data, fund_data):
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
-    if isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0: sc+=2; rs.append("✅ 基本面獲利")
+    
+    # 完美處理字串型態 EPS，避免崩潰
+    try: eps_f = float(fund_data['EPS'])
+    except: eps_f = 0.0
+        
+    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     if data['成交量'] / (data['5日均量'] + 0.001) > 1.5 and data['漲跌'] > 0: sc+=2; rs.append("✅ 量價配合")
     
     if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
     if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌")
     if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線")
-    if not (isinstance(fund_data['EPS'], (int, float)) and fund_data['EPS'] > 0) and fund_data['EPS'] != "無": sc-=1; rs.append("⚠️ 基本面虧損")
+    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
     return sc, rs
 
 def analyze_today(df, ticker_number):
@@ -442,7 +505,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
