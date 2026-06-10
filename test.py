@@ -136,13 +136,9 @@ def get_fundamental_and_industry_data(ticker_number):
 def get_stock_data(ticker_number):
     try:
         base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-        # 修正大盤與指數的抓取方式，確保抓到最新資料
-        if base_ticker == "^TWII": 
-            df = yf.Ticker("^TWII").history(period="1y")
-        elif base_ticker == "TX00": 
-            df = yf.Ticker("TX=F").history(period="1y")
-        elif base_ticker == "^TWOII": 
-            df = yf.Ticker("^TWOII").history(period="1y")
+        if base_ticker == "^TWII": df = yf.Ticker("^TWII").history(period="1y")
+        elif base_ticker == "TX00": df = yf.Ticker("TX=F").history(period="1y")
+        elif base_ticker == "^TWOII": df = yf.Ticker("^TWOII").history(period="1y")
         else:
             df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
             if df.empty or len(df)<20: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
@@ -150,16 +146,11 @@ def get_stock_data(ticker_number):
         
         if df.empty or len(df)<20: return None
         
-        # 確保時區正確，避免日期顯示錯誤
-        if df.index.tzinfo is not None:
-            df.index = df.index.tz_convert('Asia/Taipei')
-        else:
-            df.index = df.index.tz_localize('UTC').tz_convert('Asia/Taipei')
-            
+        df = df.fillna(method='ffill') 
         df = df.dropna(subset=['Close']) 
-        df['Volume'] = df['Volume'].fillna(0) 
+        df['Volume'] = df['Volume'].fillna(0)
         
-        if df.empty or len(df)<20: return None 
+        if df.empty or len(df)<20: return None
         
         df['5MA'] = df['Close'].rolling(5).mean()
         df['10MA'] = df['Close'].rolling(10).mean()
@@ -184,12 +175,10 @@ def get_stock_data(ticker_number):
 
 @st.cache_data(ttl=600)
 def get_real_news(ticker, name):
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
-    query = urllib.parse.quote(f"{ticker} {name} 股票")
-    url = f"https://news.google.com/rss/search?q={query}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    
     try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
@@ -203,10 +192,8 @@ def get_real_news(ticker, name):
             for n in yf_news[:3]:
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
-
-    if not news_list:
-        news_list.append({"title": f"👉 點擊查看【{ticker} {name}】最新市場消息", "link": f"https://www.google.com/search?q={query}&tbm=nws"})
         
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
 
 def analyze_today(df, ticker_number):
@@ -308,7 +295,6 @@ def get_mini_index_data(ticker):
         c = df['Close'].iloc[-1]
         p = df['Close'].iloc[-2]
         change = c - p
-        pct = change / p * 100
         color = "#ff3333" if change >= 0 else "#00cc00"
         return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
     return "讀取中"
@@ -329,14 +315,13 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            # 修正大盤與指數的來源標示
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 <a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='font-size:0.7rem; color:#888; text-decoration:none;'>🔗來源</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
             tx_data = get_mini_index_data("TX00")
             two_data = get_mini_index_data("^TWOII")
-            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'>台指近: {tx_data} | 櫃買: {two_data}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://tw.stock.yahoo.com/quote/FITX1.TW' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/%5ETWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
 
         with col2:
             st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>🔮 明日開盤預測模型</div>", unsafe_allow_html=True)
