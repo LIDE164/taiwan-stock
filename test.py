@@ -138,51 +138,39 @@ def get_fundamental_and_industry_data(ticker_number):
         return {"EPS": info.get("trailingEps", "無"), "PE": info.get("trailingPE", "無"), "Industry": full_ind}
     except: return {"EPS": "無", "PE": "無", "Industry": "未提供產業資訊"}
 
-@st.cache_data(ttl=5, show_spinner=False)
-def get_yahoo_tw_quote(symbol):
-    try:
-        url_sym = urllib.parse.quote(symbol)
-        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change = 0
-        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
-        for tag in change_tags:
-            classes = tag.get('class', [])
-            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
-                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
-                try:
-                    change = float(txt)
-                    if 'C($c-trend-down)' in classes: change = -abs(change)
-                    break
-                except: pass
-        return price, change
-    except:
-        return None, None
-
+# --- 全新 100% 可靠大盤抓取引擎 ---
 @st.cache_data(ttl=5, show_spinner=False) 
-def get_quick_quote(ticker):
+def get_twii_quote():
+    # 策略 1: 台灣證券交易所官方 API (最即時、最穩定)
     try:
-        tk = yf.Ticker(ticker)
-        info = tk.fast_info
-        last_price = info.get('lastPrice')
-        prev_close = info.get('previousClose')
-        if last_price and prev_close:
-            return last_price, last_price - prev_close
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0"
+        res = requests.get(url, timeout=3)
+        data = res.json()
+        if 'msgArray' in data and len(data['msgArray']) > 0:
+            info = data['msgArray'][0]
+            # 若 z (當盤價) 為 '-' 表示開盤前，改用 y (昨收)
+            curr_str = info.get('z')
+            curr = float(curr_str) if curr_str != '-' else float(info.get('y'))
+            prev = float(info.get('y'))
+            if curr and prev: return curr, curr - prev
     except: pass
     
+    # 策略 2: yfinance 極速資訊
     try:
-        df = yf.Ticker(ticker).history(period="5d")
+        info = yf.Ticker("^TWII").fast_info
+        curr = info.get('lastPrice')
+        prev = info.get('previousClose')
+        if curr and prev: return curr, curr - prev
+    except: pass
+    
+    # 策略 3: yfinance 歷史線圖防護
+    try:
+        df = yf.Ticker("^TWII").history(period="5d")
         df = df.dropna(subset=['Close'])
         if len(df) >= 2:
             return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
     except: pass
+    
     return 0, 0
 
 @st.cache_data(ttl=60, show_spinner=False) 
@@ -274,49 +262,57 @@ def get_real_news(ticker, name):
     if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
 
+# --- 強化版：純文字正則掃描，完美破解 Yahoo 阻擋 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{ticker}/institutional-trading"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
         data = []
         all_texts = list(soup.stripped_strings)
         for i in range(len(all_texts)):
-            if re.match(r'^\d{2}/\d{2}$', all_texts[i]):
-                try:
-                    date_str = all_texts[i]
-                    nums = []
-                    offset = 1
-                    while len(nums) < 4 and i + offset < len(all_texts):
-                        txt = all_texts[i + offset]
-                        if txt in ['買超', '賣超', '平']:
-                            offset += 1
-                            continue
-                        clean_txt = txt.replace(',', '').replace('+', '')
-                        if re.match(r'^-?\d+$', clean_txt) or clean_txt == '0':
-                            nums.append(txt)
-                        offset += 1
-                        if offset > 15: break 
-                    
-                    if len(nums) == 4:
-                        data.append({
-                            "日期": date_str, "外資(張)": nums[0], "投信(張)": nums[1],
-                            "自營商(張)": nums[2], "合計(張)": nums[3]
-                        })
-                except: pass
+            # 尋找日期，例如 06/10 或 2024/06/10
+            if re.match(r'^(\d{4}/)?\d{2}/\d{2}$', all_texts[i]):
+                date_str = all_texts[i]
+                nums = []
+                offset = 1
                 
+                # 往後掃描最近的 4 個有效數字
+                while len(nums) < 4 and i + offset < len(all_texts):
+                    txt = all_texts[i + offset]
+                    if txt in ['買超', '賣超', '平', '更新']:
+                        offset += 1
+                        continue
+                    
+                    clean_txt = txt.replace(',', '').replace('+', '')
+                    if re.match(r'^-?\d+(\.\d+)?$', clean_txt):
+                        nums.append(txt)
+                        
+                    offset += 1
+                    if offset > 20: break # 防止死迴圈
+                
+                if len(nums) == 4:
+                    data.append({
+                        "日期": date_str[-5:] if len(date_str) > 5 else date_str, 
+                        "外資(張)": nums[0], 
+                        "投信(張)": nums[1],
+                        "自營商(張)": nums[2], 
+                        "合計(張)": nums[3]
+                    })
+        
         seen = set()
         res_data = []
         for d in data:
             if d['日期'] not in seen:
                 seen.add(d['日期'])
                 res_data.append(d)
+                if len(res_data) == 10: break
                 
-        return res_data[:10]
-    except:
+        return res_data
+    except Exception as e:
         return []
 
 def analyze_today(df, ticker_number):
@@ -414,31 +410,10 @@ def predict_tomorrow_open(twii_df, sox_df):
     elif score == -1: return "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
     else: return "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
 
-def get_mini_index_data(ticker, tw_symbol=None):
-    if tw_symbol:
-        c, change = get_yahoo_tw_quote(tw_symbol)
-        if c is not None:
-            color = "#ff3333" if change >= 0 else "#00cc00"
-            if tw_symbol == "^TWOII":
-                return f"<span style='color:{color}; font-weight:bold;'>{c:,.2f} ({'+' if change>0 else ''}{change:.2f})</span>"
-            else:
-                return f"<span style='color:{color}; font-weight:bold;'>{c:,.0f} ({'+' if change>0 else ''}{change:.0f})</span>"
-    
-    c, change = get_quick_quote(ticker)
-    if c:
-        color = "#ff3333" if change >= 0 else "#00cc00"
-        return f"<span style='color:{color}; font-weight:bold;'>{c:,.2f} ({'+' if change>0 else ''}{change:.2f})</span>".replace('.00', '')
-    return "讀取中"
-
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
-    if twii_close is None:
-        twii_close, twii_change = get_quick_quote("^TWII")
-        if not twii_close:
-            twii_close, twii_change = 0, 0
-            
+    twii_close, twii_change = get_twii_quote()
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -453,13 +428,11 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/TAIEX' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
-            tx_data = get_mini_index_data("TX=F", "FITX1.TW")
-            two_data = get_mini_index_data("^TWOII", "TWOII")
-            st.markdown(f"<div style='text-align: center; font-size: 0.95rem; margin-top:10px;'><a href='https://finance.yahoo.com/quote/TX=F' target='_blank' style='color:#888; text-decoration:none;'>台指近🔗</a>: {tx_data} | <a href='https://tw.stock.yahoo.com/quote/TWOII' target='_blank' style='color:#888; text-decoration:none;'>櫃買🔗</a>: {two_data}</div>", unsafe_allow_html=True)
+            # --- 首頁只保留台灣加權指數，按要求刪除台指近與櫃買 ---
             
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🔄 更新大盤即時報價", use_container_width=True):
