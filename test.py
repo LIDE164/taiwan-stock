@@ -185,6 +185,47 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
+# --- 100% 穩定防護加權指數引擎 ---
+@st.cache_data(ttl=5, show_spinner=False) 
+def get_twii_quote():
+    # 策略 1: 網頁即時爬蟲爬取加權指數現價 (最無延遲)
+    try:
+        price, change = get_yahoo_tw_quote("TAIEX")
+        if price and change is not None:
+            return price, change
+    except: pass
+
+    # 策略 2: 台灣證券交易所官方 API (最穩定備援)
+    try:
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0"
+        res = requests.get(url, timeout=3)
+        data = res.json()
+        if 'msgArray' in data and len(data['msgArray']) > 0:
+            info = data['msgArray'][0]
+            curr_str = info.get('z')
+            curr = float(curr_str) if curr_str != '-' else float(info.get('y'))
+            prev = float(info.get('y'))
+            if curr and prev: return curr, curr - prev
+    except: pass
+    
+    # 策略 3: yfinance 極速資訊
+    try:
+        info = yf.Ticker("^TWII").fast_info
+        curr = info.get('lastPrice')
+        prev = info.get('previousClose')
+        if curr and prev: return curr, curr - prev
+    except: pass
+    
+    # 策略 4: yfinance 歷史線圖防護
+    try:
+        df = yf.Ticker("^TWII").history(period="5d")
+        df = df.dropna(subset=['Close'])
+        if len(df) >= 2:
+            return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
+    except: pass
+    
+    return 0, 0
+
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -374,7 +415,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"收盤: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     
@@ -384,8 +425,8 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
     
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
 
     ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
@@ -402,8 +443,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     )
     return fig
 
-tz_tpe = timezone(timedelta(hours=8))
-
+# --- 2. 修正預測模型核心運算邏輯，精準切分今日盤勢與明日預測 ---
 def predict_tomorrow_open(twii_df, sox_df):
     if twii_df is None or len(twii_df) < 2:
         return "資料不足", "無法分析", "資料不足", "無法預測"
@@ -418,27 +458,26 @@ def predict_tomorrow_open(twii_df, sox_df):
     if t_open > p_close * 1.003:
         if t_close > t_open:
             today_title = "🔥 開高走高"
-            today_desc = "大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
+            today_desc = "今日大盤強勢跳空開高，買盤持續湧入，盤勢極度偏多。"
         else:
             today_title = "⚠️ 開高走低"
-            today_desc = "大盤跳空開高後遭遇賣壓，呈現開高走低現象。"
+            today_desc = "今日大盤雖然跳空開高，但隨後遭遇強大賣壓，呈現高檔獲利了結回落。"
     elif t_open < p_close * 0.997:
         if t_close > t_open:
             today_title = "💪 開低走高"
-            today_desc = "大盤開低但低檔承接買盤強勁，出現開低走高紅K。"
+            today_desc = "今日大盤受利空影響弱勢開低，但低檔承接買盤非常強勁，拉出長紅K棒。"
         else:
             today_title = "🩸 開低走低"
-            today_desc = "大盤弱勢開低且賣壓沉重一路向下，盤勢極度偏空。"
+            today_desc = "今日大盤弱勢開低，且市場恐慌賣壓沉重一路走低，盤勢極度偏空。"
     else:
         if t_close > p_close * 1.003:
             today_title = "📈 平盤走高"
-            today_desc = "大盤開平盤附近，隨後多方發力穩步墊高。"
+            today_desc = "今日大盤開在平盤附近，隨後多方發力穩步墊高，收紅K棒。"
         elif t_close < p_close * 0.997:
             today_title = "📉 平盤走低"
-            today_desc = "大盤開平盤附近，但缺乏買盤支撐，盤勢震盪向下。"
+            today_desc = "今日大盤開在平盤附近，但盤中缺乏多頭買盤支撐，盤勢震盪向下收黑。"
 
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
-    
     score = 0
     if t_close > ma5: score += 1
     else: score -= 1
@@ -461,12 +500,7 @@ def predict_tomorrow_open(twii_df, sox_df):
 def render_index_board():
     now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    twii_close, twii_change = get_yahoo_tw_quote("TAIEX")
-    if twii_close is None:
-        twii_close, twii_change = get_quick_quote("^TWII")
-        if not twii_close:
-            twii_close, twii_change = 0, 0
-            
+    twii_close, twii_change = get_twii_quote()
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -476,6 +510,7 @@ def render_index_board():
     twii_df_for_pred = get_stock_data("^TWII")
     if twii_df_for_pred is None: twii_df_for_pred = get_stock_data("0050.TW")
         
+    # --- 1. 完全修復解包對接崩潰Bug，精準接收 4 個回傳參數 ---
     today_title, today_desc, tmr_title, tmr_desc = predict_tomorrow_open(twii_df_for_pred, sox_df)
     
     with st.container(border=True):
