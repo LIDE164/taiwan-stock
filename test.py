@@ -99,10 +99,9 @@ def get_yahoo_chinese_name(ticker):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
-            # 絕對剔除 Yahoo 字眼，避免記憶錯誤名稱
+        h1 = soup.find('h1')
+        if h1:
+            name = h1.text.strip()
             if name and "Yahoo" not in name:
                 return name
     except: pass
@@ -138,7 +137,9 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
-if 'view_days' not in st.session_state: st.session_state.view_days = 60
+
+# --- 修改：圖表預設改為顯示 1個月 (20交易日) ---
+if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 @st.cache_data(ttl=1800)
@@ -396,62 +397,75 @@ def get_real_news(ticker, name):
     if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
+# --- 核心修正1：全面改用雙引擎 (HiStock + FinMind) 爬取嚴謹的逐日買賣超 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
+    # 策略1: 嘗試爬取嗨投資 (HiStock) 籌碼表，格式精準且無總覽干擾
     try:
-        url = f"https://tw.stock.yahoo.com/quote/{ticker}/institutional-trading"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
-        data = []
-        all_texts = list(soup.stripped_strings)
-        
-        start_idx = 0
-        for i, txt in enumerate(all_texts):
-            if txt in ["單日買賣超", "單日買賣超(張)"]:
-                start_idx = i
-                break
+        table = soup.find('table', {'class': 'tb-stock text-center tbBasic'})
+        if not table:
+            table = soup.find('table', class_=lambda c: c and 'tb-stock' in c)
+            
+        if table:
+            rows = table.find_all('tr')
+            res_list = []
+            for row in rows:
+                cols = [c.text.strip().replace(',', '') for c in row.find_all(['td', 'th'])]
+                # 嚴格判斷第一欄必須是日期格式 (如 10/25 或 2023/10/25) 才會收錄
+                if len(cols) >= 5 and re.match(r'^\d{2}/\d{2}$|^\d{4}/\d{2}/\d{2}$', cols[0]):
+                    try:
+                        res_list.append({
+                            "日期": cols[0][-5:], 
+                            "外資(張)": int(cols[1]),
+                            "投信(張)": int(cols[2]),
+                            "自營商(張)": int(cols[3]),
+                            "單日合計(張)": int(cols[4])
+                        })
+                    except: pass
+                if len(res_list) == 10:
+                    break
+            if res_list: return res_list
+    except: pass
+    
+    # 策略2: FinMind 開源數據庫 API (完美官方資料，但有每小時 Rate limit 限制)
+    try:
+        start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('msg') == 'success' and len(data.get('data', [])) > 0:
+                df = pd.DataFrame(data['data'])
+                df['net'] = (df['buy'] - df['sell']) / 1000  # FinMind 單位是股，除以 1000 換成張
                 
-        for i in range(start_idx, len(all_texts)):
-            if re.match(r'^(\d{4}/)?\d{2}/\d{2}$', all_texts[i]):
-                date_str = all_texts[i]
-                nums = []
-                offset = 1
+                df['type'] = '其他'
+                df.loc[df['name'].str.contains('Foreign', case=False, na=False), 'type'] = '外資'
+                df.loc[df['name'].str.contains('Investment_Trust', case=False, na=False), 'type'] = '投信'
+                df.loc[df['name'].str.contains('Dealer', case=False, na=False) & ~df['name'].str.contains('Foreign', case=False, na=False), 'type'] = '自營商'
                 
-                while len(nums) < 4 and i + offset < len(all_texts):
-                    txt = all_texts[i + offset]
-                    if txt in ['買超', '賣超', '平', '更新']:
-                        offset += 1
-                        continue
-                    
-                    clean_txt = txt.replace(',', '').replace('+', '')
-                    if re.match(r'^-?\d+(\.\d+)?$', clean_txt):
-                        nums.append(txt)
+                pivot = df.groupby(['date', 'type'])['net'].sum().unstack(fill_value=0).reset_index()
+                for col in ['外資', '投信', '自營商']:
+                    if col not in pivot.columns: pivot[col] = 0
                         
-                    offset += 1
-                    if offset > 20: break 
+                pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
+                pivot = pivot.sort_values('date', ascending=False).head(10)
                 
-                if len(nums) == 4:
-                    data.append({
-                        "日期": date_str[-5:] if len(date_str) > 5 else date_str, 
-                        "外資(張)": nums[0], 
-                        "投信(張)": nums[1],
-                        "自營商(張)": nums[2], 
-                        "單日合計(張)": nums[3]
+                res_list = []
+                for _, row in pivot.iterrows():
+                    res_list.append({
+                        "日期": row['date'][-5:],
+                        "外資(張)": int(row['外資']),
+                        "投信(張)": int(row['投信']),
+                        "自營商(張)": int(row['自營商']),
+                        "單日合計(張)": int(row['單日合計'])
                     })
-        
-        seen = set()
-        res_data = []
-        for d in data:
-            if d['日期'] not in seen:
-                seen.add(d['日期'])
-                res_data.append(d)
-                if len(res_data) == 10: break
-                
-        return res_data
-    except Exception as e:
-        return []
+                if res_list: return res_list
+    except: pass
+    
+    return []
 
 def get_decision_score(data, fund_data):
     sc, rs = 0, []
@@ -546,7 +560,7 @@ def generate_comprehensive_analysis(data, inst_data, sc):
     elif sc >= -1: 
         v_t, v_c = "⚪ 中性觀望：多空不明", "#888888"
         if data['收盤價'] > data['20MA']:
-            v_a = f"⏳ <b>進場判斷：暫緩進場 (多方震盪)</b><br>股價在月線 ({data['20MA']:.2f}) 之之上震盪，無明顯表態。<br>📌 建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線再嘗試建倉。"
+            v_a = f"⏳ <b>進場判斷：暫緩進場 (多方震盪)</b><br>股價在月線 ({data['20MA']:.2f}) 之上震盪，無明顯表態。<br>📌 建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線再嘗試建倉。"
         else:
             v_a = f"⏳ <b>進場判斷：暫緩進場 (空方弱勢)</b><br>股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱。<br>📌 建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐再作打算。"
     elif sc >= -4: 
@@ -933,6 +947,7 @@ elif st.session_state.page == "analysis":
             else: st.info("無法識別該股產業。")
 
             st.divider()
+            # --- 核心修正1：名稱更改為 🏦 近期三大法人逐日買賣超 ---
             st.subheader("🏦 近期三大法人逐日買賣超")
             if inst_data:
                 st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
