@@ -63,22 +63,9 @@ ENG_TO_TW_INDUSTRY = {
     "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意業", "Technology": "電子科技",
     "Industrials": "工業", "Basic Materials": "原物料", "Financial Services": "金融業",
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
-    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路",
-    "Auto Manufacturers": "汽車工業", "Auto Parts": "汽車零組件",
-    "Banks - Regional": "銀行業", "Biotechnology": "生技醫療",
-    "Chemicals": "化學工業", "Electronic Gaming & Multimedia": "遊戲及多媒體",
-    "Food": "食品工業", "Insurance - Life": "保險業", "Insurance": "保險業",
-    "Internet Content & Information": "資訊服務業", "Packaged Foods": "食品工業",
-    "Software - Application": "軟體業", "Software - Infrastructure": "軟體業",
-    "Specialty Retail": "貿易百貨", "Telecom Services": "通信網路",
-    "Aerospace & Defense": "航太與國防", "Airlines": "航空業",
-    "Apparel Retail": "服飾零售", "Apparel Manufacturing": "紡織纖維",
-    "Construction Materials": "建材營造", "Diagnostics & Research": "生技醫療",
-    "Medical Care Facilities": "醫療保健", "Medical Devices": "生技醫療",
-    "Paper & Paper Products": "造紙業", "Restaurants": "餐飲業", "Steel": "鋼鐵業"
+    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
 
-# --- 核心修正1：完全依賴證交所/櫃買中心 OpenAPI 作為名稱字典，徹底淘汰 Yahoo ---
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
     names = STOCK_NAMES.copy()
@@ -92,12 +79,40 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
+# --- 核心修正1：完全拔除 Yahoo 名稱抓取，改用 Cnyes 與 HiStock 雙引擎確保名稱不為數字 ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_real_chinese_name(ticker):
+    try:
+        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        h2 = soup.find('h2')
+        if h2:
+            name = h2.text.strip()
+            if name: return name
+    except: pass
+
+    try:
+        res = requests.get(f"https://histock.tw/stock/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title = soup.find('title')
+        if title:
+            name = title.text.split('(')[0].strip()
+            if name and ticker not in name and "嗨投資" not in name:
+                return name
+    except: pass
+    return ""
+
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: 
-        return CURRENT_STOCK_NAMES[ticker_str]
-    return ticker_str # 完全不使用 Yahoo 爬蟲，以官方名稱為主
+    if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
+    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
+    
+    html_name = get_real_chinese_name(ticker_str)
+    if html_name: 
+        STOCK_NAMES[ticker_str] = html_name 
+        return html_name
+    return ticker_str
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -144,7 +159,7 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
@@ -154,7 +169,7 @@ def get_fundamental_and_industry_data(ticker_number):
     
     try:
         url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
@@ -188,34 +203,16 @@ def get_fundamental_and_industry_data(ticker_number):
 
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
-@st.cache_data(ttl=5, show_spinner=False) 
-def get_quick_quote(ticker):
-    try:
-        tk = yf.Ticker(ticker)
-        info = tk.fast_info
-        last_price = info.get('lastPrice')
-        prev_close = info.get('previousClose')
-        if last_price and prev_close:
-            return last_price, last_price - prev_close
-    except: pass
-    
-    try:
-        df = yf.Ticker(ticker).history(period="5d")
-        df = df.dropna(subset=['Close'])
-        if len(df) >= 2:
-            return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
-    except: pass
-    return 0, 0
-
-# --- 核心修正2：大盤即時報價，全面棄用 Yahoo ---
+# --- 核心修正2：全面棄用 Yahoo/Google 查詢大盤，改採本土 TWSE API 與 HiStock ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
-    # 策略 1: 台灣證券交易所官方 API (最即時、最準確)
+    # 策略 1: 台灣證券交易所官方 MIS API (最即時、最準確)
     try:
+        session = requests.Session()
+        session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         ts = int(datetime.now().timestamp() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3)
+        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
@@ -227,27 +224,21 @@ def get_twii_quote():
                 if curr > 10000: return curr, curr - prev
     except: pass
 
-    # 策略 2: Google Finance (穩定備援)
+    # 策略 2: HiStock 嗨投資即時大盤 (堅實備援)
     try:
-        url = "https://www.google.com/finance/quote/TAIEX:TPE"
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        res = requests.get("https://histock.tw/index/TAIEX", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
-        price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
-        if price_div:
-            price = float(price_div.text.replace(',', ''))
-            if price > 10000:
-                change_div = soup.find('div', {'class': 'P6K39c'})
-                change = 0
-                if change_div:
-                    change_text = change_div.text.replace('+', '').replace(',', '')
-                    change = float(change_text)
-                    if 'JwB6zf' in change_div.parent.get('class', []): change = -abs(change)
-                return price, change
+        price_tag = soup.find('span', id='CPTWII')
+        change_tag = soup.find('span', id='CUTWII')
+        if price_tag and change_tag:
+            curr = float(price_tag.text.replace(',', ''))
+            change = float(change_tag.text.replace(',', ''))
+            if curr > 10000: return curr, change
     except: pass
     
     return 0, 0
 
-# --- 核心修正2：大盤歷史 K 線改用 FinMind 開源庫，徹底拔除 Yahoo ---
+# --- 核心修正3：大盤歷史 K 線改用 FinMind 開源庫，徹底拔除 Yahoo ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
@@ -282,7 +273,7 @@ def get_stock_data(ticker_number):
 
     df = None
     if base_ticker == "^TWII": 
-        df = fetch_twse_index_history() # 大盤全面改用 FinMind
+        df = fetch_twse_index_history()
     else:
         df = fetch_clean(f"{base_ticker}.TW")
         if df is None: df = fetch_clean(f"{base_ticker}.TWO")
@@ -326,6 +317,9 @@ def get_market_news():
                 if len(news) >= 3:
                     break
     except: pass
+    
+    if not news:
+        news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
     return news
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -333,7 +327,7 @@ def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
@@ -348,13 +342,13 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
         
-    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
         res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         table = soup.find('table', {'class': 'tb-stock text-center tbBasic'})
@@ -640,7 +634,8 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            # --- 更新超連結指向 TWSE 官方 ---
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -650,7 +645,7 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: TWSE / Google Finance)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: TWSE 證交所)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
@@ -695,13 +690,14 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補)")
-            # --- 核心修正3：S級不足 10 筆則自動用 A級補足 ---
+            # --- 核心修正3：S級不足 10 檔，自動用 A級無縫補足 ---
+            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補至 10 檔)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
-            df_disp = df_s
             if len(df_s) < 10:
                 df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
                 df_disp = pd.concat([df_s, df_a.head(10 - len(df_s))])
+            else:
+                df_disp = df_s
                 
             if df_disp.empty:
                 st.info("目前雷達池內沒有符合條件的標的。")
