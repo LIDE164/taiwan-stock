@@ -91,6 +91,7 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_yahoo_chinese_name(ticker):
     try:
         base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -106,18 +107,16 @@ def get_yahoo_chinese_name(ticker):
     except: pass
     return ""
 
-# --- 修復4：絕對不快取空字串的防護 ---
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
     if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
-    
     html_name = get_yahoo_chinese_name(ticker_str)
     if html_name: 
-        STOCK_NAMES[ticker_str] = html_name # 抓到才記憶
+        STOCK_NAMES[ticker_str] = html_name 
         return html_name
-    return ticker_str # 沒抓到就回傳代號，不要傳空字串
+    return ticker_str
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -396,6 +395,7 @@ def get_real_news(ticker, name):
     if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
+# --- 修正1：精準錨定逐日買賣超，避免抓到總覽表格 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
@@ -406,7 +406,14 @@ def get_institutional_trading(ticker):
         
         data = []
         all_texts = list(soup.stripped_strings)
-        for i in range(len(all_texts)):
+        
+        start_idx = 0
+        for i, txt in enumerate(all_texts):
+            if txt in ["單日合計", "單日買賣超"]:
+                start_idx = i
+                break
+                
+        for i in range(start_idx, len(all_texts)):
             if re.match(r'^(\d{4}/)?\d{2}/\d{2}$', all_texts[i]):
                 date_str = all_texts[i]
                 nums = []
@@ -431,7 +438,7 @@ def get_institutional_trading(ticker):
                         "外資(張)": nums[0], 
                         "投信(張)": nums[1],
                         "自營商(張)": nums[2], 
-                        "合計(張)": nums[3]
+                        "單日合計(張)": nums[3]
                     })
         
         seen = set()
@@ -487,47 +494,46 @@ def analyze_today(df, ticker_number):
     data['Score'] = sc
     return data
 
-# --- 核心新增：動態生成自動解盤文字 (包含籌碼面) ---
 def generate_comprehensive_analysis(data, inst_data):
     analysis_bullets = []
     
-    # 1. 均線與多空防線診斷
     if data['收盤價'] < data['5MA']:
-        analysis_bullets.append(f"**短期均線蓋頭反壓**：目前股價 (`{data['收盤價']}`) 低於 5 日線 (`{data['5MA']}`)，短線上檔解套賣壓較為沉重，需盡速放量站回以扭轉弱勢。")
+        analysis_bullets.append(f"<b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔解套賣壓較為沉重，需盡速放量站回以扭轉弱勢。")
     else:
-        analysis_bullets.append(f"**短線強勢表態**：股價成功站穩 5 日線 (`{data['5MA']}`) 之上，維持短線多頭上攻慣性。")
+        analysis_bullets.append(f"<b>短線強勢表態</b>：股價成功站穩 5 日線 ({data['5MA']}) 之上，維持短線多頭上攻慣性。")
         
     if data['收盤價'] < data['20MA']:
-        analysis_bullets.append(f"**跌破月線防守**：現價落於 20 日月線 (`{data['20MA']}`) 之下，中線趨勢有轉為空頭排列的風險。")
+        analysis_bullets.append(f"<b>跌破月線防守</b>：現價落於 20 日月線 ({data['20MA']}) 之下，中線趨勢有轉為空頭排列的風險。")
     elif data['收盤價'] < data['20MA'] * 1.03:
-        analysis_bullets.append(f"**月線保衛戰**：現價距離 20 日均線 (`{data['20MA']}`) 非常接近，此為判斷中線多空的重要防線，強支撐不宜跌破。")
-        
-    # 2. MACD 動能診斷
-    if data['MACD柱'] < 0:
-        analysis_bullets.append(f"**MACD 空方動能未歇**：OSC 柱狀圖為綠柱 (`{data['MACD柱']}`)，顯示這波回檔的空方動能尚未完全收斂。")
+        analysis_bullets.append(f"<b>月線保衛戰</b>：現價距離 20 日均線 ({data['20MA']}) 非常接近，此為判斷中線多空的重要防線，強支撐不宜跌破。")
     else:
-        analysis_bullets.append(f"**MACD 多方動能強勁**：OSC 柱狀圖為紅柱 (`{data['MACD柱']}`)，多頭動能延續掌控局勢。")
+        analysis_bullets.append(f"<b>月線支撐強勁</b>：股價穩居 20 日均線 ({data['20MA']}) 之上，中線多頭格局明確。")
         
-    # 3. KDJ 超買超賣診斷
+    if data['MACD柱'] < 0:
+        analysis_bullets.append(f"<b>MACD 空方動能未歇</b>：OSC 柱狀圖為綠柱 ({data['MACD柱']})，顯示這波回檔的空方動能尚未完全收斂。")
+    else:
+        analysis_bullets.append(f"<b>MACD 多方動能強勁</b>：OSC 柱狀圖為紅柱 ({data['MACD柱']})，多頭動能延續掌控局勢。")
+        
     if data['J值'] < 0:
-        analysis_bullets.append(f"**KDJ 屬左側搶反彈階段**：J 值來到負數 (`{data['J值']}`)，代表短線進入極度超賣區，蘊釀技術性反彈，但尚未確認轉強，屬風險較高的左側交易。")
+        analysis_bullets.append(f"<b>KDJ 屬左側搶反彈階段</b>：J 值來到負數 ({data['J值']})，代表短線進入極度超賣區，蘊釀技術性反彈，但尚未確認轉強，屬風險較高的左側交易。")
     elif data['J值'] > 80:
-        analysis_bullets.append(f"**KDJ 高檔過熱**：J 值高達 `{data['J值']}`，步入超買區，隨時有獲利了結賣壓出籠的回檔風險。")
+        analysis_bullets.append(f"<b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，步入超買區，隨時有獲利了結賣壓出籠的回檔風險。")
     else:
         if data['K'] > data['D']:
-            analysis_bullets.append(f"**KDJ 黃金交叉**：K值 (`{data['K']}`) 大於 D值 (`{data['D']}`)，指標呈現多頭向上發散。")
+            analysis_bullets.append(f"<b>KDJ 黃金交叉</b>：K值 ({data['K']}) 大於 D值 ({data['D']})，指標呈現多頭向上發散。")
+        else:
+            analysis_bullets.append(f"<b>KDJ 死亡交叉</b>：K值 ({data['K']}) 小於 D值 ({data['D']})，短線動能偏弱。")
             
-    # 4. 法人籌碼動向診斷 (近3日加總)
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         
-        chip_status = "**法人籌碼動向 (近3日)**："
-        if foreign_net > 0: chip_status += f"外資偏多操作 (買超 `{foreign_net}` 張)；"
-        else: chip_status += f"外資偏空出貨 (賣超 `{abs(foreign_net)}` 張)；"
+        chip_status = "<b>法人籌碼動向 (近3日)</b>："
+        if foreign_net > 0: chip_status += f"外資偏多操作 (買超 {foreign_net} 張)；"
+        else: chip_status += f"外資偏空出貨 (賣超 {abs(foreign_net)} 張)；"
         
-        if trust_net > 0: chip_status += f"投信買方力挺 (買超 `{trust_net}` 張)。"
-        else: chip_status += f"投信結帳賣出 (賣超 `{abs(trust_net)}` 張)。"
+        if trust_net > 0: chip_status += f"投信買方力挺 (買超 {trust_net} 張)。"
+        else: chip_status += f"投信結帳賣出 (賣超 {abs(trust_net)} 張)。"
         
         analysis_bullets.append(chip_status)
 
@@ -774,24 +780,25 @@ elif st.session_state.page == "analysis":
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
 
+            # --- 核心修正2：AI決策文字更新 (附上精準分批賣出目標價) ---
             if sc >= 5: 
                 v_t, v_c = "🟢 【S級買點】強烈建議佈局", "#00cc00"
-                v_a = f"勝率極高！建議波段建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。<br>🎯 <b>波段賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)</b>。"
+                v_a = f"✅ **進場判斷：強烈買進**<br>勝率極高！築底完成。<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。<br>🎯 **波段賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)**。"
             elif sc >= 2: 
                 v_t, v_c = "🟡 【A級機會】偏多試單", "#ffcc00"
-                v_a = f"具備技術面反彈契機！建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 停損。<br>🎯 <b>短線賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)</b>。"
+                v_a = f"✅ **進場判斷：分批試單**<br>具備技術面反彈契機！<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴格停損。<br>🎯 **短線賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)**。"
             elif sc >= -1: 
                 v_t, v_c = "⚪ 【中性觀望】多空不明", text_col
                 if data['收盤價'] > data['20MA']:
-                    v_a = f"股價在月線 ({data['20MA']:.2f}) 之上震盪，無明顯表態，建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線可嘗試建倉。"
+                    v_a = f"⏳ **進場判斷：暫緩進場 (多方震盪)**<br>股價在月線 ({data['20MA']:.2f}) 之上震盪，無明顯表態。<br>📌 建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線再嘗試建倉。"
                 else:
-                    v_a = f"股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱，建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐。"
+                    v_a = f"⏳ **進場判斷：暫緩進場 (空方弱勢)**<br>股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱。<br>📌 建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐再作打算。"
             elif sc >= -4: 
                 v_t, v_c = "🟠 【風險警示】逢高減碼", "#ff9900"
-                v_a = f"追高風險較大，若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 之間視情況分批獲利了結。"
+                v_a = f"⚠️ **進場判斷：禁止買進，持股者逢高調節**<br>追高風險較大。<br>📌 若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 之間視情況分批獲利了結。"
             else: 
                 v_t, v_c = "🔴 【極度危險】嚴禁做多", "#ff3333"
-                v_a = "強烈建議空手觀望，切勿接刀。"
+                v_a = f"⛔ **進場判斷：絕對空手**<br>強烈建議空手觀望，切勿接刀。"
 
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
@@ -844,14 +851,25 @@ elif st.session_state.page == "analysis":
                 st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
 
-            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 15px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0;">{v_t}</h3><p style="text-align: center; font-size: 1.1rem; color: {text_col};">{v_a}</p><hr style="border-color: {border_col};"><p style="font-size: 0.9rem; color: {sub_text_col}; margin-bottom: 5px;"><strong>🧠 決策引擎分析依據：</strong></p><ul style="font-size: 0.9rem; color: {text_col}; line-height: 1.6;">{"".join([f"<li>{r}</li>" for r in rs])}</ul></div>''', unsafe_allow_html=True)
-            
-            # --- 核心新增：🤖 AI 綜合技術與籌碼診斷 ---
-            st.subheader("🤖 AI 綜合技術與籌碼診斷")
+            # --- 核心新增與修改2：AI 決策大腦二合一 (綜合診斷 + 進場判斷) ---
             bullets = generate_comprehensive_analysis(data, inst_data)
-            for b in bullets:
-                st.markdown(f"- <span style='font-size: 1.05rem; line-height: 1.6;'>{b}</span>", unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
+            bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
+            
+            st.markdown(f'''
+            <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
+                <hr style="border-color: {border_col}; margin: 15px 0;">
+                <div style="margin-bottom: 15px;">
+                    <h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4>
+                    <ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">
+                        {bullets_html}
+                    </ul>
+                </div>
+                <div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
+                    <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
+                </div>
+            </div>
+            ''', unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc4 = st.columns(4)
             if dc1.button("1個月"): st.session_state.view_days = 20
@@ -917,14 +935,14 @@ elif st.session_state.page == "analysis":
             else: st.info("無法識別該股產業。")
 
             st.divider()
-            # --- 核心修正2：名稱更改為 🏦 三大法人逐日籌碼分析 ---
-            st.subheader("🏦 三大法人逐日籌碼分析")
+            # --- 核心修正1：名稱更改為 🏦 近期三大法人逐日買賣超 ---
+            st.subheader("🏦 近期三大法人逐日買賣超")
             if inst_data:
                 st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
             else:
                 st.info("目前無法自動抓取籌碼資料，請點擊下方連結前往查看。")
                 
-            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='{yh}/institutional-trading' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Yahoo 股市 (外資投信買賣超)</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='{yh}/institutional-trading' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Yahoo 股市 (法人逐日買賣超)</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target}' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Goodinfo (主力進出明細)</a></div>", unsafe_allow_html=True)
             
             st.divider()
