@@ -79,7 +79,6 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
-# --- 核心修正1：完全拔除 Yahoo 名稱抓取，改用 Cnyes 與 HiStock 雙引擎確保名稱不為數字 ---
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
     try:
@@ -105,9 +104,9 @@ def get_real_chinese_name(ticker):
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: 
+        return CURRENT_STOCK_NAMES[ticker_str]
     if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
-    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
-    
     html_name = get_real_chinese_name(ticker_str)
     if html_name: 
         STOCK_NAMES[ticker_str] = html_name 
@@ -159,7 +158,7 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
@@ -169,7 +168,7 @@ def get_fundamental_and_industry_data(ticker_number):
     
     try:
         url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
@@ -203,10 +202,27 @@ def get_fundamental_and_industry_data(ticker_number):
 
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
-# --- 核心修正2：全面棄用 Yahoo/Google 查詢大盤，改採本土 TWSE API 與 HiStock ---
+@st.cache_data(ttl=5, show_spinner=False) 
+def get_quick_quote(ticker):
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.fast_info
+        last_price = info.get('lastPrice')
+        prev_close = info.get('previousClose')
+        if last_price and prev_close:
+            return last_price, last_price - prev_close
+    except: pass
+    
+    try:
+        df = yf.Ticker(ticker).history(period="5d")
+        df = df.dropna(subset=['Close'])
+        if len(df) >= 2:
+            return df['Close'].iloc[-1], df['Close'].iloc[-1] - df['Close'].iloc[-2]
+    except: pass
+    return 0, 0
+
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
-    # 策略 1: 台灣證券交易所官方 MIS API (最即時、最準確)
     try:
         session = requests.Session()
         session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
@@ -224,7 +240,6 @@ def get_twii_quote():
                 if curr > 10000: return curr, curr - prev
     except: pass
 
-    # 策略 2: HiStock 嗨投資即時大盤 (堅實備援)
     try:
         res = requests.get("https://histock.tw/index/TAIEX", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -238,7 +253,6 @@ def get_twii_quote():
     
     return 0, 0
 
-# --- 核心修正3：大盤歷史 K 線改用 FinMind 開源庫，徹底拔除 Yahoo ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
@@ -634,8 +648,8 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            # --- 更新超連結指向 TWSE 官方 ---
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            # --- 核心修正2：大盤連結改為 Google Finance ---
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -645,7 +659,7 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: TWSE 證交所)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: TWSE / Google Finance)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
@@ -845,21 +859,59 @@ elif st.session_state.page == "analysis":
             st.markdown("### 📈 基礎技術指標")
             r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1.container(border=True):
-                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`) \n\n 5T: `{data['5MA']}` \n\n 10T: `{data['10MA']}` \n\n 20T: `{data['20MA']}` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`) 
+
+ 5T: `{data['5MA']}` 
+
+ 10T: `{data['10MA']}` 
+
+ 20T: `{data['20MA']}` 
+
+ <a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
             with r1c2.container(border=True):
-                st.markdown(f"**MACD** \n\n DIF: `{data['MACD']}` \n\n OSC: `{data['MACD柱']}` \n\n <br><br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"**MACD** 
+
+ DIF: `{data['MACD']}` 
+
+ OSC: `{data['MACD柱']}` 
+
+ <br><br> <a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
             with r1c3.container(border=True):
-                st.markdown(f"**KDJ** \n\n K: `{data['K']}` \n\n D: `{data['D']}` \n\n J: `{data['J值']}` \n\n <br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"**KDJ** 
+
+ K: `{data['K']}` 
+
+ D: `{data['D']}` 
+
+ J: `{data['J值']}` 
+
+ <br> <a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True):
-                st.markdown(f"##### 📊 布林通道 & 乖離率 \n\n **上軌 (壓力):** `{data['BB_UP']}` \n\n **下軌 (支撐):** `{data['BB_DN']}` \n\n **月線乖離率:** `{data['BIAS']}%` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📊 布林通道 & 乖離率 
+
+ **上軌 (壓力):** `{data['BB_UP']}` 
+
+ **下軌 (支撐):** `{data['BB_DN']}` 
+
+ **月線乖離率:** `{data['BIAS']}%` 
+
+ <a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             with a2.container(border=True):
                 eps = f_data['EPS']
                 m_eps = round(eps/12, 2) if isinstance(eps, (int, float)) else "無"
-                st.markdown(f"##### 📑 臺灣在地即時基本面健檢 \n\n **近四季 EPS:** `{eps}` <a href='{yh}/eps' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a> \n\n **換算單月 EPS:** `{m_eps}` \n\n **最新即時本益比 (P/E):** `{f_data['PE']}` <a href='{yh}/profile' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📑 臺灣在地即時基本面健檢 
+
+ **近四季 EPS:** `{eps}` 
+
+ **換算單月 EPS:** `{m_eps}` 
+
+ **最新即時本益比 (P/E):** `{f_data['PE']}` 
+
+ <a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: 鉅亨網</a>", unsafe_allow_html=True)
 
             st.divider()
             
