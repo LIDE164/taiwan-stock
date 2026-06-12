@@ -78,6 +78,7 @@ ENG_TO_TW_INDUSTRY = {
     "Paper & Paper Products": "造紙業", "Restaurants": "餐飲業", "Steel": "鋼鐵業"
 }
 
+# --- 核心修正1：完全依賴證交所/櫃買中心 OpenAPI 作為名稱字典，徹底淘汰 Yahoo ---
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
     names = STOCK_NAMES.copy()
@@ -91,32 +92,12 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_yahoo_chinese_name(ticker):
-    try:
-        base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-        url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        h1 = soup.find('h1')
-        if h1:
-            name = h1.text.strip()
-            if name and "Yahoo" not in name:
-                return name
-    except: pass
-    return ""
-
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    if ticker_str in STOCK_NAMES: return STOCK_NAMES[ticker_str]
-    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: return CURRENT_STOCK_NAMES[ticker_str]
-    html_name = get_yahoo_chinese_name(ticker_str)
-    if html_name: 
-        STOCK_NAMES[ticker_str] = html_name 
-        return html_name
-    return ticker_str
+    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: 
+        return CURRENT_STOCK_NAMES[ticker_str]
+    return ticker_str # 完全不使用 Yahoo 爬蟲，以官方名稱為主
 
 FAV_FILE = "favorites.json"
 POOL_FILE = "pool.json"
@@ -137,8 +118,6 @@ if 'favorites' not in st.session_state: st.session_state.favorites = load_json(F
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
-
-# --- 修改：圖表預設改為顯示 1個月 (20交易日) ---
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
@@ -165,7 +144,7 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證券交易所 OpenAPI</a></div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number):
@@ -175,7 +154,7 @@ def get_fundamental_and_industry_data(ticker_number):
     
     try:
         url = f"https://tw.stock.yahoo.com/quote/{base_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
@@ -209,34 +188,6 @@ def get_fundamental_and_industry_data(ticker_number):
 
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
-@st.cache_data(ttl=5, show_spinner=False)
-def get_yahoo_tw_quote(symbol):
-    try:
-        url_sym = urllib.parse.quote(symbol)
-        url = f"https://tw.stock.yahoo.com/quote/{url_sym}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        price_tag = soup.find('span', class_=lambda c: c and 'Fz(32px)' in c)
-        if not price_tag: return None, None
-        price = float(price_tag.text.replace(',', ''))
-        
-        change = 0
-        change_tags = soup.find_all('span', class_=lambda c: c and 'Fz(20px)' in c)
-        for tag in change_tags:
-            classes = tag.get('class', [])
-            if 'C($c-trend-up)' in classes or 'C($c-trend-down)' in classes or 'C($c-trend-neutral)' in classes:
-                txt = tag.text.replace(',', '').replace('+', '').replace('△', '').replace('▽', '').replace('▲', '').replace('▼', '').strip()
-                try:
-                    change = float(txt)
-                    if 'C($c-trend-down)' in classes: change = -abs(change)
-                    break
-                except: pass
-        return price, change
-    except:
-        return None, None
-
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_quick_quote(ticker):
     try:
@@ -256,25 +207,10 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
+# --- 核心修正2：大盤即時報價，全面棄用 Yahoo ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
-    try:
-        url = "https://www.google.com/finance/quote/TAIEX:TPE"
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
-        if price_div:
-            price = float(price_div.text.replace(',', ''))
-            if price > 10000:
-                change_div = soup.find('div', {'class': 'P6K39c'})
-                change = 0
-                if change_div:
-                    change_text = change_div.text.replace('+', '').replace(',', '')
-                    change = float(change_text)
-                    if 'JwB6zf' in change_div.parent.get('class', []): change = -abs(change)
-                return price, change
-    except: pass
-
+    # 策略 1: 台灣證券交易所官方 API (最即時、最準確)
     try:
         ts = int(datetime.now().timestamp() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
@@ -290,24 +226,44 @@ def get_twii_quote():
                 curr = float(z) if z and z != '-' else prev
                 if curr > 10000: return curr, curr - prev
     except: pass
-    
+
+    # 策略 2: Google Finance (穩定備援)
     try:
-        df = yf.Ticker("^TWII").history(period="5d")
-        df = df.dropna(subset=['Close'])
-        if not df.empty and len(df) >= 2:
-            curr = df['Close'].iloc[-1]
-            prev = df['Close'].iloc[-2]
-            if curr > 10000: return curr, curr - prev
-    except: pass
-    
-    try:
-        tk = yf.Ticker("^TWII")
-        curr = tk.fast_info.get('lastPrice')
-        prev = tk.fast_info.get('previousClose')
-        if curr and prev and curr > 10000: return curr, curr - prev
+        url = "https://www.google.com/finance/quote/TAIEX:TPE"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        price_div = soup.find('div', {'class': 'YMlKec fxKbKc'})
+        if price_div:
+            price = float(price_div.text.replace(',', ''))
+            if price > 10000:
+                change_div = soup.find('div', {'class': 'P6K39c'})
+                change = 0
+                if change_div:
+                    change_text = change_div.text.replace('+', '').replace(',', '')
+                    change = float(change_text)
+                    if 'JwB6zf' in change_div.parent.get('class', []): change = -abs(change)
+                return price, change
     except: pass
     
     return 0, 0
+
+# --- 核心修正2：大盤歷史 K 線改用 FinMind 開源庫，徹底拔除 Yahoo ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_twse_index_history():
+    try:
+        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TAIEX&start_date={start_date}"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('msg') == 'success' and len(data.get('data', [])) > 0:
+                df = pd.DataFrame(data['data'])
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                df.rename(columns={'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'}, inplace=True)
+                return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    except: pass
+    return None
 
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
@@ -325,7 +281,8 @@ def get_stock_data(ticker_number):
         return None
 
     df = None
-    if base_ticker == "^TWII": df = fetch_clean("^TWII")
+    if base_ticker == "^TWII": 
+        df = fetch_twse_index_history() # 大盤全面改用 FinMind
     else:
         df = fetch_clean(f"{base_ticker}.TW")
         if df is None: df = fetch_clean(f"{base_ticker}.TWO")
@@ -369,9 +326,6 @@ def get_market_news():
                 if len(news) >= 3:
                     break
     except: pass
-    
-    if not news:
-        news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
     return news
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -379,7 +333,7 @@ def get_real_news(ticker, name):
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     news_list = []
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             for item in ET.fromstring(res.text).findall('.//item')[:3]:
@@ -394,15 +348,13 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
         
-    if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Google 新聞查看最新消息", "link": f"https://www.google.com/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}&tbm=nws"})
     return news_list
 
-# --- 核心修正1：全面改用雙引擎 (HiStock + FinMind) 爬取嚴謹的逐日買賣超 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
-    # 策略1: 嘗試爬取嗨投資 (HiStock) 籌碼表，格式精準且無總覽干擾
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         table = soup.find('table', {'class': 'tb-stock text-center tbBasic'})
@@ -414,7 +366,6 @@ def get_institutional_trading(ticker):
             res_list = []
             for row in rows:
                 cols = [c.text.strip().replace(',', '') for c in row.find_all(['td', 'th'])]
-                # 嚴格判斷第一欄必須是日期格式 (如 10/25 或 2023/10/25) 才會收錄
                 if len(cols) >= 5 and re.match(r'^\d{2}/\d{2}$|^\d{4}/\d{2}/\d{2}$', cols[0]):
                     try:
                         res_list.append({
@@ -430,7 +381,6 @@ def get_institutional_trading(ticker):
             if res_list: return res_list
     except: pass
     
-    # 策略2: FinMind 開源數據庫 API (完美官方資料，但有每小時 Rate limit 限制)
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
@@ -439,7 +389,7 @@ def get_institutional_trading(ticker):
             data = res.json()
             if data.get('msg') == 'success' and len(data.get('data', [])) > 0:
                 df = pd.DataFrame(data['data'])
-                df['net'] = (df['buy'] - df['sell']) / 1000  # FinMind 單位是股，除以 1000 換成張
+                df['net'] = (df['buy'] - df['sell']) / 1000  
                 
                 df['type'] = '其他'
                 df.loc[df['name'].str.contains('Foreign', case=False, na=False), 'type'] = '外資'
@@ -464,7 +414,6 @@ def get_institutional_trading(ticker):
                     })
                 if res_list: return res_list
     except: pass
-    
     return []
 
 def get_decision_score(data, fund_data):
@@ -512,31 +461,31 @@ def generate_comprehensive_analysis(data, inst_data, sc):
     analysis_bullets = []
     
     if data['收盤價'] < data['5MA']:
-        analysis_bullets.append(f"<b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔解套賣壓較為沉重，需盡速放量站回以扭轉弱勢。")
+        analysis_bullets.append(f"<b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔解套賣壓較為沉重。")
     else:
         analysis_bullets.append(f"<b>短線強勢表態</b>：股價成功站穩 5 日線 ({data['5MA']}) 之上，維持短線多頭上攻慣性。")
         
     if data['收盤價'] < data['20MA']:
         analysis_bullets.append(f"<b>跌破月線防守</b>：現價落於 20 日月線 ({data['20MA']}) 之下，中線趨勢有轉為空頭排列的風險。")
     elif data['收盤價'] < data['20MA'] * 1.03:
-        analysis_bullets.append(f"<b>月線保衛戰</b>：現價距離 20 日均線 ({data['20MA']}) 非常接近，此為判斷中線多空的重要防線，強支撐不宜跌破。")
+        analysis_bullets.append(f"<b>月線保衛戰</b>：現價距離 20 日均線 ({data['20MA']}) 非常接近，此為中線多空防線，不宜跌破。")
     else:
         analysis_bullets.append(f"<b>月線支撐強勁</b>：股價穩居 20 日均線 ({data['20MA']}) 之上，中線多頭格局明確。")
         
     if data['MACD柱'] < 0:
-        analysis_bullets.append(f"<b>MACD 空方動能未歇</b>：OSC 柱狀圖為綠柱 ({data['MACD柱']})，顯示這波回檔的空方動能尚未完全收斂。")
+        analysis_bullets.append(f"<b>MACD 空方動能未歇</b>：OSC 為綠柱 ({data['MACD柱']})，顯示回檔空方動能尚未完全收斂。")
     else:
-        analysis_bullets.append(f"<b>MACD 多方動能強勁</b>：OSC 柱狀圖為紅柱 ({data['MACD柱']})，多頭動能延續掌控局勢。")
+        analysis_bullets.append(f"<b>MACD 多方動能強勁</b>：OSC 為紅柱 ({data['MACD柱']})，多頭動能延續掌控局勢。")
         
     if data['J值'] < 0:
-        analysis_bullets.append(f"<b>KDJ 屬左側搶反彈階段</b>：J 值來到負數 ({data['J值']})，代表短線進入極度超賣區，蘊釀技術性反彈，但尚未確認轉強，屬風險較高的左側交易。")
+        analysis_bullets.append(f"<b>KDJ 極度超賣階段</b>：J 值來到負數 ({data['J值']})，蘊釀技術性反彈，但屬風險較高的左側交易。")
     elif data['J值'] > 80:
-        analysis_bullets.append(f"<b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，步入超買區，隨時有獲利了結賣壓出籠的回檔風險。")
+        analysis_bullets.append(f"<b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，步入超買區，需防範獲利了結賣壓。")
     else:
         if data['K'] > data['D']:
-            analysis_bullets.append(f"<b>KDJ 黃金交叉</b>：K值 ({data['K']}) 大於 D值 ({data['D']})，指標呈現多頭向上發散。")
+            analysis_bullets.append(f"<b>KDJ 黃金交叉</b>：K值大於 D值，指標呈現多頭向上發散。")
         else:
-            analysis_bullets.append(f"<b>KDJ 死亡交叉</b>：K值 ({data['K']}) 小於 D值 ({data['D']})，短線動能偏弱。")
+            analysis_bullets.append(f"<b>KDJ 死亡交叉</b>：K值小於 D值，短線動能偏弱。")
             
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
@@ -546,8 +495,8 @@ def generate_comprehensive_analysis(data, inst_data, sc):
         if foreign_net > 0: chip_status += f"外資偏多操作 (買超 {foreign_net} 張)；"
         else: chip_status += f"外資偏空出貨 (賣超 {abs(foreign_net)} 張)；"
         
-        if trust_net > 0: chip_status += f"投信買方力挺 (買超 {trust_net} 張)。"
-        else: chip_status += f"投信結帳賣出 (賣超 {abs(trust_net)} 張)。"
+        if trust_net > 0: chip_status += f"投信力挺 (買超 {trust_net} 張)。"
+        else: chip_status += f"投信結帳 (賣超 {abs(trust_net)} 張)。"
         
         analysis_bullets.append(chip_status)
 
@@ -691,7 +640,7 @@ def render_index_board():
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
-            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://tw.stock.yahoo.com/quote/%5ETWII' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
             
@@ -701,7 +650,7 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: Google Finance / 證交所)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: TWSE / Google Finance)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
@@ -746,11 +695,16 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (S級強烈建議佈局)")
-            df_disp = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
+            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補)")
+            # --- 核心修正3：S級不足 10 筆則自動用 A級補足 ---
+            df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
+            df_disp = df_s
+            if len(df_s) < 10:
+                df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
+                df_disp = pd.concat([df_s, df_a.head(10 - len(df_s))])
+                
             if df_disp.empty:
-                st.info("目前雷達池內沒有符合【S級買點】的標的。以下為您列出次佳的【A級機會】：")
-                df_disp = df_results[df_results['Score'] >= 2].sort_values(by='Score', ascending=False)
+                st.info("目前雷達池內沒有符合條件的標的。")
         else:
             st.markdown("##### 📋 熱門名單")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(10)
@@ -864,7 +818,6 @@ elif st.session_state.page == "analysis":
                 st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
 
-            # --- 核心修正2：AI 決策大腦二合一 (綜合診斷 + 進場判斷) ---
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             
@@ -896,16 +849,16 @@ elif st.session_state.page == "analysis":
             st.markdown("### 📈 基礎技術指標")
             r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1.container(border=True):
-                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`) \n\n 5T: `{data['5MA']}` \n\n 10T: `{data['10MA']}` \n\n 20T: `{data['20MA']}` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
+                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`) \n\n 5T: `{data['5MA']}` \n\n 10T: `{data['10MA']}` \n\n 20T: `{data['20MA']}` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
             with r1c2.container(border=True):
-                st.markdown(f"**MACD** \n\n DIF: `{data['MACD']}` \n\n OSC: `{data['MACD柱']}` \n\n <br><br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
+                st.markdown(f"**MACD** \n\n DIF: `{data['MACD']}` \n\n OSC: `{data['MACD柱']}` \n\n <br><br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
             with r1c3.container(border=True):
-                st.markdown(f"**KDJ** \n\n K: `{data['K']}` \n\n D: `{data['D']}` \n\n J: `{data['J值']}` \n\n <br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
+                st.markdown(f"**KDJ** \n\n K: `{data['K']}` \n\n D: `{data['D']}` \n\n J: `{data['J值']}` \n\n <br> <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True):
-                st.markdown(f"##### 📊 布林通道 & 乖離率 \n\n **上軌 (壓力):** `{data['BB_UP']}` \n\n **下軌 (支撐):** `{data['BB_DN']}` \n\n **月線乖離率:** `{data['BIAS']}%` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗Yahoo</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📊 布林通道 & 乖離率 \n\n **上軌 (壓力):** `{data['BB_UP']}` \n\n **下軌 (支撐):** `{data['BB_DN']}` \n\n **月線乖離率:** `{data['BIAS']}%` \n\n <a href='{yh}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
 
             with a2.container(border=True):
                 eps = f_data['EPS']
@@ -947,14 +900,13 @@ elif st.session_state.page == "analysis":
             else: st.info("無法識別該股產業。")
 
             st.divider()
-            # --- 核心修正1：名稱更改為 🏦 近期三大法人逐日買賣超 ---
             st.subheader("🏦 近期三大法人逐日買賣超")
             if inst_data:
                 st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
             else:
-                st.info("目前無法自動抓取籌碼資料，請點擊下方連結前往查看。")
+                st.info("目前無法自動抓取籌碼資料。")
                 
-            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='{yh}/institutional-trading' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Yahoo 股市 (法人逐日買賣超)</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://histock.tw/stock/chip.aspx?no={target}' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: HiStock 嗨投資 / FinMind</a></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={target}' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: Goodinfo (主力進出明細)</a></div>", unsafe_allow_html=True)
             
             st.divider()
