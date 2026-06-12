@@ -16,12 +16,12 @@ import re
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    """
+    \"\"\"
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    """,
+    \"\"\",
     height=0, width=0
 )
 
@@ -63,19 +63,7 @@ ENG_TO_TW_INDUSTRY = {
     "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意業", "Technology": "電子科技",
     "Industrials": "工業", "Basic Materials": "原物料", "Financial Services": "金融業",
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
-    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路",
-    "Auto Manufacturers": "汽車工業", "Auto Parts": "汽車零組件",
-    "Banks - Regional": "銀行業", "Biotechnology": "生技醫療",
-    "Chemicals": "化學工業", "Electronic Gaming & Multimedia": "遊戲及多媒體",
-    "Food": "食品工業", "Insurance - Life": "保險業", "Insurance": "保險業",
-    "Internet Content & Information": "資訊服務業", "Packaged Foods": "食品工業",
-    "Software - Application": "軟體業", "Software - Infrastructure": "軟體業",
-    "Specialty Retail": "貿易百貨", "Telecom Services": "通信網路",
-    "Aerospace & Defense": "航太與國防", "Airlines": "航空業",
-    "Apparel Retail": "服飾零售", "Apparel Manufacturing": "紡織纖維",
-    "Construction Materials": "建材營造", "Diagnostics & Research": "生技醫療",
-    "Medical Care Facilities": "醫療保健", "Medical Devices": "生技醫療",
-    "Paper & Paper Products": "造紙業", "Restaurants": "餐飲業", "Steel": "鋼鐵業"
+    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
 
 @st.cache_data(ttl=86400)
@@ -130,7 +118,6 @@ def get_stock_name(ticker):
         else:
             name = ticker_str
             
-    # --- 核心修正1：強制剝離名稱中包含的數字代號 (防呆) ---
     name = name.replace(ticker_str, "").strip()
     return name
 
@@ -242,25 +229,38 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
+# --- 核心修正3：大幅增強大盤即時報價的穩定性，防止消失 ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
+    # 策略 1: 台灣證券交易所官方 MIS API (最即時、最準確，新增重試機制)
+    for _ in range(2):
+        try:
+            ts = int(datetime.now().timestamp() * 1000)
+            url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                if 'msgArray' in data and len(data['msgArray']) > 0:
+                    info = data['msgArray'][0]
+                    z = info.get('z')
+                    y = info.get('y')
+                    prev = float(y) if y and y != '-' else 0
+                    curr = float(z) if z and z != '-' else prev
+                    if curr > 10000: return curr, curr - prev
+        except: pass
+
+    # 策略 2: 證交所備用首頁爬蟲
     try:
-        session = requests.Session()
-        session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        ts = int(datetime.now().timestamp() * 1000)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            if 'msgArray' in data and len(data['msgArray']) > 0:
-                info = data['msgArray'][0]
-                z = info.get('z')
-                y = info.get('y')
-                prev = float(y) if y and y != '-' else 0
-                curr = float(z) if z and z != '-' else prev
-                if curr > 10000: return curr, curr - prev
+        res = requests.get("https://www.twse.com.tw/zh/", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        price_tags = soup.find_all('span', class_='info-val')
+        if len(price_tags) >= 2:
+            curr = float(price_tags[0].text.replace(',', ''))
+            change = float(price_tags[1].text.replace(',', ''))
+            if curr > 10000: return curr, change
     except: pass
 
+    # 策略 3: HiStock 嗨投資即時大盤 (堅實備援)
     try:
         res = requests.get("https://histock.tw/index/TAIEX", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -270,6 +270,23 @@ def get_twii_quote():
             curr = float(price_tag.text.replace(',', ''))
             change = float(change_tag.text.replace(',', ''))
             if curr > 10000: return curr, change
+    except: pass
+    
+    # 策略 4: Cnyes 鉅亨網大盤
+    try:
+        res = requests.get("https://invest.cnyes.com/index/TWS/TSE01", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        h2 = soup.find('h2')
+        if h2:
+            curr = float(h2.text.replace(',', ''))
+            divs = soup.find_all('div')
+            for div in divs:
+                txt = div.text
+                if txt.startswith('+') or txt.startswith('-'):
+                    try:
+                        change = float(txt.split('(')[0].replace(',', '').strip())
+                        if curr > 10000: return curr, change
+                    except: pass
     except: pass
     
     return 0, 0
@@ -354,7 +371,7 @@ def get_market_news():
     except: pass
     
     if not news:
-        news.append({"title": "👉 點擊前往查看最新股市新聞", "link": "https://tw.stock.yahoo.com/news/"})
+        news.append({"title": "👉 點擊查看 Yahoo 股市最新消息", "link": "https://tw.stock.yahoo.com/news/"})
     return news
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -377,7 +394,7 @@ def get_real_news(ticker, name):
                 news_list.append({"title": n.get('title', '新聞標題'), "link": n.get('link', '#')})
         except: pass
         
-    if not news_list: news_list.append({"title": f"👉 點擊前往查看 {name} 最新消息", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
+    if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -486,11 +503,9 @@ def analyze_today(df, ticker_number):
     data['Score'] = sc
     return data
 
-# --- 核心修正2：AI決策大腦新增三級多空趨勢 ---
 def generate_comprehensive_analysis(data, inst_data, sc):
     analysis_bullets = []
     
-    # 1. 三級多空趨勢判斷
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
     t_long = data['收盤價'] > data['60MA']
@@ -612,7 +627,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     )
     return fig
 
-# --- 核心修正3：精算當日與次一交易日日期 ---
+# --- 核心修正3：盤勢分析加入確切日曆日期判斷與連結指引 ---
 def predict_tomorrow_open(twii_df, sox_df):
     if twii_df is None or len(twii_df) < 2:
         return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
@@ -622,12 +637,12 @@ def predict_tomorrow_open(twii_df, sox_df):
     p_close = twii_df['Close'].iloc[-2]
     
     last_dt = twii_df.index[-1]
-    last_dt_str = last_dt.strftime('%Y/%m/%d')
+    last_dt_str = last_dt.strftime('%m/%d')
     
     next_dt = last_dt + timedelta(days=1)
-    while next_dt.weekday() >= 5: # 跳過六、日
+    while next_dt.weekday() >= 5: 
         next_dt += timedelta(days=1)
-    next_dt_str = next_dt.strftime('%Y/%m/%d')
+    next_dt_str = next_dt.strftime('%m/%d')
     
     today_title = "⚖️ 平盤震盪"
     today_desc = "大盤開在平盤附近，目前呈現震盪格局。"
@@ -667,11 +682,11 @@ def predict_tomorrow_open(twii_df, sox_df):
         elif s_change > 0: score += 1
         else: score -= 1
         
-    if score >= 2: tmr_title, tmr_desc = "🚀 高機率開高", "美股強勢且台股站穩短均線，預估次一交易日早盤有機會跳空開高。"
-    elif score == 1: tmr_title, tmr_desc = "📈 偏多震盪", "國際局勢穩定，台股具備抗跌韌性，預估開平高盤後震盪走高。"
-    elif score == 0: tmr_title, tmr_desc = "⚖️ 觀望平盤", "多空力道均衡，預估開平盤附近，需觀察開盤後主力買賣超方向。"
-    elif score == -1: tmr_title, tmr_desc = "📉 偏空震盪", "大盤技術面偏弱，預期受國際盤勢拖累，可能開平低盤。"
-    else: tmr_title, tmr_desc = "⚠️ 高機率開低", "美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防跳空開低。"
+    if score >= 2: tmr_title, tmr_desc = "🚀 高機率開高", f"美股強勢且台股站穩短均線，預估 {next_dt_str} 早盤有機會跳空開高。"
+    elif score == 1: tmr_title, tmr_desc = "📈 偏多震盪", f"國際局勢穩定，台股具備抗跌韌性，預估 {next_dt_str} 開平高盤後震盪走高。"
+    elif score == 0: tmr_title, tmr_desc = "⚖️ 觀望平盤", f"多空力道均衡，預估 {next_dt_str} 開平盤附近，需觀察開盤後主力買賣超方向。"
+    elif score == -1: tmr_title, tmr_desc = "📉 偏空震盪", f"大盤技術面偏弱，預期受國際盤勢拖累，{next_dt_str} 可能開平低盤。"
+    else: tmr_title, tmr_desc = "⚠️ 高機率開低", f"美股重挫且台股跌破均線，市場恐慌情緒蔓延，預防 {next_dt_str} 跳空開低。"
 
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str
 
@@ -691,9 +706,6 @@ def render_index_board():
         
     today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred, sox_df)
     
-    last_date_display = f" ({last_dt_str})" if last_dt_str else ""
-    next_date_display = f" ({next_dt_str})" if next_dt_str else ""
-    
     with st.container(border=True):
         col1, col2 = st.columns([1.1, 1.2])
         with col1:
@@ -707,11 +719,11 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析{last_date_display} <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a> / <a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#888;'>Google</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>👉 <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE 即時大盤</a></span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
-            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日預測{next_date_display} <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: 歷史短均與費半連動)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 開盤趨勢預測 ({next_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>👉 <a href='https://www.google.com/finance/quote/SOX:INDEXNASDAQ' target='_blank' style='color:#888;'>美股費半走勢</a></span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
             
@@ -924,21 +936,6 @@ elif st.session_state.page == "analysis":
 
             st.divider()
             
-            st.subheader("📈 三級多空趨勢判定")
-            t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
-            t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
-            t_long = "🔼 多頭 (站上季線)" if data['收盤價'] > data['60MA'] else "🔽 跌破季線"
-            
-            with st.container(border=True):
-                st.markdown(f"**短線走勢 (日線級別) :** {t_short}")
-            with st.container(border=True):
-                st.markdown(f"**中線布局 (周線級別) :** {t_mid}")
-            with st.container(border=True):
-                st.markdown(f"**長線防守 (季線級別) :** {t_long}")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            st.divider()
             st.subheader("🔗 同產業關聯股動態")
             if f_data['Industry'] != "未提供產業資訊" and f_data['Industry'] != "一般產業":
                 rels = [c for c, n in STOCK_NAMES.items() if get_fundamental_and_industry_data(c)['Industry'] == f_data['Industry'] and c != target][:3]
