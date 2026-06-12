@@ -229,34 +229,51 @@ def get_quick_quote(ticker):
     except: pass
     return 0, 0
 
+# --- 核心修正1：完美解決大盤抓不到與更新時間的問題 ---
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
+    update_time_str = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
+    
+    # 策略 1: 台灣證券交易所官方 MIS API
     try:
-        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        session = requests.Session()
+        session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        ts = int(datetime.now().timestamp() * 1000)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
+        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
                 info = data['msgArray'][0]
-                z = info.get('z')
-                y = info.get('y')
-                prev = float(y) if y and y != '-' else 0
-                curr = float(z) if z and z != '-' else prev
-                if curr > 10000: return curr, curr - prev
+                z = info.get('z') # 最新成交價
+                y = info.get('y') # 昨收價
+                d = info.get('d') # 日期 20260613
+                t = info.get('t') # 時間 13:30:00
+                
+                # 解決盤後/假日 z 為 '-' 導致回傳 0 的問題
+                curr = float(z.replace(',','')) if z and z != '-' else (float(y.replace(',','')) if y and y != '-' else 0)
+                prev = float(y.replace(',','')) if y and y != '-' else curr
+                
+                if curr > 10000:
+                    if d and t:
+                        update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}"
+                    return curr, curr - prev, update_time_str
     except: pass
 
+    # 策略 2: 鉅亨網 API (無痛備援，絕對不依賴 Yahoo)
     try:
-        res = requests.get("https://histock.tw/index/TAIEX", headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        price_tag = soup.find('span', id='CPTWII')
-        change_tag = soup.find('span', id='CUTWII')
-        if price_tag and change_tag:
-            curr = float(price_tag.text.replace(',', ''))
-            change = float(change_tag.text.replace(',', ''))
-            if curr > 10000: return curr, change
+        res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote", timeout=3)
+        if res.status_code == 200:
+            data = res.json()['data']['quote']
+            curr = float(data['23'])
+            prev = float(data['24'])
+            ts_sec = int(data['20'])
+            update_time_str = datetime.fromtimestamp(ts_sec).strftime('%Y/%m/%d %H:%M:%S')
+            if curr > 10000: 
+                return curr, curr - prev, update_time_str
     except: pass
     
-    return 0, 0
+    return 0, 0, update_time_str
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
@@ -470,6 +487,7 @@ def analyze_today(df, ticker_number):
     data['Score'] = sc
     return data
 
+# --- 核心修正2：將多頭訊號全部包裹紅字 span 標籤 ---
 def generate_comprehensive_analysis(data, inst_data, sc):
     analysis_bullets = []
     
@@ -478,54 +496,54 @@ def generate_comprehensive_analysis(data, inst_data, sc):
     t_long = data['收盤價'] > data['60MA']
     trend_str = "<b>三級多空趨勢</b>："
     if t_short and t_mid and t_long:
-        trend_str += "<span style='color:#ff3333;'>短、中、長線（5T, 20T, 60T）皆呈現多頭排列，趨勢極強。</span>"
+        trend_str += "<span style='color:#ff3333; font-weight:bold;'>短、中、長線（5T, 20T, 60T）皆呈現多頭排列，趨勢極強。</span>"
     elif not t_short and not t_mid and not t_long:
-        trend_str += "短、中、長線皆呈現空頭排列，趨勢極弱。"
+        trend_str += "<span style='color:#00cc00;'>短、中、長線皆呈現空頭排列，趨勢極弱。</span>"
     else:
         trends = []
-        trends.append("<span style='color:#ff3333;'>站上短均</span>" if t_short else "跌破短均")
-        trends.append("<span style='color:#ff3333;'>守住月線</span>" if t_mid else "跌破月線")
-        trends.append("<span style='color:#ff3333;'>站上季線</span>" if t_long else "跌破季線")
+        trends.append("<span style='color:#ff3333;'>站上短均</span>" if t_short else "<span style='color:#00cc00;'>跌破短均</span>")
+        trends.append("<span style='color:#ff3333;'>守住月線</span>" if t_mid else "<span style='color:#00cc00;'>跌破月線</span>")
+        trends.append("<span style='color:#ff3333;'>站上季線</span>" if t_long else "<span style='color:#00cc00;'>跌破季線</span>")
         trend_str += f"目前處於震盪整理，狀態為：{'、'.join(trends)}。"
     analysis_bullets.append(trend_str)
     
     if data['收盤價'] < data['5MA']:
-        analysis_bullets.append(f"<b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔解套賣壓較為沉重。")
+        analysis_bullets.append(f"<span style='color:#00cc00;'><b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔解套賣壓較為沉重。</span>")
     else:
-        analysis_bullets.append(f"<b><span style='color:#ff3333;'>短線強勢表態</span></b>：股價成功站穩 5 日線 ({data['5MA']}) 之上，維持短線多頭上攻慣性。")
+        analysis_bullets.append(f"<span style='color:#ff3333; font-weight:bold;'>短線強勢表態：股價成功站穩 5 日線 ({data['5MA']}) 之上，維持短線多頭上攻慣性。</span>")
         
     if data['收盤價'] < data['20MA']:
-        analysis_bullets.append(f"<b>跌破月線防守</b>：現價落於 20 日月線 ({data['20MA']}) 之下，中線趨勢有轉為空頭排列的風險。")
+        analysis_bullets.append(f"<span style='color:#00cc00;'><b>跌破月線防守</b>：現價落於 20 日月線 ({data['20MA']}) 之下，中線趨勢有轉為空頭排列的風險。</span>")
     elif data['收盤價'] < data['20MA'] * 1.03:
         analysis_bullets.append(f"<b>月線保衛戰</b>：現價距離 20 日均線 ({data['20MA']}) 非常接近，此為中線多空防線，不宜跌破。")
     else:
-        analysis_bullets.append(f"<b><span style='color:#ff3333;'>月線支撐強勁</span></b>：股價穩居 20 日均線 ({data['20MA']}) 之上，中線多頭格局明確。")
+        analysis_bullets.append(f"<span style='color:#ff3333; font-weight:bold;'>月線支撐強勁：股價穩居 20 日均線 ({data['20MA']}) 之上，中線多頭格局明確。</span>")
         
     if data['MACD柱'] < 0:
-        analysis_bullets.append(f"<b>MACD 空方動能未歇</b>：OSC 為綠柱 ({data['MACD柱']})，顯示回檔空方動能尚未完全收斂。")
+        analysis_bullets.append(f"<span style='color:#00cc00;'><b>MACD 空方動能未歇</b>：OSC 為綠柱 ({data['MACD柱']})，顯示回檔空方動能尚未完全收斂。</span>")
     else:
-        analysis_bullets.append(f"<b><span style='color:#ff3333;'>MACD 多方動能強勁</span></b>：OSC 為紅柱 ({data['MACD柱']})，多頭動能延續掌控局勢。")
+        analysis_bullets.append(f"<span style='color:#ff3333; font-weight:bold;'>MACD 多方動能強勁：OSC 為紅柱 ({data['MACD柱']})，多頭動能延續掌控局勢。</span>")
         
     if data['J值'] < 0:
         analysis_bullets.append(f"<b>KDJ 極度超賣階段</b>：J 值來到負數 ({data['J值']})，蘊釀技術性反彈，但屬風險較高的左側交易。")
     elif data['J值'] > 80:
-        analysis_bullets.append(f"<b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，步入超買區，需防範獲利了結賣壓。")
+        analysis_bullets.append(f"<span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，步入超買區，需防範獲利了結賣壓。</span>")
     else:
         if data['K'] > data['D']:
-            analysis_bullets.append(f"<b><span style='color:#ff3333;'>KDJ 黃金交叉</span></b>：K值大於 D值，指標呈現多頭向上發散。")
+            analysis_bullets.append(f"<span style='color:#ff3333; font-weight:bold;'>KDJ 黃金交叉：K值大於 D值，指標呈現多頭向上發散。</span>")
         else:
-            analysis_bullets.append(f"<b>KDJ 死亡交叉</b>：K值小於 D值，短線動能偏弱。")
+            analysis_bullets.append(f"<span style='color:#00cc00;'><b>KDJ 死亡交叉</b>：K值小於 D值，短線動能偏弱。</span>")
             
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         
         chip_status = "<b>法人籌碼動向 (近3日)</b>："
-        if foreign_net > 0: chip_status += f"<span style='color:#ff3333;'>外資偏多操作</span> (買超 {foreign_net} 張)；"
-        else: chip_status += f"外資偏空出貨 (賣超 {abs(foreign_net)} 張)；"
+        if foreign_net > 0: chip_status += f"<span style='color:#ff3333; font-weight:bold;'>外資偏多操作 (買超 {foreign_net} 張)</span>；"
+        else: chip_status += f"<span style='color:#00cc00;'>外資偏空出貨 (賣超 {abs(foreign_net)} 張)</span>；"
         
-        if trust_net > 0: chip_status += f"<span style='color:#ff3333;'>投信力挺</span> (買超 {trust_net} 張)。"
-        else: chip_status += f"投信結帳 (賣超 {abs(trust_net)} 張)。"
+        if trust_net > 0: chip_status += f"<span style='color:#ff3333; font-weight:bold;'>投信力挺 (買超 {trust_net} 張)</span>。"
+        else: chip_status += f"<span style='color:#00cc00;'>投信結帳 (賣超 {abs(trust_net)} 張)</span>。"
         
         analysis_bullets.append(chip_status)
 
@@ -612,7 +630,6 @@ def predict_tomorrow_open(twii_df, sox_df):
         next_dt += timedelta(days=1)
     next_dt_str = next_dt.strftime('%Y/%m/%d')
     
-    # 增加更多分析變數的說明
     today_title = "⚖️ 平盤震盪"
     today_desc = "大盤開在平盤附近，法人買賣超力道拉扯，目前呈現量縮震盪格局。"
     
@@ -660,10 +677,7 @@ def predict_tomorrow_open(twii_df, sox_df):
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str
 
 def render_index_board():
-    tz_tpe = timezone(timedelta(hours=8))
-    now_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-    
-    twii_close, twii_change = get_twii_quote()
+    twii_close, twii_change, twii_time_str = get_twii_quote()
     twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
     
     sox_df = None
@@ -690,7 +704,7 @@ def render_index_board():
                 st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析{last_date_display} <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a> / <a href='https://www.google.com/finance/quote/TAIEX:TPE' target='_blank' style='color:#888;'>Google</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析{last_date_display} <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a> / <a href='https://www.cnyes.com/twstock/index' target='_blank' style='color:#888;'>Cnyes</a>)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
@@ -705,7 +719,7 @@ def render_index_board():
             for n in home_news:
                 st.markdown(f"<a href='{n['link']}' target='_blank' style='color:#00ffcc; font-size:0.85rem; text-decoration: none; display: block; margin-top: 6px;'>➤ {n['title']}</a>", unsafe_allow_html=True)
             
-    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 系統最後即時更新: {now_time_str}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
