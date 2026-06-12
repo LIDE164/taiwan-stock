@@ -99,10 +99,11 @@ def get_yahoo_chinese_name(ticker):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(url, headers=headers, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
-        h1 = soup.find('h1')
-        if h1:
-            name = h1.text.strip()
-            if name and name != "Yahoo奇摩股市":
+        title = soup.find('title')
+        if title:
+            name = title.text.split('(')[0].strip()
+            # 絕對剔除 Yahoo 字眼，避免記憶錯誤名稱
+            if name and "Yahoo" not in name:
                 return name
     except: pass
     return ""
@@ -395,7 +396,6 @@ def get_real_news(ticker, name):
     if not news_list: news_list.append({"title": f"👉 點擊前往 Yahoo 股市查看 {name} 最新消息", "link": f"https://tw.stock.yahoo.com/quote/{ticker}/news"})
     return news_list
 
-# --- 修正1：精準錨定逐日買賣超，避免抓到總覽表格 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
@@ -409,7 +409,7 @@ def get_institutional_trading(ticker):
         
         start_idx = 0
         for i, txt in enumerate(all_texts):
-            if txt in ["單日合計", "單日買賣超"]:
+            if txt in ["單日買賣超", "單日買賣超(張)"]:
                 start_idx = i
                 break
                 
@@ -494,7 +494,7 @@ def analyze_today(df, ticker_number):
     data['Score'] = sc
     return data
 
-def generate_comprehensive_analysis(data, inst_data):
+def generate_comprehensive_analysis(data, inst_data, sc):
     analysis_bullets = []
     
     if data['收盤價'] < data['5MA']:
@@ -537,7 +537,26 @@ def generate_comprehensive_analysis(data, inst_data):
         
         analysis_bullets.append(chip_status)
 
-    return analysis_bullets
+    if sc >= 5: 
+        v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
+        v_a = f"✅ <b>進場判斷：強烈買進</b><br>勝率極高！築底完成。<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。<br>🎯 <b>波段賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)</b>。"
+    elif sc >= 2: 
+        v_t, v_c = "🟡 A級機會：偏多試單", "#ffcc00"
+        v_a = f"✅ <b>進場判斷：分批試單</b><br>具備技術面反彈契機！<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴格停損。<br>🎯 <b>短線賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)</b>。"
+    elif sc >= -1: 
+        v_t, v_c = "⚪ 中性觀望：多空不明", "#888888"
+        if data['收盤價'] > data['20MA']:
+            v_a = f"⏳ <b>進場判斷：暫緩進場 (多方震盪)</b><br>股價在月線 ({data['20MA']:.2f}) 之之上震盪，無明顯表態。<br>📌 建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線再嘗試建倉。"
+        else:
+            v_a = f"⏳ <b>進場判斷：暫緩進場 (空方弱勢)</b><br>股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱。<br>📌 建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐再作打算。"
+    elif sc >= -4: 
+        v_t, v_c = "🟠 風險警示：逢高減碼", "#ff9900"
+        v_a = f"⚠️ <b>進場判斷：禁止買進，持股者逢高調節</b><br>追高風險較大。<br>📌 若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 之間視情況分批獲利了結。"
+    else: 
+        v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
+        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>強烈建議空手觀望，切勿接刀。"
+
+    return analysis_bullets, v_t, v_c, v_a
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
@@ -780,26 +799,6 @@ elif st.session_state.page == "analysis":
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
 
-            # --- 核心修正2：AI決策文字更新 (附上精準分批賣出目標價) ---
-            if sc >= 5: 
-                v_t, v_c = "🟢 【S級買點】強烈建議佈局", "#00cc00"
-                v_a = f"✅ **進場判斷：強烈買進**<br>勝率極高！築底完成。<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。<br>🎯 **波段賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)**。"
-            elif sc >= 2: 
-                v_t, v_c = "🟡 【A級機會】偏多試單", "#ffcc00"
-                v_a = f"✅ **進場判斷：分批試單**<br>具備技術面反彈契機！<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴格停損。<br>🎯 **短線賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)**。"
-            elif sc >= -1: 
-                v_t, v_c = "⚪ 【中性觀望】多空不明", text_col
-                if data['收盤價'] > data['20MA']:
-                    v_a = f"⏳ **進場判斷：暫緩進場 (多方震盪)**<br>股價在月線 ({data['20MA']:.2f}) 之上震盪，無明顯表態。<br>📌 建議觀察能否放量突破上軌 ({data['BB_UP']:.2f})，逢回不破月線再嘗試建倉。"
-                else:
-                    v_a = f"⏳ **進場判斷：暫緩進場 (空方弱勢)**<br>股價落於月線 ({data['20MA']:.2f}) 之下，趨勢偏弱。<br>📌 建議等待重新站回月線，或進一步回測下軌 ({data['BB_DN']:.2f}) 支撐再作打算。"
-            elif sc >= -4: 
-                v_t, v_c = "🟠 【風險警示】逢高減碼", "#ff9900"
-                v_a = f"⚠️ **進場判斷：禁止買進，持股者逢高調節**<br>追高風險較大。<br>📌 若持有建議於 {data['收盤價']:.2f} ~ {data['BB_UP']:.2f} 之間視情況分批獲利了結。"
-            else: 
-                v_t, v_c = "🔴 【極度危險】嚴禁做多", "#ff3333"
-                v_a = f"⛔ **進場判斷：絕對空手**<br>強烈建議空手觀望，切勿接刀。"
-
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
@@ -851,8 +850,8 @@ elif st.session_state.page == "analysis":
                 st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
 
-            # --- 核心新增與修改2：AI 決策大腦二合一 (綜合診斷 + 進場判斷) ---
-            bullets = generate_comprehensive_analysis(data, inst_data)
+            # --- 核心修正2：AI 決策大腦二合一 (綜合診斷 + 進場判斷) ---
+            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             
             st.markdown(f'''
@@ -901,7 +900,6 @@ elif st.session_state.page == "analysis":
 
             st.divider()
             
-            # --- 核心修正3：三級多空趨勢判定強勢回歸 ---
             st.subheader("📈 三級多空趨勢判定")
             t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
             t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
@@ -935,7 +933,6 @@ elif st.session_state.page == "analysis":
             else: st.info("無法識別該股產業。")
 
             st.divider()
-            # --- 核心修正1：名稱更改為 🏦 近期三大法人逐日買賣超 ---
             st.subheader("🏦 近期三大法人逐日買賣超")
             if inst_data:
                 st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
