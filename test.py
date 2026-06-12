@@ -16,12 +16,12 @@ import re
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
-    \"\"\"
+    """
     <script>
         var body = window.parent.document.querySelector('.main');
         if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
     </script>
-    \"\"\",
+    """,
     height=0, width=0
 )
 
