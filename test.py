@@ -862,7 +862,7 @@ elif st.session_state.page == "analysis":
                 st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`)")
  
 
- 5T: `{data['5MA']}` 
+  5T: `{data['5MA']}` 
 
  10T: `{data['10MA']}` 
 
