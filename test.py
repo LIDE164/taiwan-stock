@@ -859,7 +859,8 @@ elif st.session_state.page == "analysis":
             st.markdown("### 📈 基礎技術指標")
             r1c1, r1c2, r1c3 = st.columns(3)
             with r1c1.container(border=True):
-                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`) 
+                st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`)")
+ 
 
  5T: `{data['5MA']}` 
 
