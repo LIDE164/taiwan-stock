@@ -1,7 +1,8 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
@@ -167,24 +168,34 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-# --- 核心修正：更換 EPS 來源為 Cnyes 並更新連結 ---
+# --- 核心修正1 & 2：精準抓取 Cnyes 總覽近四季 EPS，並動態精算 PE ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
     
-    # 策略 1: Cnyes API 抓 EPS
+    # 策略 1: 鉅亨網 (Cnyes) 抓取近四季 EPS
     try:
-        res = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
+        url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            data = res.json()
-            if 'data' in data and 'eps' in data['data']:
-                eps_f = float(data['data']['eps'])
-                eps_val = f"{eps_f:.2f}"
+            soup = BeautifulSoup(res.text, 'html.parser')
+            text = soup.get_text(separator='|')
+            match = re.search(r'近四季EPS\|+([\-\d\.]+)', text)
+            if match:
+                eps_val = match.group(1)
+            else:
+                # Fallback to Cnyes API
+                res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
+                if res_api.status_code == 200:
+                    data = res_api.json()
+                    if 'data' in data and 'eps' in data['data']:
+                        eps_val = f"{float(data['data']['eps']):.2f}"
     except: pass
 
-    # 策略 2: 產業抓取 (yfinance fallback)
+    # 策略 2: yfinance fallback
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
@@ -193,10 +204,11 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
         tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
         ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
-        if eps_val == "無": eps_val = info.get("trailingEps", "無")
+        if eps_val == "無" and 'trailingEps' in info and info['trailingEps'] is not None:
+            eps_val = str(round(info['trailingEps'], 2))
     except: pass
 
-    # 動態精算 PE
+    # 動態精算本益比 (PE) = 股價 / 近四季EPS
     try:
         if eps_val != "無":
             eps_f = float(eps_val)
@@ -324,7 +336,6 @@ def get_stock_data(ticker_number):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
-    # FinMind API
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
@@ -355,7 +366,6 @@ def get_institutional_trading(ticker):
                 if res_list: return res_list
     except: pass
     
-    # Cnyes Fallback
     try:
         url = f"https://ws.cnyes.com/charting/api/v1/TWS:{ticker}:STOCK/institutional-trading?limit=10"
         res = requests.get(url, timeout=5)
@@ -506,6 +516,7 @@ def generate_comprehensive_analysis(data, inst_data, sc):
 
     return analysis_bullets, v_t, v_c, v_a
 
+# --- 核心修正3：圖表補上完整指數標示與資料來源超連結 ---
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -522,7 +533,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 核心修正1：圖表中顯示完整指數與價格
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1, annotation_text=f"現價: {latest_price:.2f}", annotation_position="top right", annotation_font=dict(size=14, color="#ffcc00", weight="bold"))
     
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
@@ -535,7 +545,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
     
     ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.1f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -560,13 +570,13 @@ def predict_tomorrow_open(twii_df):
     today_desc = "今日大盤開在平盤附近，<a href='https://mis.twse.com.tw/' target='_blank' style='color:#00ffcc;'>法人現貨買賣超</a>多空拉扯，<a href='https://www.twse.com.tw/zh/trading/margin/mi-margn.html' target='_blank' style='color:#00ffcc;'>量價關係(VOL)</a>呈現縮量，盤勢陷入震盪整理。"
     if t_open > p_close * 1.003:
         if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受外資買盤與<a href='https://finance.yahoo.com/quote/TSM/' target='_blank' style='color:#00ffcc;'>台積電ADR</a>溢價激勵跳空開高，配合<a href='https://www.twse.com.tw/zh/trading/margin/mi-margn.html' target='_blank' style='color:#00ffcc;'>融資餘額</a>增加與量能放大，盤勢極度偏多。"
-        else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，<a href='https://histock.tw/' target='_blank' style='color:#00ffcc;'>KDJ 動能指標</a>有進入超買區疑慮，呈現高檔回落。"
+        else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>KDJ 動能指標</a>有進入超買區疑慮，呈現高檔回落。"
     elif t_open < p_close * 0.997:
         if t_close > t_open: today_title, today_desc = "💪 開低走高", "大盤受美股回檔影響開低，但低檔投信承接買盤強勁，出現開低走高收紅K型態。"
         else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，<a href='https://finance.yahoo.com/quote/%5EVIX/' target='_blank' style='color:#00ffcc;'>VIX恐慌指數</a>上升引發散戶多殺多停損賣壓，盤勢極度偏空。"
     else:
-        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，<a href='https://histock.tw/' target='_blank' style='color:#00ffcc;'>均線乖離(BIAS)</a>擴大，多方發力穩步墊高。"
-        elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，<a href='https://histock.tw/' target='_blank' style='color:#00ffcc;'>MACD</a>綠柱擴大資金動能不足導致震盪向下。"
+        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>均線乖離(BIAS)</a>擴大，多方發力穩步墊高。"
+        elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>MACD</a>綠柱擴大資金動能不足導致震盪向下。"
 
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
     score = 1 if t_close > ma5 else -1
@@ -601,6 +611,7 @@ def render_index_board():
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
 
+# --- 核心修正4：完備的新聞抓取防呆機制 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
     news_list = []
@@ -617,6 +628,21 @@ def get_real_news(ticker, name):
     if not news_list:
         news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
     return news_list
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_market_news():
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    news = []
+    try:
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                news.append({"title": item.find('title').text, "link": item.find('link').text})
+                if len(news) >= 3: break
+    except: pass
+    if not news: news.append({"title": "👉 點擊查看最新股市新聞", "link": "https://invest.cnyes.com/twstock/TWS/0050/news"})
+    return news
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
@@ -672,15 +698,23 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
-    clean_name = STOCK_NAMES.get(target, "")
+    c_name = get_stock_name(target)
     
-    if st.button("⬅ 返回監控總機首頁", key="back_btn", use_container_width=True):
-        st.session_state.page = "home"
-        st.rerun()
+    n_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
+    p_stk, n_stk = None, None
+    if target in n_pool and len(n_pool) > 1:
+        i = n_pool.index(target)
+        p_stk = n_pool[i - 1] if i > 0 else None
+        n_stk = n_pool[i + 1] if i < len(n_pool) - 1 else None
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk, "date_offset": 0}); st.rerun()
+    with c2:
+        if st.button("🏠 回首頁", use_container_width=True): st.session_state.page = "home"; st.rerun()
+    with c3:
+        if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk, "date_offset": 0}); st.rerun()
         
-    st.markdown("<br>", unsafe_allow_html=True)
-    render_index_board()
-    
     if df_chart is not None:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
         if len(df_slice) < 5: 
@@ -694,7 +728,7 @@ elif st.session_state.page == "analysis":
             inst_data = get_institutional_trading(target)
             
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
-            st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
@@ -744,10 +778,10 @@ elif st.session_state.page == "analysis":
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True):
-                st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://tw.stock.yahoo.com/quote/{target}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源: Yahoo財經</a>", unsafe_allow_html=True)
             with a2.container(border=True):
                 eps = f_data['EPS']; m_eps = round(float(eps)/12, 2) if eps != "無" else "無"
-                st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://www.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
+                st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**近四季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}/overview' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
 
             st.divider()
             
