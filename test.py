@@ -1,8 +1,7 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
@@ -171,12 +170,14 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
+# --- 核心修正1：精準抓取當季EPS ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
     
+    # 策略 1: 鉅亨網 (Cnyes) 抓取「當季 EPS」
     try:
         url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -184,10 +185,12 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             text = soup.get_text(separator='|')
-            match = re.search(r'近四季EPS\|+([\-\d\.]+)', text)
+            # 優先搜尋「當季EPS」
+            match = re.search(r'當季EPS\|+([\-\d\.]+)', text)
             if match:
                 eps_val = match.group(1)
             else:
+                # 備用方案: 從 API 取出 eps (通常為最新一季或全年)
                 res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
                 if res_api.status_code == 200:
                     data = res_api.json()
@@ -195,6 +198,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
                         eps_val = f"{float(data['data']['eps']):.2f}"
     except: pass
 
+    # 策略 2: 產業抓取 (yfinance fallback)
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
@@ -207,6 +211,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
             eps_val = str(round(info['trailingEps'], 2))
     except: pass
 
+    # 動態精算 PE (本益比 = 股票市價 / 當季EPS)
     try:
         if eps_val != "無":
             eps_f = float(eps_val)
@@ -595,32 +600,62 @@ def predict_tomorrow_open(twii_df):
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str
 
 def render_index_board():
+    twii_close, twii_change, twii_time_str = get_twii_quote()
+    twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
+    twii_df_for_pred = get_stock_data("^TWII")
+    today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred)
+    
+    with st.container(border=True):
+        col1, col2 = st.columns([1.1, 1.2])
+        with col1:
+            st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🔄 更新大盤即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
+
+        with col2:
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
+
+            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日開盤預測 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: <a href='https://finance.yahoo.com/quote/%5ESOX/' target='_blank' style='color:#888;'>歷史短均與費半連動</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
+
+# --- 核心修正2：補回被遺漏的 get_real_news 函數，確保不再 NameError ---
+@st.cache_data(ttl=600, show_spinner=False)
+def get_real_news(ticker, name):
+    news_list = []
     try:
-        twii_close, twii_change, twii_time_str = get_twii_quote()
-        twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
-        twii_df_for_pred = get_stock_data("^TWII")
-        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred)
-        
-        with st.container(border=True):
-            col1, col2 = st.columns([1.1, 1.2])
-            with col1:
-                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'><a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#ccc; text-decoration:none;'>台灣加權指數 🔗</a></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("🔄 更新大盤即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
+                if len(news_list) >= 3: break
+    except: pass
+    
+    if not news_list:
+        news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
+    return news_list
 
-            with col2:
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a>)</span></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
-
-                st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日開盤預測 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: <a href='https://finance.yahoo.com/quote/%5ESOX/' target='_blank' style='color:#888;'>歷史短均與費半連動</a>)</span></div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
+@st.cache_data(ttl=600, show_spinner=False)
+def get_market_news():
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    news = []
+    try:
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                news.append({"title": item.find('title').text, "link": item.find('link').text})
+                if len(news) >= 3: break
+    except: pass
+    if not news: news.append({"title": "👉 點擊查看最新股市新聞", "link": "https://invest.cnyes.com/twstock/TWS/0050/news"})
+    return news
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
@@ -761,8 +796,24 @@ elif st.session_state.page == "analysis":
             with a1.container(border=True):
                 st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://tw.stock.yahoo.com/quote/{target}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源: Yahoo財經</a>", unsafe_allow_html=True)
             with a2.container(border=True):
-                eps = f_data['EPS']; m_eps = round(float(eps)/12, 2) if eps != "無" else "無"
-                st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**近四季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}/overview' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
+                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無" # 當季EPS/3 為換算單月
+                st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}/overview' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
+
+            st.divider()
+            
+            st.subheader("📈 三級多空趨勢判定")
+            t_short = "🔼 多頭 (站上5T)" if data['收盤價'] > data['5MA'] else "🔽 跌破5T"
+            t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
+            t_long = "🔼 多頭 (站上季線)" if data['收盤價'] > data['60MA'] else "🔽 跌破季線"
+            
+            with st.container(border=True):
+                st.markdown(f"**短線走勢 (日線級別) :** {t_short}")
+            with st.container(border=True):
+                st.markdown(f"**中線布局 (周線級別) :** {t_mid}")
+            with st.container(border=True):
+                st.markdown(f"**長線防守 (季線級別) :** {t_long}")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
 
             st.divider()
             st.subheader("🏦 近期三大法人逐日買賣超")
