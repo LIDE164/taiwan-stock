@@ -735,12 +735,6 @@ elif st.session_state.page == "analysis":
             if dc4.button("1年"): st.session_state.view_days = 240
             fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode); st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
-            st.markdown("### 📈 基礎技術指標")
-            r1c1, r1c2, r1c3 = st.columns(3)
-            with r1c1.container(border=True): st.markdown(f"**均線** (昨收: `{data['昨日收盤價']}`)<br><br>5T: `{data['5MA']}`<br><br>10T: `{data['10MA']}`<br><br>20T: `{data['20MA']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
-            with r1c2.container(border=True): st.markdown(f"**MACD**<br><br>DIF: `{data['MACD']}`<br><br>OSC: `{data['MACD柱']}`<br><br><br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
-            with r1c3.container(border=True): st.markdown(f"**KDJ**<br><br>K: `{data['K']}`<br><br>D: `{data['D']}`<br><br>J: `{data['J值']}`<br><br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
-
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True): st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源</a>", unsafe_allow_html=True)
