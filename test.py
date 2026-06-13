@@ -1,8 +1,7 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
@@ -13,6 +12,9 @@ import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import re
 
+# ==========================================
+# 0. 系統初始化與風格設定
+# ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="centered", initial_sidebar_state="collapsed")
 
 components.html(
@@ -168,7 +170,6 @@ if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
 
 st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
-# --- 核心修正1 & 2：精準抓取 Cnyes 總覽近四季 EPS，並動態精算 PE ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -195,7 +196,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
                         eps_val = f"{float(data['data']['eps']):.2f}"
     except: pass
 
-    # 策略 2: yfinance fallback
+    # 策略 2: 產業抓取 (yfinance fallback)
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
@@ -208,7 +209,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
             eps_val = str(round(info['trailingEps'], 2))
     except: pass
 
-    # 動態精算本益比 (PE) = 股價 / 近四季EPS
+    # 動態精算 PE
     try:
         if eps_val != "無":
             eps_f = float(eps_val)
@@ -422,9 +423,21 @@ def analyze_today(df, ticker_number):
     data['Score'] = sc
     return data
 
-def generate_comprehensive_analysis(data, inst_data, sc):
+def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
     analysis_bullets = []
     
+    # 盤勢分析導航
+    if market_today and market_tmr:
+        market_today_clean = market_today.replace("🔥 ", "").replace("⚠️ ", "").replace("💪 ", "").replace("🩸 ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
+        market_tmr_clean = market_tmr.replace("🚀 ", "").replace("⚠️ ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
+        
+        if "多" in market_tmr_clean or "高" in market_tmr_clean:
+            analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境偏多有利個股發揮。</span>")
+        elif "空" in market_tmr_clean or "低" in market_tmr_clean:
+            analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
+        else:
+            analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
+
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
     t_long = data['收盤價'] > data['60MA']
@@ -516,7 +529,6 @@ def generate_comprehensive_analysis(data, inst_data, sc):
 
     return analysis_bullets, v_t, v_c, v_a
 
-# --- 核心修正3：圖表補上完整指數標示與資料來源超連結 ---
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -602,16 +614,15 @@ def render_index_board():
             if st.button("🔄 更新大盤即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
 
         with col2:
-            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE</a> / <a href='https://finance.yahoo.com/quote/TWD=X' target='_blank' style='color:#888;'>匯率</a> / <a href='https://www.twse.com.tw/zh/trading/margin/mi-margn.html' target='_blank' style='color:#888;'>融資券</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str}) <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料來源: <a href='https://mis.twse.com.tw/stock/fibest.jsp?stock=t00' target='_blank' style='color:#888;'>TWSE官方</a>)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
 
-            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日開盤預測 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: <a href='https://finance.yahoo.com/quote/%5ESOX/' target='_blank' style='color:#888;'>費半</a> / <a href='https://finance.yahoo.com/quote/TSM/' target='_blank' style='color:#888;'>ADR</a> / <a href='https://finance.yahoo.com/quote/DX-Y.NYB/' target='_blank' style='color:#888;'>DXY</a> / <a href='https://finance.yahoo.com/quote/%5EVIX/' target='_blank' style='color:#888;'>VIX</a>)</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日開盤預測 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(模型依據: <a href='https://finance.yahoo.com/quote/%5ESOX/' target='_blank' style='color:#888;'>歷史短均與費半連動</a>)</span></div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
     st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
 
-# --- 核心修正4：完備的新聞抓取防呆機制 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
     news_list = []
@@ -698,7 +709,7 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     df_chart = get_stock_data(target)
-    c_name = get_stock_name(target)
+    clean_name = STOCK_NAMES.get(target, "")
     
     n_pool = st.session_state.get('nav_pool', st.session_state.custom_pool)
     p_stk, n_stk = None, None
@@ -727,8 +738,11 @@ elif st.session_state.page == "analysis":
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
             
+            twii_df_for_pred = get_stock_data("^TWII")
+            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred)
+            
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
-            st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {clean_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
@@ -763,7 +777,8 @@ elif st.session_state.page == "analysis":
             if not found_opp: st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
             
-            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc)
+            # 帶入盤勢分析
+            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
