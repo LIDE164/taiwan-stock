@@ -1,7 +1,6 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-import requests
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -242,14 +241,11 @@ def get_twii_quote():
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
                 info = data['msgArray'][0]
-                z = info.get('z')
-                y = info.get('y')
-                d = info.get('d')
-                t = info.get('t')
+                z, y, d, t = info.get('z'), info.get('y'), info.get('d'), info.get('t')
                 curr = float(z.replace(',','')) if z and z != '-' else (float(y.replace(',','')) if y and y != '-' else 0)
                 prev = float(y.replace(',','')) if y and y != '-' else curr
                 if curr > 10000:
-                    update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}" if d and t else "即時撮合中"
+                    if d and t: update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}"
                     return curr, curr - prev, update_time_str
     except: pass
 
@@ -295,7 +291,7 @@ def fetch_twse_index_history():
     
     return None
 
-# --- 核心修正：盤中即時 K 線強制補幀機制 ---
+# --- 核心升級：加入「盤中即時 K 線補幀」，確保分析不落後 ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -318,7 +314,7 @@ def get_stock_data(ticker_number):
         
     if df is None: return None
     
-    # 強力獲取即時報價，修補 yfinance 台股 K 線延遲問題
+    # 盤中補幀：強力獲取最新 Cnyes 報價，防止開源資料庫延遲
     try:
         url = "https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote" if base_ticker == "^TWII" else f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
         res = requests.get(url, timeout=3)
@@ -335,11 +331,11 @@ def get_stock_data(ticker_number):
             dt_live = pd.to_datetime(datetime.fromtimestamp(ts, tz_tpe).strftime('%Y-%m-%d'))
             
             if dt_live not in df.index:
-                # 若尚未有今日 K 線，強勢補上
+                # 寫入最新的今日 K 線
                 new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
                 df = pd.concat([df, new_row])
             else:
-                # 若已存在，則更新最高/最低與收盤
+                # 若已存在則更新當日盤中震盪與收盤價
                 df.at[dt_live, 'Close'] = c_price
                 df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
                 df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
@@ -598,12 +594,20 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE / Cnyes</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-def predict_tomorrow_open(twii_df):
+# 核心修正：將預測日期的來源，直接強制綁定為大盤的即時報價時間 (twii_time_str)
+def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
 
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
-    last_dt = twii_df.index[-1]
-    last_dt_str = last_dt.strftime('%Y/%m/%d')
+    
+    # 解決 6/12 卡住問題，利用字串切割直接抓取最新即時日期
+    if twii_time_str and " " in twii_time_str:
+        last_dt_str = twii_time_str.split(" ")[0]
+        last_dt = pd.to_datetime(last_dt_str, format='%Y/%m/%d')
+    else:
+        last_dt = twii_df.index[-1]
+        last_dt_str = last_dt.strftime('%Y/%m/%d')
+        
     next_dt = last_dt + timedelta(days=1)
     while next_dt.weekday() >= 5: next_dt += timedelta(days=1)
     next_dt_str = next_dt.strftime('%Y/%m/%d')
@@ -633,7 +637,7 @@ def render_index_board():
         twii_close, twii_change, twii_time_str = get_twii_quote()
         twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
         twii_df_for_pred = get_stock_data("^TWII")
-        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred)
+        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
         
         with st.container(border=True):
             col1, col2 = st.columns([1.1, 1.2])
@@ -656,7 +660,6 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
-# --- 核心新聞抓取模組，附帶防錯機制 ---
 @st.cache_data(ttl=600, show_spinner=False)
 def get_real_news(ticker, name):
     news_list = []
@@ -673,21 +676,6 @@ def get_real_news(ticker, name):
     if not news_list:
         news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
     return news_list
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_market_news():
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    news = []
-    try:
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        if res.status_code == 200:
-            root = ET.fromstring(res.text)
-            for item in root.findall('.//item'):
-                news.append({"title": item.find('title').text, "link": item.find('link').text})
-                if len(news) >= 3: break
-    except: pass
-    if not news: news.append({"title": "👉 點擊查看最新股市新聞", "link": "https://invest.cnyes.com/twstock/TWS/0050/news"})
-    return news
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
@@ -767,19 +755,21 @@ elif st.session_state.page == "analysis":
             st.button("返回", on_click=lambda: st.session_state.update({"date_offset": st.session_state.date_offset + 1}))
         else:
             data = analyze_today(df_slice, target)
-            v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             f_data = get_fundamental_and_industry_data(target, data['收盤價'])
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
             
+            twii_close, twii_change, twii_time_str = get_twii_quote()
             twii_df_for_pred = get_stock_data("^TWII")
-            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred)
+            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
             
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期: {v_dt}</div>", unsafe_allow_html=True)
+            
+            # 核心修正：檢視日期增加顯示股票指數的日期及時間
+            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期與時間: {twii_time_str}</div>", unsafe_allow_html=True)
             
             _, up_c, _ = st.columns([1, 2, 1])
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
@@ -811,7 +801,6 @@ elif st.session_state.page == "analysis":
             if not found_opp: st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
             
-            # 帶入盤勢分析
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
