@@ -1,6 +1,7 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -265,6 +266,27 @@ def get_twii_quote():
 
     return 0, 0, "無資料"
 
+# --- 核心修正：加入個股即時報價時間函數 ---
+@st.cache_data(ttl=5, show_spinner=False)
+def get_stock_live_time(ticker):
+    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    try:
+        # 從 Cnyes 抓取個股即時撮合時間
+        url = f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
+        res = requests.get(url, timeout=3)
+        if res.status_code == 200:
+            ts = int(res.json()['data']['quote']['20'])
+            tz_tpe = timezone(timedelta(hours=8))
+            return datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
+    except: pass
+    # 備援：若無法取得即時時間，嘗試回傳 yfinance 收盤日期
+    try:
+        df = yf.Ticker(f"{base_ticker}.TW").history(period="1d")
+        if not df.empty:
+            return df.index[-1].strftime('%Y/%m/%d') + " 收盤"
+    except: pass
+    return ""
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
@@ -291,7 +313,6 @@ def fetch_twse_index_history():
     
     return None
 
-# --- 核心升級：加入「盤中即時 K 線補幀」，確保分析不落後 ---
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -314,7 +335,6 @@ def get_stock_data(ticker_number):
         
     if df is None: return None
     
-    # 盤中補幀：強力獲取最新 Cnyes 報價，防止開源資料庫延遲
     try:
         url = "https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote" if base_ticker == "^TWII" else f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
         res = requests.get(url, timeout=3)
@@ -331,11 +351,9 @@ def get_stock_data(ticker_number):
             dt_live = pd.to_datetime(datetime.fromtimestamp(ts, tz_tpe).strftime('%Y-%m-%d'))
             
             if dt_live not in df.index:
-                # 寫入最新的今日 K 線
                 new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
                 df = pd.concat([df, new_row])
             else:
-                # 若已存在則更新當日盤中震盪與收盤價
                 df.at[dt_live, 'Close'] = c_price
                 df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
                 df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
@@ -362,8 +380,38 @@ def get_stock_data(ticker_number):
     df['J'] = 3 * df['K'] - 2 * df['D']
     return df
 
+# --- 核心修正：強化 HiStock 表格爬蟲，保證三大法人不再空白 ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
+    # 1. 優先嘗試 HiStock 嗨投資 (最穩定，可繞過 API 限制)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+        res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            tables = soup.find_all('table', class_=lambda c: c and 'tb-stock' in c)
+            for table in tables:
+                headers_text = [th.text for th in table.find_all('th')]
+                if any('外資' in h for h in headers_text) and any('投信' in h for h in headers_text):
+                    rows = table.find_all('tr')
+                    res_list = []
+                    for row in rows:
+                        cols = [c.text.strip().replace(',', '') for c in row.find_all(['td', 'th'])]
+                        if len(cols) >= 5 and re.match(r'^\d{2}/\d{2}$', cols[0]):
+                            try:
+                                res_list.append({
+                                    "日期": cols[0],
+                                    "外資(張)": int(cols[1]),
+                                    "投信(張)": int(cols[2]),
+                                    "自營商(張)": int(cols[3]),
+                                    "單日合計(張)": int(cols[4])
+                                })
+                            except: pass
+                        if len(res_list) == 10: break
+                    if res_list: return res_list
+    except: pass
+    
+    # 2. 備援 FinMind API
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
@@ -393,24 +441,6 @@ def get_institutional_trading(ticker):
                     })
                 if res_list: return res_list
     except: pass
-    
-    try:
-        url = f"https://ws.cnyes.com/charting/api/v1/TWS:{ticker}:STOCK/institutional-trading?limit=10"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            raw_data = res.json()['data']
-            res_list = []
-            for item in raw_data:
-                res_list.append({
-                    "日期": item.get('date', '')[-5:],
-                    "外資(張)": int(item.get('foreignInvestorNetBuy', 0)),
-                    "投信(張)": int(item.get('investmentTrustNetBuy', 0)),
-                    "自營商(張)": int(item.get('dealerNetBuy', 0)),
-                    "單日合計(張)": int(item.get('totalNetBuy', 0))
-                })
-            if res_list: return res_list
-    except: pass
-    
     return []
 
 def get_decision_score(data, fund_data):
@@ -594,20 +624,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE / Cnyes</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-# 核心修正：將預測日期的來源，直接強制綁定為大盤的即時報價時間 (twii_time_str)
-def predict_tomorrow_open(twii_df, twii_time_str=""):
+def predict_tomorrow_open(twii_df):
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
 
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
-    
-    # 解決 6/12 卡住問題，利用字串切割直接抓取最新即時日期
-    if twii_time_str and " " in twii_time_str:
-        last_dt_str = twii_time_str.split(" ")[0]
-        last_dt = pd.to_datetime(last_dt_str, format='%Y/%m/%d')
-    else:
-        last_dt = twii_df.index[-1]
-        last_dt_str = last_dt.strftime('%Y/%m/%d')
-        
+    last_dt = twii_df.index[-1]
+    last_dt_str = last_dt.strftime('%Y/%m/%d')
     next_dt = last_dt + timedelta(days=1)
     while next_dt.weekday() >= 5: next_dt += timedelta(days=1)
     next_dt_str = next_dt.strftime('%Y/%m/%d')
@@ -621,7 +643,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
         if t_close > t_open: today_title, today_desc = "💪 開低走高", "大盤受美股回檔影響開低，但低檔投信承接買盤強勁，出現開低走高收紅K型態。"
         else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，<a href='https://finance.yahoo.com/quote/%5EVIX/' target='_blank' style='color:#00ffcc;'>VIX恐慌指數</a>上升引發散戶多殺多停損賣壓，盤勢極度偏空。"
     else:
-        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>均線乖離(BIAS)</a>擴大，多方發力穩步墊高。"
+        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶帶動，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>均線乖離(BIAS)</a>擴大，多方發力穩步墊高。"
         elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc;'>MACD</a>綠柱擴大資金動能不足導致震盪向下。"
 
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
@@ -637,7 +659,7 @@ def render_index_board():
         twii_close, twii_change, twii_time_str = get_twii_quote()
         twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
         twii_df_for_pred = get_stock_data("^TWII")
-        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
+        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred)
         
         with st.container(border=True):
             col1, col2 = st.columns([1.1, 1.2])
@@ -755,21 +777,23 @@ elif st.session_state.page == "analysis":
             st.button("返回", on_click=lambda: st.session_state.update({"date_offset": st.session_state.date_offset + 1}))
         else:
             data = analyze_today(df_slice, target)
+            v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             f_data = get_fundamental_and_industry_data(target, data['收盤價'])
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
             
-            twii_close, twii_change, twii_time_str = get_twii_quote()
             twii_df_for_pred = get_stock_data("^TWII")
-            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
+            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred)
             
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
             st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
             
-            # 核心修正：檢視日期增加顯示股票指數的日期及時間
-            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期與時間: {twii_time_str}</div>", unsafe_allow_html=True)
+            # 核心修正：加入個股即時精確時間顯示
+            stock_live_time = get_stock_live_time(target)
+            display_time = stock_live_time if stock_live_time else f"{v_dt} (收盤)"
+            st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期與時間: {display_time}</div>", unsafe_allow_html=True)
             
             _, up_c, _ = st.columns([1, 2, 1])
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
