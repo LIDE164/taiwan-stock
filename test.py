@@ -146,7 +146,6 @@ if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
-# --- 核心修正：熱門股恢復為前 50 名以提升掃描速度 ---
 @st.cache_data(ttl=1800)
 def fetch_twse_top_50():
     try:
@@ -164,7 +163,7 @@ if st.session_state.favorites:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
+if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.session_state.custom_pool = fetch_twse_top_50()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
@@ -278,7 +277,6 @@ def get_stock_live_time(ticker):
             return datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     except: pass
     
-    # 強制備援：顯示當下台灣時間
     return datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -727,11 +725,10 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            # 核心修正2：解除買點 10 檔限制，全數顯示所有符合條件的 A/S 級股票
-            st.markdown("##### 🎯 尋找買點榜單 (完整顯示所有 S 級與 A 級標的)")
+            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補至最多 10 檔)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
-            df_disp = pd.concat([df_s, df_a])
+            df_disp = pd.concat([df_s, df_a]).head(10)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
         else:
             st.markdown("##### 📋 熱門名單")
@@ -780,6 +777,7 @@ elif st.session_state.page == "analysis":
             st.button("返回", on_click=lambda: st.session_state.update({"date_offset": st.session_state.date_offset + 1}))
         else:
             data = analyze_today(df_slice, target)
+            v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             f_data = get_fundamental_and_industry_data(target, data['收盤價'])
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
@@ -788,7 +786,6 @@ elif st.session_state.page == "analysis":
             twii_df_for_pred = get_stock_data("^TWII")
             t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
             
-            # 核心修正3：時間戳客製化顯示格式
             stock_live_time = get_stock_live_time(target)
             display_time = stock_live_time if stock_live_time else f"{df_slice.index[-1].strftime('%Y/%m/%d')} 收盤"
             
