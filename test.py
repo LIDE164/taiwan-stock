@@ -242,11 +242,14 @@ def get_twii_quote():
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
                 info = data['msgArray'][0]
-                z, y, d, t = info.get('z'), info.get('y'), info.get('d'), info.get('t')
+                z = info.get('z')
+                y = info.get('y')
+                d = info.get('d')
+                t = info.get('t')
                 curr = float(z.replace(',','')) if z and z != '-' else (float(y.replace(',','')) if y and y != '-' else 0)
                 prev = float(y.replace(',','')) if y and y != '-' else curr
                 if curr > 10000:
-                    if d and t: update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}"
+                    update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}" if d and t else "即時撮合中"
                     return curr, curr - prev, update_time_str
     except: pass
 
@@ -325,6 +328,7 @@ def get_stock_data(ticker_number):
             o_price = float(q['22'])
             h_price = float(q['25'])
             l_price = float(q['26'])
+            v_vol = float(q.get('14', 0)) * 1000 if base_ticker != "^TWII" else 0
             
             ts = int(q['20'])
             tz_tpe = timezone(timedelta(hours=8))
@@ -332,13 +336,15 @@ def get_stock_data(ticker_number):
             
             if dt_live not in df.index:
                 # 若尚未有今日 K 線，強勢補上
-                new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [0]}, index=[dt_live])
+                new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
                 df = pd.concat([df, new_row])
             else:
                 # 若已存在，則更新最高/最低與收盤
                 df.at[dt_live, 'Close'] = c_price
                 df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
                 df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
+                if base_ticker != "^TWII":
+                    df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
     except: pass
 
     df['5MA'] = df['Close'].rolling(5).mean()
@@ -589,7 +595,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', dragmode=False, showlegend=False)
     
-    fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
+    fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE / Cnyes</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
 def predict_tomorrow_open(twii_df):
@@ -649,6 +655,39 @@ def render_index_board():
         st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
+
+# --- 核心新聞抓取模組，附帶防錯機制 ---
+@st.cache_data(ttl=600, show_spinner=False)
+def get_real_news(ticker, name):
+    news_list = []
+    try:
+        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
+                if len(news_list) >= 3: break
+    except: pass
+    
+    if not news_list:
+        news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
+    return news_list
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_market_news():
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote('台灣股市')}+when:1d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    news = []
+    try:
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            for item in root.findall('.//item'):
+                news.append({"title": item.find('title').text, "link": item.find('link').text})
+                if len(news) >= 3: break
+    except: pass
+    if not news: news.append({"title": "👉 點擊查看最新股市新聞", "link": "https://invest.cnyes.com/twstock/TWS/0050/news"})
+    return news
 
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
@@ -772,6 +811,7 @@ elif st.session_state.page == "analysis":
             if not found_opp: st.info("近一個月內無 A 級以上的極佳買點。")
             st.markdown("---")
             
+            # 帶入盤勢分析
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
