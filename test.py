@@ -373,8 +373,12 @@ def get_stock_data(ticker_number):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
+    # 強化版備援一：HiStock 搭配偽裝 Headers
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
         res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -396,6 +400,27 @@ def get_institutional_trading(ticker):
                     if res_list: return res_list
     except: pass
     
+    # 強化版備援二：鉅亨網隱藏 API
+    try:
+        url = f"https://ws.cnyes.com/charting/api/v1/TWS:{ticker}:STOCK/institutional-trading?limit=10"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json().get('data', [])
+            res_list = []
+            for item in data:
+                dt_str = item.get('date', '')
+                if len(dt_str) >= 5: dt_str = dt_str[-5:]
+                res_list.append({
+                    "日期": dt_str.replace("-", "/"),
+                    "外資(張)": int(item.get('foreignInvestorNetBuy', 0) or 0),
+                    "投信(張)": int(item.get('investmentTrustNetBuy', 0) or 0),
+                    "自營商(張)": int(item.get('dealerNetBuy', 0) or 0),
+                    "單日合計(張)": int(item.get('totalNetBuy', 0) or 0)
+                })
+            if res_list: return res_list
+    except: pass
+
+    # 強化版備援三：FinMind (優化正規表達式以防欄位名稱改變)
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
@@ -406,9 +431,9 @@ def get_institutional_trading(ticker):
                 df = pd.DataFrame(data['data'])
                 df['net'] = (df['buy'] - df['sell']) / 1000  
                 df['type'] = '其他'
-                df.loc[df['name'].str.contains('Foreign', case=False, na=False), 'type'] = '外資'
-                df.loc[df['name'].str.contains('Investment_Trust', case=False, na=False), 'type'] = '投信'
-                df.loc[df['name'].str.contains('Dealer', case=False, na=False) & ~df['name'].str.contains('Foreign', case=False, na=False), 'type'] = '自營商'
+                df.loc[df['name'].str.contains('Foreign|外資', case=False, na=False), 'type'] = '外資'
+                df.loc[df['name'].str.contains('Trust|投信', case=False, na=False), 'type'] = '投信'
+                df.loc[df['name'].str.contains('Dealer|自營', case=False, na=False), 'type'] = '自營商'
                 pivot = df.groupby(['date', 'type'])['net'].sum().unstack(fill_value=0).reset_index()
                 for col in ['外資', '投信', '自營商']:
                     if col not in pivot.columns: pivot[col] = 0
@@ -417,7 +442,7 @@ def get_institutional_trading(ticker):
                 res_list = []
                 for _, row in pivot.iterrows():
                     res_list.append({
-                        "日期": row['date'][-5:],
+                        "日期": row['date'][-5:].replace("-", "/"),
                         "外資(張)": int(row['外資']),
                         "投信(張)": int(row['投信']),
                         "自營商(張)": int(row['自營商']),
@@ -425,6 +450,7 @@ def get_institutional_trading(ticker):
                     })
                 if res_list: return res_list
     except: pass
+    
     return []
 
 def get_decision_score(data, fund_data):
@@ -569,7 +595,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
 
     return analysis_bullets, v_t, v_c, v_a
 
-# --- 核心升級：買點時光機數據注入 + 支撐壓力系統 + 現價標示優化 ---
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -586,18 +611,15 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 優化現價標示位置 (左上角 + 橫線)
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
     fig.add_annotation(x=0.01, y=0.92, xref="paper", yref="y domain", text=f"現價: {latest_price:.2f}", showarrow=False, font=dict(color="#ffcc00", size=14, weight="bold"), xanchor="left", bgcolor="rgba(0,0,0,0.5)")
     
-    # 動態支撐與壓力線
     if show_sup_res:
         highest_price = df_view['High'].max()
         lowest_price = df_view['Low'].min()
         fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
         fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
     
-    # 買進訊號結合時光機日期提示
     if show_buy_signal and f_data:
         buy_x = []
         buy_y = []
@@ -611,11 +633,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 if t_data:
                     t_sc, _ = get_decision_score(t_data, f_data)
                     if t_sc >= 2:
-                        dt_str = current_date.strftime('%Y-%m-%d')
-                        offset_val = -(len(df) - len(sub_df)) # 預先計算好對應的 date_offset
-                        buy_x.append(dt_str)
+                        buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.97)
-                        buy_text.append(f"買<br>({dt_str})") # 標示加上日期
+                        buy_text.append("買")
                         
         if buy_x:
             fig.add_trace(go.Scatter(
@@ -625,8 +645,8 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'),
                 text=buy_text,
                 textposition="bottom center",
-                textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=10, weight="bold"),
-                name="買進訊號 (含時光機日期)",
+                textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"),
+                name="買進訊號",
                 hoverinfo='x'
             ), row=1, col=1)
             
@@ -750,6 +770,7 @@ def get_real_news(ticker, name):
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
                 if len(news_list) >= 3: break
     except: pass
+    
     if not news_list:
         news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
     return news_list
@@ -801,7 +822,7 @@ if st.session_state.page == "home":
                 st.markdown(f'''<div style="background-color: {bg_c}; padding: 12px; border-radius: 8px; border: 1px solid {border_c}; text-align: center; margin: 5px 0 10px 0;"><span style="font-size: 2.6rem; font-weight: 900; color: {p_color};">{r['收盤價']}</span><span style="font-size: 1.3rem; font-weight: bold; color: {p_color}; margin-left: 12px;">{'+' if r['漲跌']>0 else ''}{r['漲跌']} ({r['漲跌幅']}%)</span></div>''', unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1rem; color: {text_col}; line-height: 1.8;'>產業: <b>{r['產業']}</b><br>昨收: <b>{r['昨日收盤價']}</b><br>近5日漲幅: <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("📊 解析", key=f"bp_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True): st.session_state.update({"current_stock": r['ticker_raw'], "date_offset": 0, "page": "analysis"}); st.rerun()
+                if st.button("📊 解析", key=f"bp_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True): st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis"}); st.rerun()
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
@@ -817,17 +838,16 @@ elif st.session_state.page == "analysis":
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk, "date_offset": 0}); st.rerun()
+        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
     with c2:
         if st.button("🏠 回首頁", use_container_width=True): st.session_state.page = "home"; st.rerun()
     with c3:
-        if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk, "date_offset": 0}); st.rerun()
+        if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
         
     if df_chart is not None:
-        df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
+        df_slice = df_chart
         if len(df_slice) < 5: 
             st.warning("歷史資料不足")
-            st.button("返回", on_click=lambda: st.session_state.update({"date_offset": st.session_state.date_offset + 1}))
         else:
             data = analyze_today(df_slice, target)
             v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
@@ -852,19 +872,6 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
             st.markdown("<br>", unsafe_allow_html=True)
             
-            tc1, tc2, tc3, tc4 = st.columns([1, 1, 1, 1])
-            with tc1:
-                if st.button("⬅️ 前一日", use_container_width=True): st.session_state.date_offset -= 1; st.rerun()
-            with tc2: st.markdown(f"<div style='text-align: center; margin-top: 5px; font-weight: bold;'>📅 時光機</div>", unsafe_allow_html=True)
-            with tc3:
-                if st.session_state.date_offset < 0:
-                    if st.button("🎯 回到今日", use_container_width=True): st.session_state.date_offset = 0; st.rerun()
-            with tc4:
-                if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
-
-            st.markdown("---")
-            
-            # --- 核心升級：5% 停損防護網 ---
             stop_loss_html = ""
             recent_20 = df_slice.tail(20)
             recent_signals = []
@@ -937,7 +944,7 @@ elif st.session_state.page == "analysis":
                 st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
             else:
                 st.info("目前無法自動抓取籌碼資料。")
-            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://api.finmindtrade.com' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: TWSE 官方 / FinMind</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: right; font-size:0.8rem;'><a href='https://api.finmindtrade.com' target='_blank' style='color:#888; text-decoration:none;'>🔗 資料來源: TWSE 官方 / FinMind / 鉅亨網</a></div>", unsafe_allow_html=True)
             
             st.divider()
             st.subheader("🔗 同產業關聯股動態")
@@ -953,7 +960,7 @@ elif st.session_state.page == "analysis":
                                 rc, rp = round(r_df['Close'].iloc[-1], 2), round((r_df['Close'].iloc[-1] - r_df['Close'].iloc[-2])/r_df['Close'].iloc[-2]*100, 2)
                                 rcol = "#ff3333" if rp >= 0 else "#00cc00"
                                 st.markdown(f"**{r} {get_stock_name(r)}** <br> <span style='color:{rcol}; font-weight:bold;'>{rc} ({'+' if rp>0 else ''}{rp}%)</span>", unsafe_allow_html=True)
-                                if st.button("分析", key=f"b_r_{r}"): st.session_state.update({"current_stock": r, "date_offset": 0, "page": "analysis"}); st.rerun()
+                                if st.button("分析", key=f"b_r_{r}"): st.session_state.update({"current_stock": r, "page": "analysis"}); st.rerun()
                 else: st.info("無其他同產業標的。")
             else: st.info("無法識別該股產業。")
             
