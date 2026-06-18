@@ -163,7 +163,7 @@ if st.session_state.favorites:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
+if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.session_state.custom_pool = fetch_twse_top_50()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
@@ -569,8 +569,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
 
     return analysis_bullets, v_t, v_c, v_a
 
-# --- 核心新增：圖表買點訊號動態標示開關 ---
-def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False):
+# --- 核心修正：將 K 線圖上的「買」字與 AI 大腦完全融合統一 ---
+def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -586,17 +586,26 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 買進訊號標示邏輯 (黃金坑 或 觸碰布林下軌且超賣)
-    if show_buy_signal:
-        c1 = (df_view['Close'] > df_view['20MA']) & (df_view['Close'] < df_view['5MA']) & (df_view['J'] < 20)
-        c2 = (df_view['Close'] <= df_view['BB_DN'] * 1.02) & (df_view['J'] < 20)
-        buy_mask = c1 | c2
-        buy_points = df_view[buy_mask]
-        
-        if not buy_points.empty:
+    # 統一邏輯判定：動態迴圈計算 view_days 的每一天分數，完全同步策略大腦
+    if show_buy_signal and f_data:
+        buy_x = []
+        buy_y = []
+        for i in range(len(df_view)):
+            current_date = df_view.index[i]
+            pos = df.index.get_loc(current_date)
+            sub_df = df.iloc[:pos+1] # 取得切片至當天為止的歷史
+            if len(sub_df) >= 5:
+                t_data = analyze_today(sub_df, ticker_name)
+                if t_data:
+                    t_sc, _ = get_decision_score(t_data, f_data)
+                    if t_sc >= 2: # 同步大腦規則：大於等於 2 分（A級或S級）才算合格買訊
+                        buy_x.append(current_date.strftime('%Y-%m-%d'))
+                        buy_y.append(df_view['Low'].iloc[i] * 0.97)
+                        
+        if buy_x:
             fig.add_trace(go.Scatter(
-                x=buy_points.index.strftime('%Y-%m-%d'),
-                y=buy_points['Low'] * 0.97, # 將圖示放置在 K線最低點下方
+                x=buy_x,
+                y=buy_y,
                 mode='markers+text',
                 marker=dict(symbol='triangle-up', size=12, color='#00ffcc' if not is_light_mode else '#0066cc'),
                 text="買",
@@ -913,15 +922,16 @@ elif st.session_state.page == "analysis":
             with dc5:
                 show_buy_sig = st.toggle("🛒 顯示買進訊號", value=True)
                 
-            fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, show_buy_sig)
+            # 將 f_data 傳入圖表函數，以達成邏輯統一
+            fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, show_buy_sig, f_data)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
             
-            st.markdown("### 🕵️‍♂️ 進階數據面板")
+            st.markdown("### ### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True):
                 st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://tw.stock.yahoo.com/quote/{target}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源: Yahoo財經</a>", unsafe_allow_html=True)
             with a2.container(border=True):
-                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無" # 當季EPS/3 為換算單月
+                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
                 st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}/overview' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
 
             st.divider()
