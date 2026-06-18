@@ -163,7 +163,7 @@ if st.session_state.favorites:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
+if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
     st.session_state.custom_pool = fetch_twse_top_50()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
@@ -609,7 +609,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE / Cnyes</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-# 核心修正1：強制校準大盤預測日期基準
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
 
@@ -725,10 +724,10 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補至最多 10 檔)")
+            st.markdown("##### 🎯 尋找買點榜單 (完整顯示所有 S 級與 A 級標的)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
-            df_disp = pd.concat([df_s, df_a]).head(10)
+            df_disp = pd.concat([df_s, df_a])
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
         else:
             st.markdown("##### 📋 熱門名單")
@@ -777,7 +776,6 @@ elif st.session_state.page == "analysis":
             st.button("返回", on_click=lambda: st.session_state.update({"date_offset": st.session_state.date_offset + 1}))
         else:
             data = analyze_today(df_slice, target)
-            v_dt = df_slice.index[-1].strftime('%Y/%m/%d')
             f_data = get_fundamental_and_industry_data(target, data['收盤價'])
             sc, rs = get_decision_score(data, f_data)
             inst_data = get_institutional_trading(target)
@@ -810,19 +808,66 @@ elif st.session_state.page == "analysis":
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
 
             st.markdown("---")
-            st.markdown("##### 💡 近一個月歷史買點回測")
-            recent_30 = df_chart.tail(30); found_opp = False; btn_cols = st.columns(4); col_idx = 0
+            # --- 核心升級：月歷史買點回測總分析與趨勢 ---
+            st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
+            recent_30 = df_chart.tail(30)
+            s_count = 0
+            a_count = 0
+            buy_points_info = []
+            
+            price_30_days_ago = recent_30['Close'].iloc[0]
+            current_price = recent_30['Close'].iloc[-1]
+            month_trend_pct = (current_price - price_30_days_ago) / price_30_days_ago * 100
+            trend_color = "#ff3333" if month_trend_pct >= 0 else "#00cc00"
+            trend_text = "上漲" if month_trend_pct >= 0 else "下跌"
+            sign_t = "+" if month_trend_pct > 0 else ""
+            
             for idx in range(len(recent_30)):
                 temp_df = df_chart.iloc[:len(df_chart) - 30 + idx + 1]
                 t_data = analyze_today(temp_df, target)
                 t_sc, _ = get_decision_score(t_data, f_data)
-                if t_sc >= 2: 
-                    found_opp = True; dt_str = temp_df.index[-1].strftime('%m/%d'); badge = "🟢 S級" if t_sc >= 5 else "🟡 A級"
-                    with btn_cols[col_idx % 4]:
-                        jump_offset = -(len(df_chart) - len(temp_df))
-                        if st.button(f"{dt_str} {badge}", key=f"hist_{dt_str}", use_container_width=True): st.session_state.date_offset = jump_offset; st.rerun()
-                    col_idx += 1
-            if not found_opp: st.info("近一個月內無 A 級以上的極佳買點。")
+                if t_sc >= 5:
+                    s_count += 1
+                    buy_points_info.append((temp_df.index[-1], "S級", t_data['收盤價'], temp_df))
+                elif t_sc >= 2:
+                    a_count += 1
+                    buy_points_info.append((temp_df.index[-1], "A級", t_data['收盤價'], temp_df))
+            
+            with st.container(border=True):
+                col_sum1, col_sum2, col_sum3 = st.columns(3)
+                with col_sum1:
+                    st.markdown(f"<div style='text-align:center;'>近一月趨勢<br><span style='color:{trend_color}; font-size:1.6rem; font-weight:900;'>{trend_text} {sign_t}{month_trend_pct:.2f}%</span></div>", unsafe_allow_html=True)
+                with col_sum2:
+                    st.markdown(f"<div style='text-align:center;'>🟢 S級 強烈買進<br><span style='font-size:1.6rem; font-weight:900;'>{s_count} 次</span></div>", unsafe_allow_html=True)
+                with col_sum3:
+                    st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900;'>{a_count} 次</span></div>", unsafe_allow_html=True)
+                
+                if s_count + a_count == 0:
+                    if month_trend_pct > 0:
+                        summary_text = "近一個月股價呈現強勢上漲或高檔鈍化，未能觸發超賣拉回的黃金坑條件，追高需留意風險。"
+                    else:
+                        summary_text = "近一個月股價呈現弱勢下跌，且技術指標尚未落入極度超賣區或缺乏止跌訊號，建議持續觀望。"
+                else:
+                    avg_buy_price = sum([info[2] for info in buy_points_info]) / len(buy_points_info)
+                    profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
+                    prof_color = "#ff3333" if profit_pct >= 0 else "#00cc00"
+                    prof_text = "獲利" if profit_pct >= 0 else "虧損"
+                    p_sign = "+" if profit_pct > 0 else ""
+                    summary_text = f"本月共觸發 **{s_count + a_count}** 次買進訊號。若於每次訊號出現時建倉，平均買進成本約為 **{avg_buy_price:.2f}**，以今日現價相比，帳面預估呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {p_sign}{profit_pct:.2f}%</span>。這顯示近期的技術面勝率狀態。"
+                    
+                st.markdown(f"<div style='margin-top:15px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
+
+            if buy_points_info:
+                st.markdown("**📅 點擊下方按鈕搭乘時光機，回到當天查看技術型態：**")
+                btn_cols = st.columns(4)
+                for i, info in enumerate(buy_points_info):
+                    dt_str = info[0].strftime('%m/%d')
+                    badge = "🟢 S級" if info[1] == "S級" else "🟡 A級"
+                    jump_offset = -(len(df_chart) - len(info[3]))
+                    with btn_cols[i % 4]:
+                        if st.button(f"{dt_str} {badge}", key=f"hist_{dt_str}_{i}", use_container_width=True): 
+                            st.session_state.date_offset = jump_offset
+                            st.rerun()
             st.markdown("---")
             
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
