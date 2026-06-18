@@ -163,7 +163,7 @@ if st.session_state.favorites:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
+if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.session_state.custom_pool = fetch_twse_top_50()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
@@ -234,8 +234,8 @@ def get_twii_quote():
     try:
         session = requests.Session()
         session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        ts = int(datetime.now(tz_tpe).timestamp() * 1000)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
+        st_ts = int(datetime.now(tz_tpe).timestamp() * 1000)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp=ex_ch=tse_t00.tw&json=1&delay=0&_={st_ts}"
         res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         if res.status_code == 200:
             data = res.json()
@@ -373,12 +373,9 @@ def get_stock_data(ticker_number):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
-    # 強化版備援一：HiStock 搭配偽裝 Headers
+    # 三層備援籌碼抓取引擎
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
         res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -400,7 +397,6 @@ def get_institutional_trading(ticker):
                     if res_list: return res_list
     except: pass
     
-    # 強化版備援二：鉅亨網隱藏 API
     try:
         url = f"https://ws.cnyes.com/charting/api/v1/TWS:{ticker}:STOCK/institutional-trading?limit=10"
         res = requests.get(url, timeout=5)
@@ -420,7 +416,6 @@ def get_institutional_trading(ticker):
             if res_list: return res_list
     except: pass
 
-    # 強化版備援三：FinMind (優化正規表達式以防欄位名稱改變)
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
@@ -450,7 +445,6 @@ def get_institutional_trading(ticker):
                     })
                 if res_list: return res_list
     except: pass
-    
     return []
 
 def get_decision_score(data, fund_data):
@@ -546,7 +540,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['J值'] < 20:
         analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 極度超賣：J 值來到 ({data['J值']})，隨時醞釀強力技術性反彈。</span>")
     elif data['J值'] > 80:
-        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，短線過熱步入超買區。</span>")
+        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，短線過熱步入超買區.</span>")
     
     if data['K'] > data['D']:
         analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 黃金交叉：K值 ({data['K']}) 大於 D值 ({data['D']})，指標呈現多頭向上發散。</span>")
@@ -620,10 +614,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
         fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
     
+    # 畫面上只標示單獨「買」字，落實與策略大腦 100% 邏輯一致
     if show_buy_signal and f_data:
-        buy_x = []
-        buy_y = []
-        buy_text = []
+        buy_x, buy_y, buy_text = [], [], []
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -758,23 +751,6 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
-@st.cache_data(ttl=600, show_spinner=False)
-def get_real_news(ticker, name):
-    news_list = []
-    try:
-        url = f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{ticker} {name} 股票')}+when:7d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        if res.status_code == 200:
-            root = ET.fromstring(res.text)
-            for item in root.findall('.//item'):
-                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
-                if len(news_list) >= 3: break
-    except: pass
-    
-    if not news_list:
-        news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
-    return news_list
-
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -784,7 +760,7 @@ if st.session_state.page == "home":
     if btn_col2.button("📋 熱門名單", use_container_width=True): st.session_state.scan_mode = "hot"; st.rerun()
     if btn_col3.button("🔥 近五日熱門", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     search_val = st.text_input("隱藏", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
-    if search_val: st.session_state.update({"current_stock": search_val, "date_offset": 0, "page": "analysis"}); st.rerun()
+    if search_val: st.session_state.update({"current_stock": search_val, "page": "analysis"}); st.rerun()
     
     scan_results = []
     with st.spinner('掃描中...'):
@@ -872,6 +848,7 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
             st.markdown("<br>", unsafe_allow_html=True)
             
+            # --- 5% 停損防護線演算 ---
             stop_loss_html = ""
             recent_20 = df_slice.tail(20)
             recent_signals = []
@@ -880,8 +857,7 @@ elif st.session_state.page == "analysis":
                 t_data = analyze_today(temp_df, target)
                 if t_data:
                     t_sc, _ = get_decision_score(t_data, f_data)
-                    if t_sc >= 2:
-                        recent_signals.append((temp_df.index[-1], t_data['收盤價']))
+                    if t_sc >= 2: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
             
             if recent_signals:
                 last_sig_date, last_sig_price = recent_signals[-1]
@@ -896,6 +872,56 @@ elif st.session_state.page == "analysis":
             
             if stop_loss_html:
                 st.markdown(stop_loss_html, unsafe_allow_html=True)
+
+            # --- 💡 加回核心功能：月歷史買點回測總分析及趨勢看板 ---
+            st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
+            recent_30 = df_slice.tail(30)
+            s_count, a_count = 0, 0
+            buy_points_prices = []
+            
+            price_30_days_ago = recent_30['Close'].iloc[0]
+            current_price = recent_30['Close'].iloc[-1]
+            month_trend_pct = (current_price - price_30_days_ago) / price_30_days_ago * 100
+            trend_color = "#ff3333" if month_trend_pct >= 0 else "#00cc00"
+            trend_text = "上漲" if month_trend_pct >= 0 else "下跌"
+            sign_t = "+" if month_trend_pct > 0 else ""
+            
+            for idx in range(len(recent_30)):
+                temp_df = df_slice.iloc[:len(df_slice) - 30 + idx + 1]
+                t_data = analyze_today(temp_df, target)
+                if t_data:
+                    t_sc, _ = get_decision_score(t_data, f_data)
+                    if t_sc >= 5:
+                        s_count += 1
+                        buy_points_prices.append(t_data['收盤價'])
+                    elif t_sc >= 2:
+                        a_count += 1
+                        buy_points_prices.append(t_data['收盤價'])
+            
+            with st.container(border=True):
+                col_sum1, col_sum2, col_sum3 = st.columns(3)
+                with col_sum1:
+                    st.markdown(f"<div style='text-align:center;'>近一月趨勢<br><span style='color:{trend_color}; font-size:1.6rem; font-weight:900;'>{trend_text} {sign_t}{month_trend_pct:.2f}%</span></div>", unsafe_allow_html=True)
+                with col_sum2:
+                    st.markdown(f"<div style='text-align:center;'>🟢 S級 強烈買進<br><span style='font-size:1.6rem; font-weight:900; color:#00cc00;'>{s_count} 次</span></div>", unsafe_allow_html=True)
+                with col_sum3:
+                    st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
+                
+                if not buy_points_prices:
+                    if month_trend_pct > 0:
+                        summary_text = "近一個月股價呈現強勢上漲或高檔波段推升，因未能落入超賣區，未曾觸發任何 A/S 級買點條件，追高需控制風險。"
+                    else:
+                        summary_text = "近一個月股價持續低迷，但可能受基本面虧損扣分或缺乏放量止跌型態，未曾觸發過安全買點條件，建議保持空頭觀望。"
+                else:
+                    avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
+                    profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
+                    prof_color = "#ff3333" if profit_pct >= 0 else "#00cc00"
+                    prof_text = "獲利" if profit_pct >= 0 else "虧損"
+                    p_sign = "+" if profit_pct > 0 else ""
+                    summary_text = f"本月共觸發 **{s_count + a_count}** 次有效買進訊號。若嚴守紀律於訊號出現時等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。以今日現價對比，目前策略帳面呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {p_sign}{profit_pct:.2f}%</span>，可作為該股跟隨訊號的勝率參考。"
+                    
+                st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
+            st.markdown("---")
             
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
@@ -906,10 +932,8 @@ elif st.session_state.page == "analysis":
             if dc2.button("3個月"): st.session_state.view_days = 60
             if dc3.button("6個月"): st.session_state.view_days = 120
             if dc4.button("1年"): st.session_state.view_days = 240
-            with dc5:
-                show_buy_sig = st.toggle("🛒 顯示買進訊號", value=True)
-            with dc6:
-                show_sup_res = st.toggle("📏 顯示支撐/壓力", value=False)
+            with dc5: show_buy_sig = st.toggle("🛒 顯示買進訊號", value=True)
+            with dc6: show_sup_res = st.toggle("📏 顯示支撐/壓力", value=False)
                 
             fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, show_buy_sig, f_data, show_sup_res)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
@@ -929,12 +953,9 @@ elif st.session_state.page == "analysis":
             t_mid = "🔼 多頭 (站上20T)" if data['收盤價'] > data['20MA'] else "🔽 跌破20T"
             t_long = "🔼 多頭 (站上季線)" if data['收盤價'] > data['60MA'] else "🔽 跌破季線"
             
-            with st.container(border=True):
-                st.markdown(f"**短線走勢 (日線級別) :** {t_short}")
-            with st.container(border=True):
-                st.markdown(f"**中線布局 (周線級別) :** {t_mid}")
-            with st.container(border=True):
-                st.markdown(f"**長線防守 (季線級別) :** {t_long}")
+            with st.container(border=True): st.markdown(f"**短線走勢 (日線級別) :** {t_short}")
+            with st.container(border=True): st.markdown(f"**中線布局 (周線級別) :** {t_mid}")
+            with st.container(border=True): st.markdown(f"**長線防守 (季線級別) :** {t_long}")
             
             st.markdown("<br>", unsafe_allow_html=True)
 
