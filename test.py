@@ -163,7 +163,7 @@ if st.session_state.favorites:
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
+if st.sidebar.button("🔄 更新熱門股", use_container_width=True):
     st.session_state.custom_pool = fetch_twse_top_50()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
@@ -222,7 +222,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
 def get_twii_quote():
     tz_tpe = timezone(timedelta(hours=8))
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-    fallback_curr, fallback_change, fallback_time = 0, 0, ""
+    fallback_curr, fallback_change = 0, 0
 
     try:
         df = yf.Ticker("^TWII").history(period="5d")
@@ -276,7 +276,6 @@ def get_stock_live_time(ticker):
             ts = int(res.json()['data']['quote']['20'])
             return datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     except: pass
-    
     return datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -495,7 +494,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         analysis_bullets.append(f"⚪ <b>三級多空趨勢</b>：目前處於多空拉扯震盪整理，狀態為：{'、'.join(trends)}。")
     
     if data['收盤價'] > data['5MA']:
-        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>短線強勢表態：股價成功站穩 5 日線 ({data['5MA']}) 之上，短線動能強勁。</span>")
+        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>短線強勢表態：股價成功站穩 5 日線 ({data['5MA']}) 之上，短線動能強勁.</span>")
     else:
         analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>短期均線蓋頭反壓</b>：目前股價 ({data['收盤價']}) 低於 5 日線 ({data['5MA']})，短線上檔遭遇壓力。</span>")
         
@@ -609,6 +608,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="<a href='https://finance.yahoo.com' target='_blank'>📊 資料來源: yfinance / TWSE / Cnyes</a>", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
+# --- 核心修正：對接台灣休市行事曆，完美自動跳過國定特殊假期 ---
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
 
@@ -617,6 +617,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     tz_tpe = timezone(timedelta(hours=8))
     now = datetime.now(tz_tpe)
     
+    # 1. 精準校準今日解析基準日期
     if twii_time_str and "/" in twii_time_str:
         try:
             date_part = twii_time_str.split(" ")[0]
@@ -626,13 +627,38 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     else:
         last_dt = now
         
+    # 如果檢視時間遇到周末，自動定錨在周五結算日
     if last_dt.weekday() == 5: last_dt -= timedelta(days=1)
     elif last_dt.weekday() == 6: last_dt -= timedelta(days=2)
         
     last_dt_str = last_dt.strftime('%Y/%m/%d')
     
+    # 2. 智慧尋找下一個「真正的台灣開盤交易日」（自動跳過特殊假期與周末）
+    # 建立台灣股市特殊休市連續假期資料庫 (以 2026 年為基準)
+    TW_MARKET_HOLIDAYS = {
+        "2026/01/01", # 元旦
+        "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", # 春節
+        "2026/02/27", # 二二八和平紀念日調整休市
+        "2026/04/02", "2026/04/03", # 清明節與兒童節連假
+        "2026/05/01", # 勞動節
+        "2026/06/19", # 端午節休市 (明天)
+        "2026/09/25", # 中秋節休市
+        "2026/10/09"  # 國慶日連假休市
+    }
+    
     next_dt = last_dt + timedelta(days=1)
-    while next_dt.weekday() >= 5: next_dt += timedelta(days=1)
+    while True:
+        # 條件A：跳過星期六(5)與星期日(6)
+        if next_dt.weekday() >= 5:
+            next_dt += timedelta(days=1)
+            continue
+        # 條件B：跳過特殊假期資料庫
+        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS:
+            next_dt += timedelta(days=1)
+            continue
+        # 通過驗證，此即為次一真正的交易日
+        break
+        
     next_dt_str = next_dt.strftime('%Y/%m/%d')
     
     today_title = "⚖️ 平盤震盪"
@@ -695,7 +721,6 @@ def get_real_news(ticker, name):
                 news_list.append({"title": item.find('title').text, "link": item.find('link').text})
                 if len(news_list) >= 3: break
     except: pass
-    
     if not news_list:
         news_list.append({"title": f"👉 點擊查看 {name} 最新即時新聞", "link": f"https://invest.cnyes.com/twstock/TWS/{ticker}/news"})
     return news_list
@@ -724,10 +749,10 @@ if st.session_state.page == "home":
             st.markdown("##### 🔥 近五日熱門排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (完整顯示所有 S 級與 A 級標的)")
+            st.markdown("##### 🎯 尋找買點榜單 (優先推薦 S級，不足則以 A級 遞補至最多 10 檔)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
-            df_disp = pd.concat([df_s, df_a])
+            df_disp = pd.concat([df_s, df_a]).head(10)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
         else:
             st.markdown("##### 📋 熱門名單")
@@ -808,11 +833,9 @@ elif st.session_state.page == "analysis":
                 if st.button("後一日 ➡️", use_container_width=True, disabled=(st.session_state.date_offset >= 0)): st.session_state.date_offset += 1; st.rerun()
 
             st.markdown("---")
-            # --- 核心升級：月歷史買點回測總分析與趨勢 ---
             st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
             recent_30 = df_chart.tail(30)
-            s_count = 0
-            a_count = 0
+            s_count, a_count = 0, 0
             buy_points_info = []
             
             price_30_days_ago = recent_30['Close'].iloc[0]
@@ -887,7 +910,7 @@ elif st.session_state.page == "analysis":
             with a1.container(border=True):
                 st.markdown(f"##### 📊 布林通道 & 乖離率<br><br>**上軌 (壓力):** `{data['BB_UP']}`<br><br>**下軌 (支撐):** `{data['BB_DN']}`<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br><a href='https://tw.stock.yahoo.com/quote/{target}/technical-analysis' target='_blank' style='font-size:0.75rem; text-decoration:none;'>🔗來源: Yahoo財經</a>", unsafe_allow_html=True)
             with a2.container(border=True):
-                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無" # 當季EPS/3 為換算單月
+                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
                 st.markdown(f"##### 📑 基本面與動態精算本益比<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`<br><br><a href='https://invest.cnyes.com/twstock/TWS/{target}/overview' target='_blank' style='font-size:0.8rem; text-decoration:none;'>🔗來源: Cnyes 鉅亨網</a>", unsafe_allow_html=True)
 
             st.divider()
