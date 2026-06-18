@@ -794,7 +794,7 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
-# --- 核心更新：手機專屬極簡清單模式 ---
+# --- 核心更新：極致純粹的單一大按鈕模式 ---
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -830,37 +830,20 @@ if st.session_state.page == "home":
             
         for _, r in df_disp.iterrows():
             with st.container(border=True):
-                # 專為手機縮減的雙欄設計：左邊收藏星星，右邊塞滿所有資訊的大按鈕
-                c1, c2 = st.columns([1.5, 8.5])
+                # 拔除星號，直接生成一顆涵蓋所有精簡資訊的超級按鈕
+                p_val = r['漲跌']
+                trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+                sign = "+" if p_val > 0 else ""
                 
-                with c1:
-                    is_fav = any(r['ticker_raw'] in s for s in st.session_state.fav_groups.values())
-                    if st.button("⭐" if is_fav else "☆", key=f"fav_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
-                        if is_fav:
-                            for grp in st.session_state.fav_groups.values():
-                                if r['ticker_raw'] in grp: grp.remove(r['ticker_raw'])
-                        else:
-                            first_group = list(st.session_state.fav_groups.keys())[0] if st.session_state.fav_groups else "預設群組"
-                            if first_group not in st.session_state.fav_groups: st.session_state.fav_groups[first_group] = []
-                            st.session_state.fav_groups[first_group].append(r['ticker_raw'])
-                        save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
-                        st.rerun()
+                s_score = r['Score']
+                score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ -")
                 
-                with c2:
-                    # 邏輯處理：將所有繁雜資訊濃縮為符號與單行文字
-                    p_val = r['漲跌']
-                    trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-                    sign = "+" if p_val > 0 else ""
-                    
-                    s_score = r['Score']
-                    score_icon = "🟢 S" if s_score >= 5 else ("🟡 A" if s_score >= 2 else "⚪ -")
-                    
-                    # 生成專屬的按鈕標籤文字
-                    btn_label = f"{r['代號']} {r['名稱']}  {trend_icon} {r['收盤價']} ({sign}{r['漲跌幅']}%)  │  {score_icon}  │  5日 {r['近5日漲幅(%)']}"
-                    
-                    if st.button(btn_label, key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
-                        st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
-                        st.rerun()
+                # 極致精簡的文字格式：代號 名稱 | 趨勢 價格 (漲跌幅) | 評分
+                btn_label = f"{r['代號']} {r['名稱']}  │  {trend_icon} {r['收盤價']} ({sign}{r['漲跌幅']}%)  │  {score_icon}"
+                
+                if st.button(btn_label, key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+                    st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
+                    st.rerun()
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
