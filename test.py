@@ -125,8 +125,8 @@ def get_stock_name(ticker):
     name = name.replace(ticker_str, "").strip()
     return name
 
-FAV_FILE = "favorites.json" # 舊版檔案名稱
-FAV_GROUPS_FILE = "fav_groups.json" # 新版群組檔案名稱
+FAV_FILE = "favorites.json" 
+FAV_GROUPS_FILE = "fav_groups.json" 
 POOL_FILE = "pool.json"
 
 def load_json(fp, default):
@@ -147,7 +147,6 @@ if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
-# --- 核心新增：個人化群組資料結構與無痛轉移邏輯 ---
 if 'fav_groups' not in st.session_state:
     default_groups = {"預設群組": ["1802", "2330", "1785"]}
     if os.path.exists(FAV_FILE) and not os.path.exists(FAV_GROUPS_FILE):
@@ -164,7 +163,6 @@ def fetch_twse_top_50():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(50)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
-# --- 側邊欄 UI 升級：個人化群組管理 ---
 st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選群組")
 
@@ -176,16 +174,34 @@ with st.sidebar.expander("➕ 新增個人化群組", expanded=False):
             save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
             st.rerun()
 
+# --- 核心修正：群組名稱可編輯、保護最後一個群組不被刪除、顯示股票名稱 ---
 for g_name, g_stocks in list(st.session_state.fav_groups.items()):
     with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)})", expanded=True):
-        if g_name != "預設群組":
-            if st.button(f"🗑️ 刪除群組", key=f"del_grp_{g_name}", use_container_width=True):
+        col_rn, col_sv, col_del = st.columns([5, 2, 2])
+        new_g_name_input = col_rn.text_input("重命名", value=g_name, key=f"rn_{g_name}", label_visibility="collapsed")
+        
+        if col_sv.button("💾", key=f"sv_{g_name}", help="儲存新群組名稱"):
+            if new_g_name_input and new_g_name_input != g_name and new_g_name_input not in st.session_state.fav_groups:
+                new_dict = {}
+                for k, v in st.session_state.fav_groups.items():
+                    if k == g_name: new_dict[new_g_name_input] = v
+                    else: new_dict[k] = v
+                st.session_state.fav_groups = new_dict
+                save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                st.rerun()
+                
+        if col_del.button("🗑️", key=f"del_{g_name}", help="刪除此群組"):
+            if len(st.session_state.fav_groups) > 1:
                 del st.session_state.fav_groups[g_name]
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.rerun()
+            else:
+                st.error("至少需保留一個群組！")
+                
         for fav in g_stocks:
             c1, c2 = st.columns([4, 1])
-            if c1.button(f"📊 {fav}", key=f"go_{g_name}_{fav}", use_container_width=True):
+            # 修正：加入 get_stock_name(fav) 以顯示名稱
+            if c1.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
             if c2.button("✖", key=f"rm_{g_name}_{fav}", use_container_width=True):
@@ -825,8 +841,9 @@ if st.session_state.page == "home":
                             for grp in st.session_state.fav_groups.values():
                                 if r['ticker_raw'] in grp: grp.remove(r['ticker_raw'])
                         else:
-                            if "預設群組" not in st.session_state.fav_groups: st.session_state.fav_groups["預設群組"] = []
-                            st.session_state.fav_groups["預設群組"].append(r['ticker_raw'])
+                            first_group = list(st.session_state.fav_groups.keys())[0] if st.session_state.fav_groups else "預設群組"
+                            if first_group not in st.session_state.fav_groups: st.session_state.fav_groups[first_group] = []
+                            st.session_state.fav_groups[first_group].append(r['ticker_raw'])
                         save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                         st.rerun()
                 
@@ -1067,7 +1084,6 @@ elif st.session_state.page == "analysis":
             except Exception as e:
                 st.info(f"暫時無法取得新聞，[👉 點擊查看 {c_name} 最新即時新聞](https://invest.cnyes.com/twstock/TWS/{target}/news)")
             
-            # --- 核心新增：個股頁面的群組管理 ---
             st.divider()
             st.subheader("⭐ 自選群組管理")
             all_groups = list(st.session_state.fav_groups.keys())
