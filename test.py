@@ -49,13 +49,12 @@ st.markdown(f'''
     .stApp {{ background-color: {app_bg}; }}
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
     [data-testid="collapsedControl"] {{ border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; }}
-    [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的自選股"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
+    [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的群組"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
     .stButton button {{ font-weight: bold !important; border-radius: 8px !important; }}
     button[kind="primary"] {{ font-size: 1.5rem !important; padding: 15px !important; border-radius: 12px !important; background-color: #ffcc00 !important; color: #111 !important; border: none !important; }}
     .sticky-header {{ position: sticky; top: 0; z-index: 999; background-color: {sticky_bg}; padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }}
     div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
     h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
-    /* 縮小按鈕內邊距以適應單行列表 */
     .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
 </style>
 ''', unsafe_allow_html=True)
@@ -126,7 +125,8 @@ def get_stock_name(ticker):
     name = name.replace(ticker_str, "").strip()
     return name
 
-FAV_FILE = "favorites.json"
+FAV_FILE = "favorites.json" # 舊版檔案名稱
+FAV_GROUPS_FILE = "fav_groups.json" # 新版群組檔案名稱
 POOL_FILE = "pool.json"
 
 def load_json(fp, default):
@@ -141,12 +141,19 @@ def save_json(fp, data):
 
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2376"
-if 'favorites' not in st.session_state: st.session_state.favorites = load_json(FAV_FILE, ["1802", "2330", "1785"])
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
+
+# --- 核心新增：個人化群組資料結構與無痛轉移邏輯 ---
+if 'fav_groups' not in st.session_state:
+    default_groups = {"預設群組": ["1802", "2330", "1785"]}
+    if os.path.exists(FAV_FILE) and not os.path.exists(FAV_GROUPS_FILE):
+        old_favs = load_json(FAV_FILE, ["1802", "2330", "1785"])
+        default_groups["預設群組"] = old_favs
+    st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
 @st.cache_data(ttl=1800)
 def fetch_twse_top_50():
@@ -157,11 +164,34 @@ def fetch_twse_top_50():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(50)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
+# --- 側邊欄 UI 升級：個人化群組管理 ---
 st.sidebar.divider()
-st.sidebar.title("⭐ 我的自選股")
-if st.session_state.favorites:
-    for fav in st.session_state.favorites:
-        st.sidebar.button(f"📊 {fav} {get_stock_name(fav)}", key=f"sf_{fav}", on_click=lambda f=fav: st.session_state.update({"current_stock": f, "page": "analysis", "date_offset": 0}))
+st.sidebar.title("⭐ 我的自選群組")
+
+with st.sidebar.expander("➕ 新增個人化群組", expanded=False):
+    new_g_name = st.text_input("群組名稱", placeholder="輸入群組名稱...", label_visibility="collapsed")
+    if st.button("建立", use_container_width=True) and new_g_name:
+        if new_g_name not in st.session_state.fav_groups:
+            st.session_state.fav_groups[new_g_name] = []
+            save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+            st.rerun()
+
+for g_name, g_stocks in list(st.session_state.fav_groups.items()):
+    with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)})", expanded=True):
+        if g_name != "預設群組":
+            if st.button(f"🗑️ 刪除群組", key=f"del_grp_{g_name}", use_container_width=True):
+                del st.session_state.fav_groups[g_name]
+                save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                st.rerun()
+        for fav in g_stocks:
+            c1, c2 = st.columns([4, 1])
+            if c1.button(f"📊 {fav}", key=f"go_{g_name}_{fav}", use_container_width=True):
+                st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
+                st.rerun()
+            if c2.button("✖", key=f"rm_{g_name}_{fav}", use_container_width=True):
+                st.session_state.fav_groups[g_name].remove(fav)
+                save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                st.rerun()
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
@@ -751,7 +781,6 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
-# --- 核心 UI 升級：首頁列表改為單行緊湊模式 ---
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -761,7 +790,7 @@ if st.session_state.page == "home":
     if btn_col2.button("📋 熱門名單", use_container_width=True): st.session_state.scan_mode = "hot"; st.rerun()
     if btn_col3.button("🔥 近五日熱門", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     search_val = st.text_input("隱藏", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
-    if search_val: st.session_state.update({"current_stock": search_val, "date_offset": 0, "page": "analysis"}); st.rerun()
+    if search_val: st.session_state.update({"current_stock": search_val, "page": "analysis"}); st.rerun()
     
     scan_results = []
     with st.spinner('掃描中...'):
@@ -787,18 +816,21 @@ if st.session_state.page == "home":
             
         for _, r in df_disp.iterrows():
             with st.container(border=True):
-                # 將巨大方塊壓縮為極簡四欄
                 c1, c2, c3, c4 = st.columns([1, 4, 3, 3])
                 
                 with c1:
-                    is_fav = r['ticker_raw'] in st.session_state.favorites
+                    is_fav = any(r['ticker_raw'] in s for s in st.session_state.fav_groups.values())
                     if st.button("⭐" if is_fav else "☆", key=f"fav_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
-                        if is_fav: st.session_state.favorites.remove(r['ticker_raw'])
-                        else: st.session_state.favorites.append(r['ticker_raw'])
-                        save_json(FAV_FILE, st.session_state.favorites); st.rerun()
+                        if is_fav:
+                            for grp in st.session_state.fav_groups.values():
+                                if r['ticker_raw'] in grp: grp.remove(r['ticker_raw'])
+                        else:
+                            if "預設群組" not in st.session_state.fav_groups: st.session_state.fav_groups["預設群組"] = []
+                            st.session_state.fav_groups["預設群組"].append(r['ticker_raw'])
+                        save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                        st.rerun()
                 
                 with c2:
-                    # 股票名稱按鈕化，直接觸發解析
                     if st.button(f"📊 {r['代號']} {r['名稱']}", key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                         st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                         st.rerun()
@@ -903,6 +935,7 @@ elif st.session_state.page == "analysis":
             recent_30 = df_slice.tail(30)
             s_count, a_count = 0, 0
             buy_points_prices = []
+            buy_points_info = []
             
             price_30_days_ago = recent_30['Close'].iloc[0]
             current_price = recent_30['Close'].iloc[-1]
@@ -919,9 +952,11 @@ elif st.session_state.page == "analysis":
                     if t_sc >= 5:
                         s_count += 1
                         buy_points_prices.append(t_data['收盤價'])
+                        buy_points_info.append((temp_df.index[-1], "S級", temp_df))
                     elif t_sc >= 2:
                         a_count += 1
                         buy_points_prices.append(t_data['收盤價'])
+                        buy_points_info.append((temp_df.index[-1], "A級", temp_df))
             
             with st.container(border=True):
                 col_sum1, col_sum2, col_sum3 = st.columns(3)
@@ -946,6 +981,18 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共觸發 **{s_count + a_count}** 次有效買進訊號。若嚴守紀律於訊號出現時等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。以今日現價對比，目前策略帳面呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {p_sign}{profit_pct:.2f}%</span>，可作為該股跟隨訊號的勝率參考。"
                     
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
+
+            if buy_points_info:
+                st.markdown("**📅 點擊下方按鈕搭乘時光機，回到當天查看技術型態：**")
+                btn_cols = st.columns(4)
+                for i, info in enumerate(buy_points_info):
+                    dt_str = info[0].strftime('%m/%d')
+                    badge = "🟢 S級" if info[1] == "S級" else "🟡 A級"
+                    jump_offset = -(len(df_chart) - len(info[2]))
+                    with btn_cols[i % 4]:
+                        if st.button(f"{dt_str} {badge}", key=f"hist_btn_{dt_str}_{i}", use_container_width=True): 
+                            st.session_state.date_offset = jump_offset
+                            st.rerun()
             st.markdown("---")
             
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
@@ -1020,11 +1067,21 @@ elif st.session_state.page == "analysis":
             except Exception as e:
                 st.info(f"暫時無法取得新聞，[👉 點擊查看 {c_name} 最新即時新聞](https://invest.cnyes.com/twstock/TWS/{target}/news)")
             
+            # --- 核心新增：個股頁面的群組管理 ---
             st.divider()
-            if target in st.session_state.favorites:
-                if st.button("❌ 從自選股移除此標的", type="primary", use_container_width=True):
-                    st.session_state.favorites.remove(target); save_json(FAV_FILE, st.session_state.favorites); st.rerun()
-            else:
-                if st.button("⭐ 將此標的加入自選股", type="primary", use_container_width=True):
-                    st.session_state.favorites.append(target); save_json(FAV_FILE, st.session_state.favorites); st.rerun()
+            st.subheader("⭐ 自選群組管理")
+            all_groups = list(st.session_state.fav_groups.keys())
+            current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
+            
+            selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
+            if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
+                for g in all_groups:
+                    if g in selected_groups and target not in st.session_state.fav_groups[g]:
+                        st.session_state.fav_groups[g].append(target)
+                    elif g not in selected_groups and target in st.session_state.fav_groups[g]:
+                        st.session_state.fav_groups[g].remove(target)
+                save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                st.success("✅ 群組設定已更新！")
+                st.rerun()
+                
     else: st.error("查無此股票資料。")
