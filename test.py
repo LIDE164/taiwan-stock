@@ -978,19 +978,6 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共觸發 **{s_count + a_count}** 次有效買進訊號。若嚴守紀律於訊號出現時等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。以今日現價對比，目前策略帳面呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {p_sign}{profit_pct:.2f}%</span>，可作為該股跟隨訊號的勝率參考。"
                     
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
-
-            if buy_points_info:
-                st.markdown("**📅 點擊下方按鈕搭乘時光機，回到當天查看技術型態：**")
-                btn_cols = st.columns(4)
-                for i, info in enumerate(buy_points_info):
-                    dt_str = info[0].strftime('%m/%d')
-                    badge = "🟢 S級" if info[1] == "S級" else "🟡 A級"
-                    jump_offset = -(len(df_chart) - len(info[2]))
-                    with btn_cols[i % 4]:
-                        if st.button(f"{dt_str} {badge}", key=f"hist_btn_{dt_str}_{i}", use_container_width=True): 
-                            st.session_state.date_offset = jump_offset
-                            st.rerun()
-            st.markdown("---")
             
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
