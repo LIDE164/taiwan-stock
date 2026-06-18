@@ -55,6 +55,7 @@ st.markdown(f'''
     .sticky-header {{ position: sticky; top: 0; z-index: 999; background-color: {sticky_bg}; padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }}
     div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
     h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
+    .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
 </style>
 ''', unsafe_allow_html=True)
 
@@ -146,6 +147,15 @@ if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
+# --- 核心新增：URL 參數捕捉跳轉邏輯 ---
+if 'url_parsed' not in st.session_state:
+    st.session_state.url_parsed = True
+    params = st.query_params
+    if 'stock' in params:
+        st.session_state.current_stock = params['stock']
+        st.session_state.page = "analysis"
+        st.session_state.date_offset = 0
+
 if 'fav_groups' not in st.session_state:
     default_groups = {"預設群組": ["1802", "2330", "1785"]}
     if os.path.exists(FAV_FILE) and not os.path.exists(FAV_GROUPS_FILE):
@@ -162,7 +172,6 @@ def fetch_twse_top_50():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(50)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
-# --- 側邊欄 UI 升級：移除股票刪除鈕、群組數量上限設定 ---
 st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選群組")
 
@@ -204,7 +213,6 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 st.error("至少需保留一個群組！")
                 
         for fav in g_stocks:
-            # 移除了刪除按鈕 (c2)，讓股票名稱按鈕佔滿寬度
             if st.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
@@ -227,7 +235,7 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     
     try:
         url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -422,7 +430,7 @@ def get_stock_data(ticker_number):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(f"https://histock.tw/stock/chip.aspx?no={ticker}", headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -797,7 +805,6 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
-# --- 核心更新：去除首頁按鈕內無用資訊 ---
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -840,7 +847,6 @@ if st.session_state.page == "home":
                 s_score = r['Score']
                 score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "")
                 
-                # 最極致的乾淨版面
                 btn_label = f"{r['代號']} {r['名稱']}  │  {trend_icon} {r['收盤價']} ({sign}{r['漲跌幅']}%)  {score_icon}"
                 
                 if st.button(btn_label, key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
@@ -973,6 +979,19 @@ elif st.session_state.page == "analysis":
                     
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
+            if buy_points_info:
+                st.markdown("**📅 點擊下方按鈕搭乘時光機，回到當天查看技術型態：**")
+                btn_cols = st.columns(4)
+                for i, info in enumerate(buy_points_info):
+                    dt_str = info[0].strftime('%m/%d')
+                    badge = "🟢 S級" if info[1] == "S級" else "🟡 A級"
+                    jump_offset = -(len(df_chart) - len(info[2]))
+                    with btn_cols[i % 4]:
+                        if st.button(f"{dt_str} {badge}", key=f"hist_btn_{dt_str}_{i}", use_container_width=True): 
+                            st.session_state.date_offset = jump_offset
+                            st.rerun()
+            st.markdown("---")
+            
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
