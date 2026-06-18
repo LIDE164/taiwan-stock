@@ -55,7 +55,6 @@ st.markdown(f'''
     .sticky-header {{ position: sticky; top: 0; z-index: 999; background-color: {sticky_bg}; padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }}
     div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
     h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
-    .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
 </style>
 ''', unsafe_allow_html=True)
 
@@ -174,7 +173,6 @@ with st.sidebar.expander("➕ 新增個人化群組", expanded=False):
             save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
             st.rerun()
 
-# --- 核心修正：群組名稱可編輯、保護最後一個群組不被刪除、顯示股票名稱 ---
 for g_name, g_stocks in list(st.session_state.fav_groups.items()):
     with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)})", expanded=True):
         col_rn, col_sv, col_del = st.columns([5, 2, 2])
@@ -200,7 +198,6 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 
         for fav in g_stocks:
             c1, c2 = st.columns([4, 1])
-            # 修正：加入 get_stock_name(fav) 以顯示名稱
             if c1.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
@@ -797,6 +794,7 @@ def render_index_board():
     except Exception as e:
         st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
+# --- 核心更新：手機專屬極簡清單模式 ---
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
@@ -832,7 +830,8 @@ if st.session_state.page == "home":
             
         for _, r in df_disp.iterrows():
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([1, 4, 3, 3])
+                # 專為手機縮減的雙欄設計：左邊收藏星星，右邊塞滿所有資訊的大按鈕
+                c1, c2 = st.columns([1.5, 8.5])
                 
                 with c1:
                     is_fav = any(r['ticker_raw'] in s for s in st.session_state.fav_groups.values())
@@ -848,20 +847,20 @@ if st.session_state.page == "home":
                         st.rerun()
                 
                 with c2:
-                    if st.button(f"📊 {r['代號']} {r['名稱']}", key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+                    # 邏輯處理：將所有繁雜資訊濃縮為符號與單行文字
+                    p_val = r['漲跌']
+                    trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+                    sign = "+" if p_val > 0 else ""
+                    
+                    s_score = r['Score']
+                    score_icon = "🟢 S" if s_score >= 5 else ("🟡 A" if s_score >= 2 else "⚪ -")
+                    
+                    # 生成專屬的按鈕標籤文字
+                    btn_label = f"{r['代號']} {r['名稱']}  {trend_icon} {r['收盤價']} ({sign}{r['漲跌幅']}%)  │  {score_icon}  │  5日 {r['近5日漲幅(%)']}"
+                    
+                    if st.button(btn_label, key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                         st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                         st.rerun()
-                        
-                with c3:
-                    p_color = "#ff3333" if r['漲跌'] >= 0 else "#00cc00"
-                    sign = "+" if r['漲跌'] > 0 else ""
-                    st.markdown(f"<div style='margin-top: 5px; text-align: right; color: {p_color}; font-weight: bold; font-size: 1.15rem;'>{r['收盤價']} ({sign}{r['漲跌幅']}%)</div>", unsafe_allow_html=True)
-                    
-                with c4:
-                    score_badge = "🟢 S級" if r['Score'] >= 5 else ("🟡 A級" if r['Score'] >= 2 else "⚪ 一般")
-                    v5 = float(r['近5日漲幅(%)'].strip('%'))
-                    c5 = "#ff3333" if v5 > 0 else "#00cc00" if v5 < 0 else text_col
-                    st.markdown(f"<div style='margin-top: 8px; text-align: right; font-size: 0.95rem; color: {text_col};'>{score_badge} | 5日 <span style='color:{c5}; font-weight:bold;'>{r['近5日漲幅(%)']}</span></div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
@@ -998,7 +997,20 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共觸發 **{s_count + a_count}** 次有效買進訊號。若嚴守紀律於訊號出現時等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。以今日現價對比，目前策略帳面呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {p_sign}{profit_pct:.2f}%</span>，可作為該股跟隨訊號的勝率參考。"
                     
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
- 
+
+            if buy_points_info:
+                st.markdown("**📅 點擊下方按鈕搭乘時光機，回到當天查看技術型態：**")
+                btn_cols = st.columns(4)
+                for i, info in enumerate(buy_points_info):
+                    dt_str = info[0].strftime('%m/%d')
+                    badge = "🟢 S級" if info[1] == "S級" else "🟡 A級"
+                    jump_offset = -(len(df_chart) - len(info[2]))
+                    with btn_cols[i % 4]:
+                        if st.button(f"{dt_str} {badge}", key=f"hist_btn_{dt_str}_{i}", use_container_width=True): 
+                            st.session_state.date_offset = jump_offset
+                            st.rerun()
+            st.markdown("---")
+            
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
