@@ -94,15 +94,6 @@ def get_real_chinese_name(ticker):
             name = h2.text.strip()
             if name and not name.isdigit(): return name
     except: pass
-    try:
-        res = requests.get(f"https://histock.tw/stock/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
-            if name and ticker not in name and "嗨投資" not in name and not name.isdigit():
-                return name
-    except: pass
     return ""
 
 def get_stock_name(ticker):
@@ -205,8 +196,7 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 del st.session_state.fav_groups[g_name]
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.rerun()
-            else:
-                st.error("至少需保留一個群組！")
+            else: st.error("至少需保留一個群組！")
                 
         for fav in g_stocks:
             if st.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
@@ -220,8 +210,6 @@ if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 完成！")
     st.rerun()
-
-st.sidebar.markdown("<div style='font-size: 0.8rem; color: #888; text-align: center; margin-top: 10px;'>資料來源: <a href='https://openapi.twse.com.tw/' target='_blank' style='color: #00ffcc; text-decoration: none;'>台灣證交所 OpenAPI</a></div>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
@@ -341,14 +329,11 @@ def get_stock_data(ticker_number):
         res = requests.get(url, timeout=3)
         if res.status_code == 200:
             q = res.json()['data']['quote']
-            c_price = float(q['23'])
-            o_price = float(q['22'])
-            h_price = float(q['25'])
-            l_price = float(q['26'])
+            c_price, o_price = float(q['23']), float(q['22'])
+            h_price, l_price = float(q['25']), float(q['26'])
             v_vol = float(q.get('14', 0)) * 1000 if base_ticker != "^TWII" else 0
             ts = int(q['20'])
-            tz_tpe = timezone(timedelta(hours=8))
-            dt_live = pd.to_datetime(datetime.fromtimestamp(ts, tz_tpe).strftime('%Y-%m-%d'))
+            dt_live = pd.to_datetime(datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
             
             if dt_live not in df.index:
                 new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
@@ -410,13 +395,8 @@ def get_institutional_trading(ticker):
     except: pass
     return []
 
-# ==========================================
-# 🛡️ 核心大腦升級：加入技術與籌碼三道防護網
-# ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
-    
-    # 基礎型態防護
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
@@ -425,27 +405,24 @@ def get_decision_score(data, fund_data, inst_data=None):
     except: eps_f = 0.0
     if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
-    # 🔥 關鍵濾網 1：量能放大確認 (突破假反彈盲區)
+    # 🛡️ 濾網 1：量能放大確認 (消滅假支撐)
     if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: 
         sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
     else: 
         sc-=2; rs.append("⚠️ 無量反彈 (缺乏實質買盤動能)")
         
-    # 🔥 關鍵濾網 2：MACD 動能轉折確認 (防範接刀)
+    # 🛡️ 濾網 2：MACD 綠柱收斂確認 (防範下墜接刀)
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999):
-        sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能轉強)")
+        sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (波段動能防禦過關)")
     else:
-        sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (嚴防接刀)")
+        sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (嚴防型態破壞接刀)")
 
-    # 🔥 關鍵濾網 3：近三日法人籌碼防護 (可選，有資料才驗證)
+    # 🛡️ 濾網 3：近三日法人累積籌碼
     if inst_data and len(inst_data) >= 3:
         net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0:
-            sc+=2; rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else:
-            sc-=2; rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+        if net_buy > 0: sc+=2; rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: sc-=2; rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
-    # 高檔風險扣分機制
     if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
     if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌")
     if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
@@ -478,11 +455,9 @@ def analyze_today(df, ticker_number, inst_data=None):
 
 def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
     analysis_bullets = []
-    
     if market_today and market_tmr:
         market_today_clean = market_today.replace("🔥 ", "").replace("⚠️ ", "").replace("💪 ", "").replace("🩸 ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
         market_tmr_clean = market_tmr.replace("🚀 ", "").replace("⚠️ ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
-        
         if "多" in market_tmr_clean or "高" in market_tmr_clean: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境偏多有利個股發揮。</span>")
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
         else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
@@ -490,55 +465,40 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
     t_long = data['收盤價'] > data['60MA']
+    if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
+    elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
     
-    if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）皆呈現完全多頭排列，趨勢極強。</span>")
-    elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，趨勢極弱空方控盤。</span>")
-    else:
-        trends = []
-        trends.append("🔥 <span style='color:#ff3333; font-weight:bold;'>站上短均</span>" if t_short else "⚠️ <span style='color:#00cc00;'>跌破短均</span>")
-        trends.append("🔥 <span style='color:#ff3333; font-weight:bold;'>守住月線</span>" if t_mid else "⚠️ <span style='color:#00cc00;'>跌破月線</span>")
-        trends.append("🔥 <span style='color:#ff3333; font-weight:bold;'>站上季線</span>" if t_long else "⚠️ <span style='color:#00cc00;'>跌破季線</span>")
-        analysis_bullets.append(f"⚪ <b>三級多空趨勢</b>：目前處於多空拉扯震盪整理，狀態為：{'、'.join(trends)}。")
-    
-    if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價配合：今日成交量 ({data['成交量']}張) 大於 5日均量，買盤動能浮現。</span>")
-    elif data['成交量'] > data['5日均量'] * 1.3 and data['漲跌'] < 0: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>爆量下殺</b>：今日成交量放大且收黑，有籌碼鬆動出貨疑慮。</span>")
-    else: analysis_bullets.append(f"⚪ <b>量能平穩</b>：今日成交量 ({data['成交量']}張)，無異常暴量。")
+    if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
+    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏真金白銀支撐的虛假反彈。</span>")
         
-    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>MACD 動能轉佳：OSC 柱狀體收斂或翻紅 ({data['MACD柱']})，空方力道衰退。</span>")
-    else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>MACD 動能轉弱</b>：OSC 柱狀體持續向下發散，嚴防接刀風險。</span>")
-        
-    if data['J值'] < 20: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 極度超賣：J 值來到 ({data['J值']})，隨時醞釀強力技術性反彈。</span>")
-    elif data['J值'] > 80: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：短線過熱步入超買區。</span>")
-
-    if data['收盤價'] <= data['BB_DN'] * 1.02: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>觸及布林下軌：具備極強的技術性支撐。</span>")
-    elif data['收盤價'] >= data['BB_UP'] * 0.98: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>觸及布林上軌</b>：易遇壓力回檔。</span>")
+    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
+    else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         chip_status = "⚪ <b>法人籌碼動向 (近3日)</b>："
-        if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多佈局 (買超 {foreign_net} 張)</span>；"
-        else: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節減碼 (賣超 {abs(foreign_net)} 張)</span>；"
-        if trust_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>投信主力力挺 (買超 {trust_net} 張)。</span>"
-        else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信高檔結帳 (賣超 {abs(trust_net)} 張)。</span>"
+        if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多 (買超 {foreign_net} 張)</span>；"
+        else: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節 (賣超 {abs(foreign_net)} 張)</span>；"
+        if trust_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>投信力挺 (買超 {trust_net} 張)。</span>"
+        else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         analysis_bullets.append(chip_status)
 
     if sc >= 5: 
         v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
-        v_a = f"✅ <b>進場判斷：強烈買進</b><br>量能與動能皆獲確認！築底完成。<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。<br>🎯 <b>波段賣出目標價：{data['BB_UP']:.2f} (布林上軌壓力區)</b>。"
+        v_a = f"✅ <b>進場判斷：強烈買進</b><br>動能、量能、籌碼三道關卡全數確認過關！<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。"
     elif sc >= 2: 
         v_t, v_c = "🟡 A級機會：偏多試單", "#ffcc00"
-        v_a = f"✅ <b>進場判斷：分批試單</b><br>具備技術面反彈契機！<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴守停損。<br>🎯 <b>短線賣出目標價：{data['BB_UP']:.2f}</b>。"
+        v_a = f"✅ <b>進場判斷：分批試單</b><br>滿足跌深超賣條件，動能防護及格。<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴格停損。"
     elif sc >= -1: 
         v_t, v_c = "⚪ 中性觀望：多空不明", "#888888"
-        v_a = f"⏳ <b>進場判斷：暫緩進場 (動能或籌碼未明)</b><br>目前處於多空交戰，建議逢回不破月線再嘗試建倉。"
+        v_a = f"⏳ <b>進場判斷：暫緩進場</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。"
     else: 
         v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
-        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>空方動能過強，強烈建議空手觀望，切勿接刀。"
+        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
 
     return analysis_bullets, v_t, v_c, v_a
 
-# ... (下方保持原有的圖表繪製 draw_professional_chart 與 大盤預測 predict_tomorrow_open) ...
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
@@ -556,7 +516,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
-    fig.add_annotation(x=0.01, y=0.92, xref="paper", yref="y domain", text=f"現價: {latest_price:.2f}", showarrow=False, font=dict(color="#ffcc00", size=14, weight="bold"), xanchor="left", bgcolor="rgba(0,0,0,0.5)")
     
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
@@ -565,13 +524,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             pos = df.index.get_loc(current_date)
             sub_df = df.iloc[:pos+1]
             if len(sub_df) >= 5:
-                # 回測時不呼叫法人資料以確保速度
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
                     buy_y.append(df_view['Low'].iloc[i] * 0.97)
                     buy_text.append("買")
-                        
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='x'), row=1, col=1)
             
@@ -604,8 +561,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     elif last_dt.weekday() == 6: last_dt -= timedelta(days=2)
     next_dt = last_dt + timedelta(days=3 if last_dt.weekday() == 4 else 1)
     
-    today_title = "⚖️ 平盤震盪"
-    today_desc = "今日大盤多空拉扯，盤勢陷入震盪整理。"
+    today_title, today_desc = "⚖️ 平盤震盪", "今日大盤多空拉扯，盤勢陷入震盪整理。"
     if t_open > p_close * 1.003:
         if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受買盤激勵跳空開高，盤勢極度偏多。"
         else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，高檔回落。"
@@ -653,15 +609,12 @@ if st.session_state.page == "home":
     scan_results = []
     with st.spinner('🚀 大腦極速掃描中 (已啟動多執行緒併發)...'):
         pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
-        
-        # 🚀 核心升級：平行處理大幅提升首頁掃描速度
         def process_scan(stock):
             df = get_stock_data(stock)
             if df is not None:
-                inst = get_institutional_trading(stock)
-                return analyze_today(df, stock, inst)
+                # 掃描大清單時傳入 None，各股進階頁再細抓籌碼，維持首頁最快加載速度
+                return analyze_today(df, stock, inst_data=None) 
             return None
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             results = executor.map(process_scan, pool)
             for res in results:
@@ -677,7 +630,7 @@ if st.session_state.page == "home":
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
             df_disp = pd.concat([df_s, df_a]).head(10)
-            if df_disp.empty: st.info("目前雷達池內沒有符合安全動能條件的標的。")
+            if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
         else:
             st.markdown("##### 📋 熱門名單")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(50)
@@ -737,9 +690,80 @@ elif st.session_state.page == "analysis":
             
             _, up_c, _ = st.columns([1, 2, 1])
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
-
             st.markdown("---")
             
+            # ==========================================
+            # 🚨 【1. 補回：5% 嚴格停損防護防線警報】
+            # ==========================================
+            stop_loss_html = ""
+            recent_20 = df_slice.tail(20)
+            recent_signals = []
+            for idx in range(len(recent_20)):
+                temp_df = df_slice.iloc[:len(df_slice) - 20 + idx + 1]
+                if len(temp_df) >= 5:
+                    t_data = analyze_today(temp_df, target, inst_data=None) # 傳入 None 避免極速回測卡網速
+                    if t_data and t_data['Score'] >= 2:
+                        recent_signals.append((temp_df.index[-1], t_data['收盤價']))
+            
+            if recent_signals:
+                last_sig_date, last_sig_price = recent_signals[-1]
+                if data['收盤價'] <= last_sig_price * 0.95:
+                    loss_pct = (data['收盤價'] - last_sig_price) / last_sig_price * 100
+                    stop_loss_html = f'''<div style="background-color: #ffe6e6; border-left: 6px solid #ff3333; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                    <h4 style="color: #ff3333; margin-top: 0; font-size: 1.3rem;">🚨 【嚴格停損警報】觸發 5% 停損防護線</h4>
+                    <span style="color: #333; font-size: 1.05rem; line-height: 1.6;">系統偵測到最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>
+                    目前現價 <b>{data['收盤價']}</b> 已跌穿 5% 鐵律防護線 (預估帳面分歧為 <span style="color:#ff3333; font-weight:bold;">{loss_pct:.2f}%</span>)。<br>
+                    <b>防範警訊：中線趨勢支撐已破，強烈建議嚴守交易紀律，果斷停損出場觀望，切勿盲目攤平接刀！</b></span>
+                    </div>'''
+            if stop_loss_html: st.markdown(stop_loss_html, unsafe_allow_html=True)
+
+            # ==========================================
+            # 📊 【2. 補回：近一個月歷史買點回測與趨勢分析貨櫃】
+            # ==========================================
+            st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
+            recent_30 = df_slice.tail(30)
+            s_count, a_count = 0, 0
+            buy_points_prices = []
+            
+            price_30_days_ago = recent_30['Close'].iloc[0]
+            current_price = recent_30['Close'].iloc[-1]
+            month_trend_pct = (current_price - price_30_days_ago) / price_30_days_ago * 100
+            trend_color = "#ff3333" if month_trend_pct >= 0 else "#00cc00"
+            trend_text = "上漲" if month_trend_pct >= 0 else "下跌"
+            sign_t = "+" if month_trend_pct > 0 else ""
+            
+            for idx in range(len(recent_30)):
+                temp_df = df_slice.iloc[:len(df_slice) - 30 + idx + 1]
+                if len(temp_df) >= 5:
+                    t_data = analyze_today(temp_df, target, inst_data=None)
+                    if t_data:
+                        if t_data['Score'] >= 5:
+                            s_count += 1
+                            buy_points_prices.append(t_data['收盤價'])
+                        elif t_data['Score'] >= 2:
+                            a_count += 1
+                            buy_points_prices.append(t_data['收盤價'])
+            
+            with st.container(border=True):
+                col_sum1, col_sum2, col_sum3 = st.columns(3)
+                with col_sum1: st.markdown(f"<div style='text-align:center;'>近一月趨勢<br><span style='color:{trend_color}; font-size:1.6rem; font-weight:900;'>{trend_text} {sign_t}{month_trend_pct:.2f}%</span></div>", unsafe_allow_html=True)
+                with col_sum2: st.markdown(f"<div style='text-align:center;'>🟢 S級 強烈買進<br><span style='font-size:1.6rem; font-weight:900; color:#00cc00;'>{s_count} 次</span></div>", unsafe_allow_html=True)
+                with col_sum3: st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
+                
+                if not buy_points_prices:
+                    if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升或多頭鈍化，因未落入超賣區，未曾觸發任何 A/S 級買點條件，追高需控制風險。"
+                    else: summary_text = "近一個月股價持續修正，但可能因成交量不足或 MACD 綠柱擴大被扣分，未曾發出安全訊號，建議保持觀望。"
+                else:
+                    avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
+                    profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
+                    prof_color = "#ff3333" if profit_pct >= 0 else "#00cc00"
+                    prof_text = "獲利" if profit_pct >= 0 else "虧損"
+                    summary_text = f"本月大腦共偵測到 **{s_count + a_count}** 次安全買進點。若於訊號出現當日收盤進行等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，目前策略帳面回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
+                st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
+
+            # ==========================================
+            # AI 決策面板與核心分析渲染
+            # ==========================================
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
@@ -765,10 +789,8 @@ elif st.session_state.page == "analysis":
 
             st.divider()
             st.subheader("🏦 近期三大法人逐日買賣超")
-            if inst_data:
-                st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
-            else:
-                st.info("目前無法自動抓取籌碼資料。")
+            if inst_data: st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
+            else: st.info("目前無法自動抓取籌碼資料。")
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
@@ -778,10 +800,8 @@ elif st.session_state.page == "analysis":
             selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
             if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
                 for g in all_groups:
-                    if g in selected_groups and target not in st.session_state.fav_groups[g]:
-                        st.session_state.fav_groups[g].append(target)
-                    elif g not in selected_groups and target in st.session_state.fav_groups[g]:
-                        st.session_state.fav_groups[g].remove(target)
+                    if g in selected_groups and target not in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].append(target)
+                    elif g not in selected_groups and target in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].remove(target)
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
