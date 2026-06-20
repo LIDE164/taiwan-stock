@@ -29,7 +29,6 @@ components.html(
     height=0, width=0
 )
 
-# 取得全台股票名單字典
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
@@ -44,19 +43,14 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
-# ==========================================
-# 🧠 智慧搜尋回呼核心：徹底切斷殘留狀態與無窮迴圈
-# ==========================================
 def handle_global_search():
     if "global_search" in st.session_state and st.session_state.global_search:
         s_val = st.session_state.global_search.strip().replace(" ", "")
         if s_val:
             target_ticker = None
-            # 判斷是否為代號
             if re.match(r'^[A-Za-z0-9]+$', s_val):
                 target_ticker = s_val.upper()
             else:
-                # 中文模糊比對
                 for code, name in CURRENT_STOCK_NAMES.items():
                     if s_val in name:
                         target_ticker = code
@@ -67,15 +61,12 @@ def handle_global_search():
                 st.session_state.date_offset = 0
             else:
                 st.session_state.search_error = f"⚠️ 找不到與「{s_val}」相關的標的。"
-        
-        # 🎯 關鍵救星：處理完畢後立即強制清空輸入框狀態，防止導航劫持
         st.session_state.global_search = ""
 
 # ==========================================
 # 🌟 側邊欄介面佈局
 # ==========================================
 st.sidebar.title("🔍 快速搜尋")
-# 掛載 on_change 回呼機制
 st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search", on_change=handle_global_search)
 
 if "search_error" in st.session_state and st.session_state.search_error:
@@ -112,7 +103,6 @@ st.markdown(f'''
     h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
     .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
     
-    /* 自訂總經進度條樣式 */
     .risk-bar-container {{ width: 100%; background-color: #333; border-radius: 8px; margin-top: 5px; margin-bottom: 15px; overflow: hidden; }}
     .risk-bar-fill {{ height: 16px; border-radius: 8px; transition: width 0.5s ease-in-out; }}
 </style>
@@ -201,13 +191,14 @@ if 'fav_groups' not in st.session_state:
         default_groups["預設群組"] = old_favs
     st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
+# 🚀 【核心修正 1】：將掃描池擴大至全台前 100 大熱門股
 @st.cache_data(ttl=1800)
-def fetch_twse_top_50():
+def fetch_twse_top_100():
     try:
         res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
-        return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(50)['Code'].tolist()
+        return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
 st.sidebar.title("⭐ 我的自選群組")
@@ -256,10 +247,10 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
-    st.session_state.custom_pool = fetch_twse_top_50()
+if st.sidebar.button("🔄 更新熱門雷達池 (Top 100)", use_container_width=True):
+    st.session_state.custom_pool = fetch_twse_top_100()
     save_json(POOL_FILE, st.session_state.custom_pool)
-    st.sidebar.success("✅ 完成！")
+    st.sidebar.success("✅ 雷達池已擴大更新為全台前 100 檔！")
     st.rerun()
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -461,6 +452,7 @@ def get_global_macro_data():
     except:
         return {"^SOX": {"price": 0, "pct": 0}, "^VIX": {"price": 0, "pct": 0}, "JPY=X": {"price": 0, "pct": 0}}
 
+# 🚀 【核心修正 2】：微調評分系統，不過度懲罰正常量縮股票
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -472,7 +464,7 @@ def get_decision_score(data, fund_data, inst_data=None):
     if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
     if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=2; rs.append("⚠️ 無量反彈 (缺乏實質買盤動能)")
+    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)") # 修正：減輕扣分，從 -2 改為 -1
         
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
@@ -498,12 +490,17 @@ def analyze_today(df, ticker_number, inst_data=None):
     fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
     
     try:
-        t_open, t_close = float(t['Open']), float(t['Close'])
-        p_open, p_close = float(p['Open']), float(p['Close'])
-        is_red_engulfing = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
-        is_black_engulfing = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
+        prev_open = df['Open'].shift(1)
+        prev_close = df['Close'].shift(1)
+        red_mask = (prev_open > prev_close) & (df['Close'] > df['Open']) & (df['Close'] > prev_open) & (df['Open'] < prev_close)
+        black_mask = (prev_close > prev_open) & (df['Open'] > df['Close']) & (df['Open'] > prev_close) & (df['Close'] < prev_open)
+        
+        is_red_engulfing = bool(red_mask.iloc[-1])
+        is_black_engulfing = bool(black_mask.iloc[-1])
+        # 🚀 【核心修正 3】：新增判斷近七日內是否發生過紅吞
+        recent_7_red = bool(red_mask.tail(7).any())
     except:
-        is_red_engulfing, is_black_engulfing = False, False
+        is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -517,7 +514,8 @@ def analyze_today(df, ticker_number, inst_data=None):
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
         "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20),
-        "紅吞": is_red_engulfing, "黑吞": is_black_engulfing
+        "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
+        "近七日紅吞": recent_7_red # 綁定資料
     }
     sc, rs = get_decision_score(data, fund, inst_data)
     data['Score'] = sc
@@ -539,7 +537,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
     elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
 
-    if data.get('紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
+    if data.get('紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
+    elif data.get('近七日紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
     elif data.get('黑吞'): analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
     
     if data['J值'] < 20: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 極度超賣：J 值來到 ({data['J值']})，隨時醞釀強力技術性反彈。</span>")
@@ -800,6 +799,9 @@ if st.session_state.page == "home":
     if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
     if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     
+    # 💡 溫馨提示
+    st.markdown("<div style='font-size: 0.9rem; color: #888; text-align: center; margin-bottom: 10px;'>💡 掃描範圍為左側「雷達池設定」內的標的（預設為 Top 100 加上您的自選股）。</div>", unsafe_allow_html=True)
+    
     scan_results = []
     pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
     
@@ -837,16 +839,17 @@ if st.session_state.page == "home":
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
             
         elif st.session_state.scan_mode == "red_engulf":
-            st.markdown("##### 🔥 觸發「紅吞（多頭吞噬）」反轉型態標的")
-            df_disp = df_results[df_results['紅吞'] == True].sort_values(by='Score', ascending=False)
+            st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
+            # 🚀 【核心修正 4】：篩選近七日內有紅吞的股票
+            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(by='Score', ascending=False)
             if df_disp.empty: 
-                st.info("💡 目前雷達池內暫無符合「紅吞反轉型態」的個股。")
+                st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
                 
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (已掛載動能、量能與型態四重濾網)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
-            df_disp = pd.concat([df_s, df_a]).head(10)
+            df_disp = pd.concat([df_s, df_a]).head(20)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
         for _, r in df_disp.iterrows():
@@ -856,7 +859,11 @@ if st.session_state.page == "home":
                 sign = "+" if p_val > 0 else ""
                 s_score = r['Score']
                 score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "")
-                pattern_tag = "🔥【紅吞】" if r.get('紅吞') else ""
+                
+                # 若今天就有紅吞，顯示強烈的🔥；若是前幾天有，顯示較溫和的標籤
+                if r.get('紅吞'): pattern_tag = "🔥【今日紅吞】"
+                elif r.get('近七日紅吞'): pattern_tag = "📈【近期紅吞】"
+                else: pattern_tag = ""
                 
                 if st.button(f"{r['代號']} {r['名稱']} {pattern_tag} │  {trend_icon} {r['收盤價']} ({sign}{r['漲跌幅']}%)  {score_icon}", key=f"name_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                     st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
