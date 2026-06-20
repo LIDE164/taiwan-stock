@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import re
-import concurrent.futures  # 🚀 引入多執行緒模組加速網頁平行讀取
+import concurrent.futures
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -477,7 +477,7 @@ def analyze_today(df, ticker_number, inst_data=None):
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
-        "涨跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
+        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
         "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
@@ -711,7 +711,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
 
 # ==========================================
-# 🏠 首頁大盤看板與風險儀表板渲染 (加入即時抓取時間標籤)
+# 🏠 首頁大盤看板與風險儀表板渲染
 # ==========================================
 def render_index_board():
     try:
@@ -728,8 +728,7 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
                 if st.button("🔄 更新即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
             with col2:
-                # 🔴 修正：將抓取時間 twii_time_str 寫入盤勢分析標題
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料抓取時間: {twii_time_str})</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
@@ -765,6 +764,7 @@ def render_index_board():
         with mc3.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{macro['JPY=X']['price']:.2f}<br>{jpy_status}</div>", unsafe_allow_html=True)
 
+        st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤與總經資料載入發生錯誤，請稍後再試或重新整理。")
 
 # ==========================================
@@ -860,6 +860,7 @@ elif st.session_state.page == "analysis":
             
             twii_close, twii_change, twii_time_str = get_twii_quote()
             twii_df_for_pred = get_stock_data("^TWII")
+            # 更新接收預測模組回傳的 8 個數值
             t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt, risk_score, macro = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
             
             display_time = get_stock_live_time(target)
