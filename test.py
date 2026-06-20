@@ -204,7 +204,8 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 del st.session_state.fav_groups[g_name]
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.rerun()
-            else: st.error("至少需保留一個群組！")
+            else:
+                st.error("至少需保留一個群組！")
                 
         for fav in g_stocks:
             if st.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
@@ -219,7 +220,8 @@ if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# 🚀 效能優化：將基本面快取拉長至 24 小時 (86400 秒)，極大化網頁載入速度
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
@@ -534,7 +536,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     return analysis_bullets, v_t, v_c, v_a
 
 # ==========================================
-# 📊 圖表繪製模組 ── 【修正：收盤價高亮特寫標籤】
+# 📊 圖表繪製模組 ── 【包含最新收盤價特寫標籤】
 # ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     df_view = df.tail(view_days)
@@ -552,7 +554,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 🎯 【修正：在K線圖表頂端繪製最明顯的最新收盤價高亮橫線與大標籤】
+    # 🎯 高亮最新收盤價標籤
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新收盤價: {latest_price:.2f} ",
                   annotation_position="top left",
@@ -600,7 +602,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     return fig
 
 # ==========================================
-# 🔮 大盤分析與預測邏輯 ── 【修正：100% 完整補回】
+# 🔮 大盤分析與預測邏輯 
 # ==========================================
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
@@ -639,7 +641,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str
 
 # ==========================================
-# 🏠 首頁大盤看板看板渲染 ── 【修正：修復消失的大盤日分析】
+# 🏠 首頁大盤看板渲染
 # ==========================================
 def render_index_board():
     try:
@@ -666,12 +668,12 @@ def render_index_board():
     except: st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
 
 # ==========================================
-# 🚀 路由入口 ➜ 頁面路由控制中心
+# 🚀 頁面路由控制中心
 # ==========================================
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     
-    # 🎯 補回呼叫：大盤盤勢日分析面版
+    # 🎯 渲染大盤盤勢日分析面版
     render_index_board()
     
     st.markdown("<h3 style='margin-top: 15px;'>🎯 掃描買點</h3>", unsafe_allow_html=True)
