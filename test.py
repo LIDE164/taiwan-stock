@@ -29,6 +29,47 @@ components.html(
     height=0, width=0
 )
 
+# 取得全台股票名單字典
+STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
+@st.cache_data(ttl=86400)
+def get_all_tw_stock_names():
+    names = STOCK_NAMES.copy()
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        for i in res.json(): names[i['Code']] = i['Name']
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
+    except: pass
+    return names
+
+CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+
+# ==========================================
+# 🌟 側邊欄：智慧搜尋與系統設定
+# ==========================================
+st.sidebar.title("🔍 快速搜尋")
+search_val = st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search")
+if search_val:
+    target_ticker = None
+    s_val = search_val.strip()
+    
+    # 智慧判斷：若是純數字或英數字組合 -> 當作代號
+    if re.match(r'^[A-Za-z0-9]+$', s_val):
+        target_ticker = s_val.upper()
+    else:
+        # 若是中文 -> 進行全市場名稱模糊比對
+        for code, name in CURRENT_STOCK_NAMES.items():
+            if s_val in name:
+                target_ticker = code
+                break
+                
+    if target_ticker:
+        st.session_state.update({"current_stock": target_ticker, "page": "analysis", "date_offset": 0})
+        st.rerun()
+    else:
+        st.sidebar.warning(f"⚠️ 找不到與「{s_val}」相關的標的。")
+
+st.sidebar.divider()
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
@@ -64,8 +105,6 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
-
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體業", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Building Materials": "玻璃陶瓷", "Marine Shipping": "航運業",
@@ -74,19 +113,6 @@ ENG_TO_TW_INDUSTRY = {
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
     "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
-
-@st.cache_data(ttl=86400)
-def get_all_tw_stock_names():
-    names = STOCK_NAMES.copy()
-    try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
-        for i in res.json(): names[i['Code']] = i['Name']
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
-        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
-    except: pass
-    return names
-
-CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
@@ -553,10 +579,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     return analysis_bullets, v_t, v_c, v_a
 
 # ==========================================
-# 📊 圖表繪製模組 ── 【修正：紅黑單字標示與位移】
+# 📊 圖表繪製模組
 # ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
-    # 計算全域的紅黑吞型態
     prev_open = df['Open'].shift(1)
     prev_close = df['Close'].shift(1)
     red_mask = (prev_open > prev_close) & (df['Close'] > df['Open']) & (df['Close'] > prev_open) & (df['Open'] < prev_close)
@@ -588,17 +613,16 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
         fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
     
-    # 🎯 【修正：精簡為單字「紅/黑」，且將黑字移至K線頂部】
     re_x, re_y, re_text = [], [], []
     be_x, be_y, be_text = [], [], []
     for i, date in enumerate(df_view.index):
         if red_mask.loc[date]:
             re_x.append(date.strftime('%Y-%m-%d'))
-            re_y.append(df_view['Low'].iloc[i] * 0.94) # 深潛至買字下方
+            re_y.append(df_view['Low'].iloc[i] * 0.94) 
             re_text.append("<b>紅</b>")
         if black_mask.loc[date]:
             be_x.append(date.strftime('%Y-%m-%d'))
-            be_y.append(df_view['High'].iloc[i] * 1.04) # 移至高檔上空，代表頂部反轉壓力
+            be_y.append(df_view['High'].iloc[i] * 1.04) 
             be_text.append("<b>黑</b>")
             
     if re_x:
@@ -616,7 +640,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.97) # 買字位在 K 線與「紅」字之間
+                    buy_y.append(df_view['Low'].iloc[i] * 0.97) 
                     buy_text.append("買")
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='x'), row=1, col=1)
@@ -785,9 +809,6 @@ if st.session_state.page == "home":
     if btn_col1.button("✅ 綜合買點榜", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
     if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
     if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
-    
-    search_val = st.text_input("隱藏", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
-    if search_val: st.session_state.update({"current_stock": search_val, "page": "analysis"}); st.rerun()
     
     scan_results = []
     with st.spinner('🚀 雷達大腦平行超頻全池掃描中...'):
