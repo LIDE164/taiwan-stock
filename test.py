@@ -934,7 +934,7 @@ elif st.session_state.page == "analysis":
         load_ph.empty()
         
         display_time = get_stock_live_time(target)
-        p_color = '#ff3333' if data['涨跌'] >= 0 else '#00cc00'
+        p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
