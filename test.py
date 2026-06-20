@@ -29,6 +29,60 @@ components.html(
     height=0, width=0
 )
 
+# 取得全台股票名單字典
+STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
+@st.cache_data(ttl=86400)
+def get_all_tw_stock_names():
+    names = STOCK_NAMES.copy()
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        for i in res.json(): names[i['Code']] = i['Name']
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
+    except: pass
+    return names
+
+CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+
+# ==========================================
+# 🧠 智慧搜尋回呼核心：徹底切斷殘留狀態與無窮迴圈
+# ==========================================
+def handle_global_search():
+    if "global_search" in st.session_state and st.session_state.global_search:
+        s_val = st.session_state.global_search.strip().replace(" ", "")
+        if s_val:
+            target_ticker = None
+            # 判斷是否為代號
+            if re.match(r'^[A-Za-z0-9]+$', s_val):
+                target_ticker = s_val.upper()
+            else:
+                # 中文模糊比對
+                for code, name in CURRENT_STOCK_NAMES.items():
+                    if s_val in name:
+                        target_ticker = code
+                        break
+            if target_ticker:
+                st.session_state.current_stock = target_ticker
+                st.session_state.page = "analysis"
+                st.session_state.date_offset = 0
+            else:
+                st.session_state.search_error = f"⚠️ 找不到與「{s_val}」相關的標的。"
+        
+        # 🎯 關鍵救星：處理完畢後立即強制清空輸入框狀態，防止導航劫持
+        st.session_state.global_search = ""
+
+# ==========================================
+# 🌟 側邊欄介面佈局
+# ==========================================
+st.sidebar.title("🔍 快速搜尋")
+# 掛載 on_change 回呼機制
+st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search", on_change=handle_global_search)
+
+if "search_error" in st.session_state and st.session_state.search_error:
+    st.sidebar.warning(st.session_state.search_error)
+    st.session_state.search_error = ""
+
+st.sidebar.divider()
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
@@ -64,8 +118,6 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
-
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體業", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Building Materials": "玻璃陶瓷", "Marine Shipping": "航運業",
@@ -74,42 +126,6 @@ ENG_TO_TW_INDUSTRY = {
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
     "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
-
-@st.cache_data(ttl=86400)
-def get_all_tw_stock_names():
-    names = STOCK_NAMES.copy()
-    try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
-        for i in res.json(): names[i['Code']] = i['Name']
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
-        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
-    except: pass
-    return names
-
-CURRENT_STOCK_NAMES = get_all_tw_stock_names()
-
-# ==========================================
-# 🌟 側邊欄：智慧搜尋與系統設定
-# ==========================================
-st.sidebar.title("🔍 快速搜尋")
-search_val = st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search")
-if search_val:
-    target_ticker = None
-    s_val = search_val.strip().replace(" ", "")
-    if re.match(r'^[A-Za-z0-9]+$', s_val):
-        target_ticker = s_val.upper()
-    else:
-        for code, name in CURRENT_STOCK_NAMES.items():
-            if s_val in name:
-                target_ticker = code
-                break
-    if target_ticker:
-        st.session_state.update({"current_stock": target_ticker, "page": "analysis", "date_offset": 0})
-        st.rerun()
-    else:
-        st.sidebar.warning(f"⚠️ 找不到與「{s_val}」相關的標的。")
-
-st.sidebar.divider()
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
@@ -639,12 +655,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
-    
-    ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
-    fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
     fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
@@ -793,7 +803,6 @@ if st.session_state.page == "home":
     scan_results = []
     pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
     
-    # 🎯 【核心修正：降頻保護＋動態掃描進度條】
     st.markdown("##### 🚀 大腦極速掃描中...")
     progress_bar = st.progress(0)
     status_text = st.empty()
