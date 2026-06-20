@@ -51,7 +51,7 @@ st.sidebar.title("🔍 快速搜尋")
 search_val = st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search")
 if search_val:
     target_ticker = None
-    s_val = search_val.strip()
+    s_val = search_val.strip().replace(" ", "")
     
     # 智慧判斷：若是純數字或英數字組合 -> 當作代號
     if re.match(r'^[A-Za-z0-9]+$', s_val):
@@ -351,7 +351,7 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
-                if not sym.startswith('^'): d = d[d['Volume'] > 0] 
+                # 🔥 修正點：移除強制過濾 Volume > 0 的限制，因為 Yahoo Finance 對台灣上櫃股(.TWO)常回傳 0 成交量，導致整個表被清空。
                 if len(d) >= 20: 
                     d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
                     return d
