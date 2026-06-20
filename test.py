@@ -2,7 +2,7 @@ import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
-import time  # 🚀 新增時間模組用於進度條特效
+import time
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -52,7 +52,7 @@ st.markdown(f'''
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
     [data-testid="collapsedControl"] {{ border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; }}
     [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的群組"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
-    .stButton button {{ font-weight: bold !important; border-radius: 8px !important; }}
+    .stButton button {{ font-weight: bold !important; border-radius: 8px !important; text-align: left !important; }}
     button[kind="primary"] {{ font-size: 1.5rem !important; padding: 15px !important; border-radius: 12px !important; background-color: #ffcc00 !important; color: #111 !important; border: none !important; }}
     .sticky-header {{ position: sticky; top: 0; z-index: 999; background-color: {sticky_bg}; padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }}
     div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
@@ -553,7 +553,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
     if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
-    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
+    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支 হত্যার虛假反彈。</span>")
         
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
@@ -850,31 +850,24 @@ if st.session_state.page == "home":
             df_disp = pd.concat([df_s, df_a]).head(20)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
+        # 🚀 網頁版極簡條列式清單按鈕
         for _, r in df_disp.iterrows():
-            with st.container(border=True):
-                p_val = r['漲跌']
-                sign = "+" if p_val > 0 else ""
-                s_score = r['Score']
-                score_icon = "🟢 S級強勢買進" if s_score >= 5 else ("🟡 A級試單佈局" if s_score >= 2 else "⚪ 盤整觀望中")
-                
-                if r.get('紅吞'): pattern_tag = "🔥 <span style='color:#ff3333; font-weight:bold;'>【今日紅吞】</span>"
-                elif r.get('近七日紅吞'): pattern_tag = "📈 <span style='color:#ff9900; font-weight:bold;'>【近期紅吞】</span>"
-                elif r.get('黑吞'): pattern_tag = "🩸 <span style='color:#00cc00; font-weight:bold;'>【今日黑吞】</span>"
-                else: pattern_tag = ""
-                
-                reasons = r.get('Reasons', [])
-                if reasons:
-                    short_rs = "、".join([res.replace("✅ ", "").replace("⚠️ ", "").replace("🔥 ", "").replace("🩸 ", "").split(" (")[0] for res in reasons[:3]])
-                else:
-                    short_rs = "暫無特殊動能訊號"
-                
-                st.markdown(f"<h4 style='margin-bottom: 5px; margin-top: 0px;'>{r['代號']} {r['名稱']} {pattern_tag}</h4>", unsafe_allow_html=True)
-                st.markdown(f"<div style='font-size: 1.15rem; font-weight: bold; color: {'#ff3333' if p_val > 0 else '#00cc00' if p_val < 0 else '#888'}; margin-bottom: 5px;'>現價: {r['收盤價']} ({sign}{r['漲跌幅']}%) ｜ 評級: {score_icon}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='font-size: 0.95rem; color: {sub_text_col}; margin-bottom: 12px; line-height: 1.5;'>💡 <b>系統快解：</b>{short_rs}</div>", unsafe_allow_html=True)
-                
-                if st.button(f"📊 進入【{r['名稱']}】深度解析大腦", key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
-                    st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
-                    st.rerun()
+            p_val = r['漲跌']
+            sign = "+" if p_val > 0 else ""
+            trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+            
+            s_score = r['Score']
+            score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+            
+            p_tag = "🔥紅吞" if r.get('紅吞') else ("🩸黑吞" if r.get('黑吞') else ("📈近期紅吞" if r.get('近七日紅吞') else ""))
+            tag_display = f" | {p_tag}" if p_tag else ""
+            
+            # 濃縮成單行字串
+            button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
+            
+            if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+                st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
+                st.rerun()
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
@@ -895,7 +888,7 @@ elif st.session_state.page == "analysis":
     with c3:
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
-    # 🚀 加入讀取進度條
+    # 🚀 動態進度條特效
     load_ph = st.empty()
     with load_ph.container():
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 分析大腦...</h4>", unsafe_allow_html=True)
@@ -941,7 +934,7 @@ elif st.session_state.page == "analysis":
         load_ph.empty()
         
         display_time = get_stock_live_time(target)
-        p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
+        p_color = '#ff3333' if data['涨跌'] >= 0 else '#00cc00'
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
