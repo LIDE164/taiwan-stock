@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import re
-import concurrent.futures
+import concurrent.futures  # 🚀 引入多執行緒模組加速網頁平行讀取
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -143,7 +143,7 @@ if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2376"
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
-if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "hot"
+if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy" # 預設改為尋找買點
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
@@ -525,7 +525,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
     elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
         
-    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
+    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形.</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
     if inst_data and len(inst_data) >= 3:
@@ -553,7 +553,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     return analysis_bullets, v_t, v_c, v_a
 
 # ==========================================
-# 📊 圖表繪製模組 ── 【包含最新收盤價特寫標籤】
+# 📊 圖表繪製模組 ── 【全軸向鎖定，禁止誤觸縮放位移】
 # ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     df_view = df.tail(view_days)
@@ -571,7 +571,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 🎯 高亮最新收盤價標籤
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新收盤價: {latest_price:.2f} ",
                   annotation_position="top left",
@@ -614,12 +613,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
 
     fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
+    fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
+    
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', dragmode=False, showlegend=False)
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
 # ==========================================
-# 🔮 總經大盤分析與開盤風險量化預測 (包含休假日迴避)
+# 🔮 總經大盤分析與開盤風險量化預測
 # ==========================================
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: 
@@ -638,30 +639,22 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     elif last_dt.weekday() == 6: last_dt -= timedelta(days=2)
     last_dt_str = last_dt.strftime('%Y/%m/%d')
     
-    # 🗓️ 台灣節慶與連假防護網 (若有未來新增休假日，可在此清單擴充)
     TW_MARKET_HOLIDAYS = {
-        "2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", # 農曆春節
-        "2026/02/27", # 228紀念日補假
-        "2026/04/02", "2026/04/03", # 清明連假
-        "2026/05/01", # 勞動節
-        "2026/06/19", # 端午節
-        "2026/09/25", # 中秋節
-        "2026/10/09"  # 國慶日連假
+        "2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", 
+        "2026/02/27", "2026/04/02", "2026/04/03", "2026/05/01", "2026/06/19", "2026/09/25", "2026/10/09"  
     }
     
-    # 計算次一真實交易日
     next_dt = last_dt + timedelta(days=1)
     while True:
-        if next_dt.weekday() >= 5: # 跳過六日
+        if next_dt.weekday() >= 5: 
             next_dt += timedelta(days=1)
             continue
-        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS: # 跳過節慶
+        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS: 
             next_dt += timedelta(days=1)
             continue
         break
     next_dt_str = next_dt.strftime('%Y/%m/%d')
     
-    # 今日盤勢定調
     today_title, today_desc = "⚖️ 平盤震盪", "今日大盤開在平盤附近，法人現貨買賣超多空拉扯，量價關係呈現縮量，盤勢陷入震盪整理。"
     if t_open > p_close * 1.003:
         if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受外資買盤與美股溢價激勵跳空開高，配合融資餘額增加與量能放大，盤勢極度偏多。"
@@ -673,36 +666,28 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
         if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，均線乖離擴大，多方發力穩步墊高。"
         elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，資金動能不足導致震盪向下。"
 
-    # ==========================================
-    # 🚨 次日開盤量化風險精算 (Risk Score)
-    # ==========================================
     macro_data = get_global_macro_data()
-    risk_score = 50 # 基礎中性值 50%
+    risk_score = 50 
     
-    # 1. 台股技術面：是否跌破5日線
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
     if t_close < ma5: risk_score += 15
     else: risk_score -= 10
     
-    # 2. 費城半導體 (SOX) 影響
     sox_pct = macro_data['^SOX']['pct']
     if sox_pct < -2.0: risk_score += 20
     elif sox_pct < -0.5: risk_score += 10
     elif sox_pct > 1.5: risk_score -= 15
     
-    # 3. 恐慌指數 (VIX) 影響
     vix_curr = macro_data['^VIX']['price']
     vix_pct = macro_data['^VIX']['pct']
     if vix_curr > 20 or vix_pct > 10.0: risk_score += 20
     elif vix_pct < -5.0: risk_score -= 10
     
-    # 4. 日圓匯率 / 日本央行動向影響
     jpy_pct = macro_data['JPY=X']['pct']
-    # 如果美元兌日圓下跌，代表日圓急升 (日本央行升息/避險資金撤出) -> 增加台股開盤風險
     if jpy_pct < -0.8: risk_score += 15 
     elif jpy_pct > 0.5: risk_score -= 5
     
-    risk_score = max(5, min(95, int(risk_score))) # 限制分數在 5% ~ 95% 之間
+    risk_score = max(5, min(95, int(risk_score))) 
     
     if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經環境穩定且台股技術面轉強，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。"
     elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或台股跌破關鍵短均線，預防 ({next_dt_str}) 開平低盤回測下檔支撐。"
@@ -728,17 +713,15 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
                 if st.button("🔄 更新即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
             with col2:
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料抓取時間: {twii_time_str})</span></div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
         
-        # 🌍 總經風險護衛儀表板
         st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
         
-        # 風險進度條
         bar_color = "#00cc00" if risk_score < 40 else ("#ffcc00" if risk_score < 70 else "#ff3333")
         risk_label = "🟢 資金充沛，安心佈局" if risk_score < 40 else ("🟡 變數增加，控制倉位" if risk_score < 70 else "🔴 系統風險，嚴格減碼")
         st.markdown(f"<div style='text-align:center; font-size:1.1rem; font-weight:bold;'>系統量化開低風險度：<span style='color:{bar_color};'>{risk_score}%</span></div>", unsafe_allow_html=True)
@@ -749,7 +732,6 @@ def render_index_board():
         <div style='text-align:center; font-size:0.9rem; color:{bar_color}; font-weight:bold; margin-bottom:15px;'>{risk_label}</div>
         """, unsafe_allow_html=True)
         
-        # 總經三要素小方塊
         mc1, mc2, mc3 = st.columns(3)
         sox_p = macro['^SOX']['pct']; sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
         with mc1.container(border=True):
@@ -759,13 +741,13 @@ def render_index_board():
         with mc2.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{macro['^VIX']['price']:.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div>", unsafe_allow_html=True)
         
-        jpy_p = macro['JPY=X']['pct']; jpy_c = "#ffcc00" # 日圓貶值利多股市，升值(變綠)利空
+        jpy_p = macro['JPY=X']['pct']; jpy_c = "#ffcc00" 
         jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
         with mc3.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{macro['JPY=X']['price']:.2f}<br>{jpy_status}</div>", unsafe_allow_html=True)
 
         st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
-    except: st.error(f"大盤與總經資料載入發生錯誤，請稍後再試或重新整理。")
+    except: st.error(f"大盤與總經資料載入發生錯誤，請稍後再試或重整。")
 
 # ==========================================
 # 🚀 頁面路由控制中心
@@ -773,20 +755,20 @@ def render_index_board():
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     
-    # 🎯 渲染大盤與總經防護面板
     render_index_board()
     
-    st.markdown("<h3 style='margin-top: 15px;'>🎯 掃描買點</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top: 15px;'>🎯 策略條件篩選</h3>", unsafe_allow_html=True)
     btn_col1, btn_col2, btn_col3 = st.columns(3)
-    if btn_col1.button("✅ 尋找買點", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
-    if btn_col2.button("📋 熱門名單", use_container_width=True): st.session_state.scan_mode = "hot"; st.rerun()
-    if btn_col3.button("🔥 近五日熱門", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
+    if btn_col1.button("✅ 綜合買點榜", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
+    # 🎯 【核心修正：將原本的熱門名單，更改為紅吞反轉名單按鈕】
+    if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
+    if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     
     search_val = st.text_input("隱藏", placeholder="🔍 搜尋股票 (輸入代號並按 Enter)", label_visibility="collapsed")
     if search_val: st.session_state.update({"current_stock": search_val, "page": "analysis"}); st.rerun()
     
     scan_results = []
-    with st.spinner('🚀 大腦極速掃描中 (已啟動多執行緒平行超頻)...'):
+    with st.spinner('🚀 雷達大腦平行超頻全池掃描中...'):
         pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
         
         def process_scan(stock):
@@ -801,18 +783,24 @@ if st.session_state.page == "home":
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
+        
         if st.session_state.scan_mode == "recent":
-            st.markdown("##### 🔥 近五日熱門排行榜")
+            st.markdown("##### 📊 近五日成交量排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
+            
+        # 🎯 【核心修正：過濾出今日符合紅吞型態（r['紅吞'] == True）的不重複飆股名單】
+        elif st.session_state.scan_mode == "red_engulf":
+            st.markdown("##### 🔥 觸發「紅吞（多頭吞噬）」反轉型態標的")
+            df_disp = df_results[df_results['紅吞'] == True].sort_values(by='Score', ascending=False)
+            if df_disp.empty: 
+                st.info("💡 目前雷達池內暫無符合「紅吞反轉型態」的個股。")
+                
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (已掛載動能、量能與型態四重濾網)")
             df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
             df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
             df_disp = pd.concat([df_s, df_a]).head(10)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
-        else:
-            st.markdown("##### 📋 熱門名單")
-            df_disp = df_results.sort_values(by="成交量", ascending=False).head(50)
             
         for _, r in df_disp.iterrows():
             with st.container(border=True):
@@ -860,7 +848,6 @@ elif st.session_state.page == "analysis":
             
             twii_close, twii_change, twii_time_str = get_twii_quote()
             twii_df_for_pred = get_stock_data("^TWII")
-            # 更新接收預測模組回傳的 8 個數值
             t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt, risk_score, macro = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
             
             display_time = get_stock_live_time(target)
@@ -928,7 +915,7 @@ elif st.session_state.page == "analysis":
                 with col_sum3: st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
                 
                 if not buy_points_prices:
-                    if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升，因未落入超賣區，未曾觸發任何 A/S 級買點條件，追高需控制風險。"
+                    if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升，因未落入超賣區，未曾觸發 any A/S 級買點條件，追高需控制風險。"
                     else: summary_text = "近一個月股價持續修正，可能因成交量不足或 MACD 綠柱擴大被過濾，未發出安全訊號，建議保持觀望。"
                 else:
                     avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
@@ -954,7 +941,7 @@ elif st.session_state.page == "analysis":
             with dc6: show_sup_res = st.toggle("📏 顯示支撐/壓力", value=False)
                 
             fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, show_buy_sig, f_data, show_sup_res)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
@@ -966,8 +953,11 @@ elif st.session_state.page == "analysis":
 
             st.divider()
             st.subheader("🏦 近期三大法人逐日買賣超")
-            if inst_data: st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
-            else: st.info("目前無法自動抓取籌碼資料。")
+            if inst_data: 
+                st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
+                st.markdown("<div style='text-align: right; font-size:0.8rem; color:#888; margin-top:4px;'>🔗 資料來源: 台灣證交所官方 / FinMind / 鉅亨網</div>", unsafe_allow_html=True)
+            else: 
+                st.info("目前無法自動抓取籌碼資料。")
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
