@@ -29,47 +29,6 @@ components.html(
     height=0, width=0
 )
 
-# 取得全台股票名單字典
-STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
-@st.cache_data(ttl=86400)
-def get_all_tw_stock_names():
-    names = STOCK_NAMES.copy()
-    try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
-        for i in res.json(): names[i['Code']] = i['Name']
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
-        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
-    except: pass
-    return names
-
-CURRENT_STOCK_NAMES = get_all_tw_stock_names()
-
-# ==========================================
-# 🌟 側邊欄：智慧搜尋與系統設定
-# ==========================================
-st.sidebar.title("🔍 快速搜尋")
-search_val = st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search")
-if search_val:
-    target_ticker = None
-    s_val = search_val.strip().replace(" ", "")
-    
-    # 智慧判斷：若是純數字或英數字組合 -> 當作代號
-    if re.match(r'^[A-Za-z0-9]+$', s_val):
-        target_ticker = s_val.upper()
-    else:
-        # 若是中文 -> 進行全市場名稱模糊比對
-        for code, name in CURRENT_STOCK_NAMES.items():
-            if s_val in name:
-                target_ticker = code
-                break
-                
-    if target_ticker:
-        st.session_state.update({"current_stock": target_ticker, "page": "analysis", "date_offset": 0})
-        st.rerun()
-    else:
-        st.sidebar.warning(f"⚠️ 找不到與「{s_val}」相關的標的。")
-
-st.sidebar.divider()
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False)
 
@@ -105,6 +64,8 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
+STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城" }
+
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體業", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Building Materials": "玻璃陶瓷", "Marine Shipping": "航運業",
@@ -113,6 +74,42 @@ ENG_TO_TW_INDUSTRY = {
     "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
     "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
+
+@st.cache_data(ttl=86400)
+def get_all_tw_stock_names():
+    names = STOCK_NAMES.copy()
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        for i in res.json(): names[i['Code']] = i['Name']
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+        for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
+    except: pass
+    return names
+
+CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+
+# ==========================================
+# 🌟 側邊欄：智慧搜尋與系統設定
+# ==========================================
+st.sidebar.title("🔍 快速搜尋")
+search_val = st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search")
+if search_val:
+    target_ticker = None
+    s_val = search_val.strip().replace(" ", "")
+    if re.match(r'^[A-Za-z0-9]+$', s_val):
+        target_ticker = s_val.upper()
+    else:
+        for code, name in CURRENT_STOCK_NAMES.items():
+            if s_val in name:
+                target_ticker = code
+                break
+    if target_ticker:
+        st.session_state.update({"current_stock": target_ticker, "page": "analysis", "date_offset": 0})
+        st.rerun()
+    else:
+        st.sidebar.warning(f"⚠️ 找不到與「{s_val}」相關的標的。")
+
+st.sidebar.divider()
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
@@ -197,7 +194,6 @@ def fetch_twse_top_50():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(50)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
-st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選群組")
 
 MAX_GROUPS = 5
@@ -351,7 +347,6 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y")
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
-                # 🔥 修正點：移除強制過濾 Volume > 0 的限制，因為 Yahoo Finance 對台灣上櫃股(.TWO)常回傳 0 成交量，導致整個表被清空。
                 if len(d) >= 20: 
                     d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
                     return d
@@ -434,9 +429,6 @@ def get_institutional_trading(ticker):
     except: pass
     return []
 
-# ==========================================
-# 🌍 總經大腦：抓取全球宏觀指標 (SOX, VIX, JPY)
-# ==========================================
 @st.cache_data(ttl=600, show_spinner=False)
 def get_global_macro_data():
     try:
@@ -453,9 +445,6 @@ def get_global_macro_data():
     except:
         return {"^SOX": {"price": 0, "pct": 0}, "^VIX": {"price": 0, "pct": 0}, "JPY=X": {"price": 0, "pct": 0}}
 
-# ==========================================
-# 🧠 策略精算核心：融合量能、MACD與紅黑吞
-# ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -578,9 +567,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
     return analysis_bullets, v_t, v_c, v_a
 
-# ==========================================
-# 📊 圖表繪製模組
-# ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     prev_open = df['Open'].shift(1)
     prev_close = df['Close'].shift(1)
@@ -667,9 +653,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-# ==========================================
-# 🔮 總經大盤分析與開盤風險量化預測
-# ==========================================
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     if twii_df is None or len(twii_df) < 2: 
         return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, get_global_macro_data()
@@ -743,9 +726,6 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
 
-# ==========================================
-# 🏠 首頁大盤看板與風險儀表板渲染
-# ==========================================
 def render_index_board():
     try:
         twii_close, twii_change, twii_time_str = get_twii_quote()
@@ -811,18 +791,34 @@ if st.session_state.page == "home":
     if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     
     scan_results = []
-    with st.spinner('🚀 雷達大腦平行超頻全池掃描中...'):
-        pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
+    pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
+    
+    # 🎯 【核心修正：降頻保護＋動態掃描進度條】
+    st.markdown("##### 🚀 大腦極速掃描中...")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    def process_scan(stock):
+        df = get_stock_data(stock)
+        if df is not None: return analyze_today(df, stock, inst_data=None)
+        return None
         
-        def process_scan(stock):
-            df = get_stock_data(stock)
-            if df is not None: return analyze_today(df, stock, inst_data=None)
-            return None
-            
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = executor.map(process_scan, pool)
-            for res in results:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(process_scan, stock): stock for stock in pool}
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            completed += 1
+            progress_bar.progress(completed / len(pool))
+            stock_id = futures[future]
+            status_text.text(f"正在解析: {stock_id} ({completed}/{len(pool)})")
+            try:
+                res = future.result()
                 if res: scan_results.append(res)
+            except:
+                pass
+                
+    progress_bar.empty()
+    status_text.empty()
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
@@ -903,9 +899,6 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
             st.markdown("---")
             
-            # ==========================================
-            # 🚨 5% 鐵律防守停損線警報
-            # ==========================================
             stop_loss_html = ""
             recent_20 = df_slice.tail(20)
             recent_signals = []
@@ -927,9 +920,6 @@ elif st.session_state.page == "analysis":
                     </div>'''
             if stop_loss_html: st.markdown(stop_loss_html, unsafe_allow_html=True)
 
-            # ==========================================
-            # 💡 近一個月歷史買點回測貨櫃
-            # ==========================================
             st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
             recent_30 = df_slice.tail(30)
             s_count, a_count = 0, 0
@@ -967,9 +957,6 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月大腦共偵測到 **{s_count + a_count}** 次安全買進點。若於訊號出現當日收盤進行等額建倉，綜合平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，目前策略帳面回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-            # ==========================================
-            # AI 決策面板與核心分析診斷
-            # ==========================================
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
