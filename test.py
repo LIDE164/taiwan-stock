@@ -502,9 +502,18 @@ def get_institutional_trading(ticker):
     except: pass
     return []
 
+# ==========================================
+# 🛑 核心修改區塊 1：在評分系統加入紅吞與黑吞分數
+# ==========================================
 def get_decision_score(data, fund_data):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
+    
+    # --- 新增：紅吞與黑吞評分邏輯 ---
+    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
+    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
+    # --------------------------------
+    
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離擴大")
     try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
@@ -518,10 +527,27 @@ def get_decision_score(data, fund_data):
     if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
     return sc, rs
 
+# ==========================================
+# 🛑 核心修改區塊 2：在每日資料分析加入型態辨識
+# ==========================================
 def analyze_today(df, ticker_number):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
     fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
+    
+    # --- 新增：紅吞與黑吞型態判斷邏輯 ---
+    try:
+        t_open, t_close = float(t['Open']), float(t['Close'])
+        p_open, p_close = float(p['Open']), float(p['Close'])
+        # 紅吞：昨天收黑，今天收紅，且今天紅實體完全包覆昨天黑實體
+        is_red_engulfing = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
+        # 黑吞：昨天收紅，今天收黑，且今天黑實體完全包覆昨天紅實體
+        is_black_engulfing = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
+    except:
+        is_red_engulfing = False
+        is_black_engulfing = False
+    # ------------------------------------
+
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
@@ -533,12 +559,17 @@ def analyze_today(df, ticker_number):
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20)
+        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20),
+        "紅吞": is_red_engulfing,
+        "黑吞": is_black_engulfing
     }
     sc, _ = get_decision_score(data, fund)
     data['Score'] = sc
     return data
 
+# ==========================================
+# 🛑 核心修改區塊 3：在 AI 總結面板中印出型態警語
+# ==========================================
 def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
     analysis_bullets = []
     
@@ -568,6 +599,13 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         trends.append("🔥 <span style='color:#ff3333; font-weight:bold;'>站上季線</span>" if t_long else "⚠️ <span style='color:#00cc00;'>跌破季線</span>")
         analysis_bullets.append(f"⚪ <b>三級多空趨勢</b>：目前處於多空拉扯震盪整理，狀態為：{'、'.join(trends)}。")
     
+    # --- 新增：將紅吞與黑吞加入 UI 分析報告中 ---
+    if data.get('紅吞'):
+        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
+    elif data.get('黑吞'):
+        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
+    # ---------------------------------------------
+        
     if data['收盤價'] > data['5MA']:
         analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>短線強勢表態：股價成功站穩 5 日線 ({data['5MA']}) 之上，短線動能強勁。</span>")
     else:
