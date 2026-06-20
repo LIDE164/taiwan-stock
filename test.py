@@ -553,7 +553,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     return analysis_bullets, v_t, v_c, v_a
 
 # ==========================================
-# 📊 圖表繪製模組 ── 【修正：紅黑吞位移與右上角標籤】
+# 📊 圖表繪製模組 ── 【修正：紅黑單字標示與位移】
 # ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
     # 計算全域的紅黑吞型態
@@ -577,7 +577,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
-    # 🎯 【修正 1：最新收盤價黃金標籤改至右上角 (top right)】
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新收盤價: {latest_price:.2f} ",
                   annotation_position="top right",
@@ -589,23 +588,23 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
         fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
     
-    # 🎯 【修正 2：將紅吞與黑吞字樣強制放置在 K 線最下方、買字訊號的底層】
+    # 🎯 【修正：精簡為單字「紅/黑」，且將黑字移至K線頂部】
     re_x, re_y, re_text = [], [], []
     be_x, be_y, be_text = [], [], []
     for i, date in enumerate(df_view.index):
         if red_mask.loc[date]:
             re_x.append(date.strftime('%Y-%m-%d'))
             re_y.append(df_view['Low'].iloc[i] * 0.94) # 深潛至買字下方
-            re_text.append("<b>紅吞</b>")
+            re_text.append("<b>紅</b>")
         if black_mask.loc[date]:
             be_x.append(date.strftime('%Y-%m-%d'))
-            be_y.append(df_view['Low'].iloc[i] * 0.94) # 同樣放置於底部防打架
-            be_text.append("<b>黑吞</b>")
+            be_y.append(df_view['High'].iloc[i] * 1.04) # 移至高檔上空，代表頂部反轉壓力
+            be_text.append("<b>黑</b>")
             
     if re_x:
-        fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞型態", hoverinfo='skip'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=14), name="紅吞", hoverinfo='skip'), row=1, col=1)
     if be_x:
-        fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="bottom center", textfont=dict(color="#00cc00", size=13), name="黑吞型態", hoverinfo='skip'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=14), name="黑吞", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
@@ -617,7 +616,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.97) # 買字位在 K 線與紅吞字樣之間
+                    buy_y.append(df_view['Low'].iloc[i] * 0.97) # 買字位在 K 線與「紅」字之間
                     buy_text.append("買")
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='x'), row=1, col=1)
