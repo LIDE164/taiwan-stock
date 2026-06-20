@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import re
-import concurrent.futures  # 🚀 引入多執行緒模組加速網頁平行讀取
+import concurrent.futures
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -143,7 +143,7 @@ if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2376"
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
-if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy" # 預設改為尋找買點
+if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
 if 'view_days' not in st.session_state: st.session_state.view_days = 20
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
@@ -525,7 +525,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
     elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
         
-    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形.</span>")
+    if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
     if inst_data and len(inst_data) >= 3:
@@ -553,9 +553,15 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     return analysis_bullets, v_t, v_c, v_a
 
 # ==========================================
-# 📊 圖表繪製模組 ── 【全軸向鎖定，禁止誤觸縮放位移】
+# 📊 圖表繪製模組 ── 【加上紅吞/黑吞 K 線標記】
 # ==========================================
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
+    # 計算全域的紅黑吞型態 (避免切片時錯失前一天的資料)
+    prev_open = df['Open'].shift(1)
+    prev_close = df['Close'].shift(1)
+    red_mask = (prev_open > prev_close) & (df['Close'] > df['Open']) & (df['Close'] > prev_open) & (df['Open'] < prev_close)
+    black_mask = (prev_close > prev_open) & (df['Open'] > df['Close']) & (df['Open'] > prev_close) & (df['Close'] < prev_open)
+    
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -571,6 +577,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
+    # 高亮最新收盤價標籤
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新收盤價: {latest_price:.2f} ",
                   annotation_position="top left",
@@ -582,6 +589,24 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
         fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
     
+    # 🎯 標記圖表上的「紅吞」與「黑吞」字樣
+    re_x, re_y, re_text = [], [], []
+    be_x, be_y, be_text = [], [], []
+    for i, date in enumerate(df_view.index):
+        if red_mask.loc[date]:
+            re_x.append(date.strftime('%Y-%m-%d'))
+            re_y.append(df_view['Low'].iloc[i] * 0.985) # 標在 K 線下方一點點
+            re_text.append("<b>紅吞</b>")
+        if black_mask.loc[date]:
+            be_x.append(date.strftime('%Y-%m-%d'))
+            be_y.append(df_view['High'].iloc[i] * 1.015) # 標在 K 線上方一點點
+            be_text.append("<b>黑吞</b>")
+            
+    if re_x:
+        fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞型態", hoverinfo='skip'), row=1, col=1)
+    if be_x:
+        fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞型態", hoverinfo='skip'), row=1, col=1)
+
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
         for i in range(len(df_view)):
@@ -592,7 +617,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.97)
+                    buy_y.append(df_view['Low'].iloc[i] * 0.96) # 避開紅吞字樣，放更下面一點
                     buy_text.append("買")
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='x'), row=1, col=1)
@@ -746,7 +771,6 @@ def render_index_board():
         with mc3.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{macro['JPY=X']['price']:.2f}<br>{jpy_status}</div>", unsafe_allow_html=True)
 
-        st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤與總經資料載入發生錯誤，請稍後再試或重整。")
 
 # ==========================================
@@ -760,7 +784,6 @@ if st.session_state.page == "home":
     st.markdown("<h3 style='margin-top: 15px;'>🎯 策略條件篩選</h3>", unsafe_allow_html=True)
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     if btn_col1.button("✅ 綜合買點榜", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
-    # 🎯 【核心修正：將原本的熱門名單，更改為紅吞反轉名單按鈕】
     if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
     if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     
@@ -788,7 +811,6 @@ if st.session_state.page == "home":
             st.markdown("##### 📊 近五日成交量排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
             
-        # 🎯 【核心修正：過濾出今日符合紅吞型態（r['紅吞'] == True）的不重複飆股名單】
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 觸發「紅吞（多頭吞噬）」反轉型態標的")
             df_disp = df_results[df_results['紅吞'] == True].sort_values(by='Score', ascending=False)
@@ -915,7 +937,7 @@ elif st.session_state.page == "analysis":
                 with col_sum3: st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
                 
                 if not buy_points_prices:
-                    if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升，因未落入超賣區，未曾觸發 any A/S 級買點條件，追高需控制風險。"
+                    if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升，因未落入超賣區，未曾觸發任何 A/S 級買點條件，追高需控制風險。"
                     else: summary_text = "近一個月股價持續修正，可能因成交量不足或 MACD 綠柱擴大被過濾，未發出安全訊號，建議保持觀望。"
                 else:
                     avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
