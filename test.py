@@ -57,6 +57,10 @@ st.markdown(f'''
     div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
     h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
     .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
+    
+    /* 自訂總經進度條樣式 */
+    .risk-bar-container {{ width: 100%; background-color: #333; border-radius: 8px; margin-top: 5px; margin-bottom: 15px; overflow: hidden; }}
+    .risk-bar-fill {{ height: 16px; border-radius: 8px; transition: width 0.5s ease-in-out; }}
 </style>
 ''', unsafe_allow_html=True)
 
@@ -220,7 +224,6 @@ if st.sidebar.button("🔄 更新熱門股 (Top 50)", use_container_width=True):
     st.sidebar.success("✅ 完成！")
     st.rerun()
 
-# 🚀 效能優化：將基本面快取拉長至 24 小時 (86400 秒)，極大化網頁載入速度
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -406,6 +409,25 @@ def get_institutional_trading(ticker):
     return []
 
 # ==========================================
+# 🌍 總經大腦：抓取全球宏觀指標 (SOX, VIX, JPY)
+# ==========================================
+@st.cache_data(ttl=600, show_spinner=False)
+def get_global_macro_data():
+    try:
+        data = {}
+        tickers = ["^SOX", "^VIX", "JPY=X"]
+        for t in tickers:
+            df = yf.Ticker(t).history(period="5d")
+            if len(df) >= 2:
+                c, p = df['Close'].iloc[-1], df['Close'].iloc[-2]
+                data[t] = {"price": c, "pct": (c-p)/p*100}
+            else:
+                data[t] = {"price": 0, "pct": 0}
+        return data
+    except:
+        return {"^SOX": {"price": 0, "pct": 0}, "^VIX": {"price": 0, "pct": 0}, "JPY=X": {"price": 0, "pct": 0}}
+
+# ==========================================
 # 🧠 策略精算核心：融合量能、MACD與紅黑吞
 # ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
@@ -418,21 +440,17 @@ def get_decision_score(data, fund_data, inst_data=None):
     except: eps_f = 0.0
     if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
-    # 🛡️ 濾網 1：量能放大確認 (突破假反彈盲區)
     if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
     else: sc-=2; rs.append("⚠️ 無量反彈 (缺乏實質買盤動能)")
         
-    # 🛡️ 濾網 2：MACD 綠柱收斂確認 (防範下墜接刀)
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
-    # 🛡️ 濾網 3：近三日法人累積籌碼
     if inst_data and len(inst_data) >= 3:
         net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
         if net_buy > 0: sc+=2; rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
         else: sc-=2; rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
-    # 🛡️ 濾網 4：紅吞與黑吞K線型態辨識
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
 
@@ -454,13 +472,12 @@ def analyze_today(df, ticker_number, inst_data=None):
         is_red_engulfing = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
         is_black_engulfing = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
     except:
-        is_red_engulfing = False
-        is_black_engulfing = False
+        is_red_engulfing, is_black_engulfing = False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
-        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
+        "涨跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
         "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
@@ -602,10 +619,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     return fig
 
 # ==========================================
-# 🔮 大盤分析與預測邏輯 
+# 🔮 總經大盤分析與開盤風險量化預測 (包含休假日迴避)
 # ==========================================
 def predict_tomorrow_open(twii_df, twii_time_str=""):
-    if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", ""
+    if twii_df is None or len(twii_df) < 2: 
+        return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, get_global_macro_data()
+
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
     tz_tpe = timezone(timedelta(hours=8))
     now = datetime.now(tz_tpe)
@@ -619,36 +638,87 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     elif last_dt.weekday() == 6: last_dt -= timedelta(days=2)
     last_dt_str = last_dt.strftime('%Y/%m/%d')
     
-    next_dt = last_dt + timedelta(days=3 if last_dt.weekday() == 4 else 1)
+    # 🗓️ 台灣節慶與連假防護網 (若有未來新增休假日，可在此清單擴充)
+    TW_MARKET_HOLIDAYS = {
+        "2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", # 農曆春節
+        "2026/02/27", # 228紀念日補假
+        "2026/04/02", "2026/04/03", # 清明連假
+        "2026/05/01", # 勞動節
+        "2026/06/19", # 端午節
+        "2026/09/25", # 中秋節
+        "2026/10/09"  # 國慶日連假
+    }
+    
+    # 計算次一真實交易日
+    next_dt = last_dt + timedelta(days=1)
+    while True:
+        if next_dt.weekday() >= 5: # 跳過六日
+            next_dt += timedelta(days=1)
+            continue
+        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS: # 跳過節慶
+            next_dt += timedelta(days=1)
+            continue
+        break
     next_dt_str = next_dt.strftime('%Y/%m/%d')
     
-    today_title = "⚖️ 平盤震盪"
-    today_desc = "今日大盤開在平盤附近，<a href='https://mis.twse.com.tw/' target='_blank' style='color:#00ffcc; text-decoration:none;'>法人現貨買賣超</a>多空拉扯，量價關係呈現縮量，盤勢陷入震盪整理。"
+    # 今日盤勢定調
+    today_title, today_desc = "⚖️ 平盤震盪", "今日大盤開在平盤附近，法人現貨買賣超多空拉扯，量價關係呈現縮量，盤勢陷入震盪整理。"
     if t_open > p_close * 1.003:
-        if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受外資買盤與<a href='https://finance.yahoo.com/quote/TSM/' target='_blank' style='color:#00ffcc; text-decoration:none;'>台積電ADR</a>溢價激勵跳空開高，配合<a href='https://www.twse.com.tw/zh/trading/margin/mi-margn.html' target='_blank' style='color:#00ffcc; text-decoration:none;'>融資餘額</a>增加與量能放大，盤勢極度偏多。"
-        else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc; text-decoration:none;'>KDJ 動能指標</a>有進入超買區疑慮，呈現高檔回落。"
+        if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受外資買盤與美股溢價激勵跳空開高，配合融資餘額增加與量能放大，盤勢極度偏多。"
+        else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，動能指標有進入超買區疑慮，呈現高檔回落。"
     elif t_open < p_close * 0.997:
-        if t_close > t_open: today_title, today_desc = "💪 開低走高", "大盤受美股回檔影響開低，但低檔投信承接買盤強勁，出現開低走高收紅K型態。"
-        else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，<a href='https://finance.yahoo.com/quote/%5EVIX/' target='_blank' style='color:#00ffcc; text-decoration:none;'>VIX恐慌指數</a>上升引發散戶多殺多停損賣壓，盤勢極度偏空。"
+        if t_close > t_open: today_title, today_desc = "💪 開低走高", "大盤受國際盤回檔影響開低，但低檔投信承接買盤強勁，出現開低走高收紅K型態。"
+        else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，恐慌指數上升引發散戶多殺多停損賣壓，盤勢極度偏空。"
     else:
-        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc; text-decoration:none;'>均線乖離(BIAS)</a>擴大，多方發力穩步墊高。"
-        elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，<a href='https://invest.cnyes.com/' target='_blank' style='color:#00ffcc; text-decoration:none;'>MACD</a>綠柱擴大資金動能不足導致震盪向下。"
+        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，均線乖離擴大，多方發力穩步墊高。"
+        elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，資金動能不足導致震盪向下。"
 
+    # ==========================================
+    # 🚨 次日開盤量化風險精算 (Risk Score)
+    # ==========================================
+    macro_data = get_global_macro_data()
+    risk_score = 50 # 基礎中性值 50%
+    
+    # 1. 台股技術面：是否跌破5日線
     ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
-    score = 1 if t_close > ma5 else -1
-    if score >= 1: tmr_title, tmr_desc = "🚀 偏多機率高", f"台股站穩短均線且技術面指標轉強，若今晚<a href='https://finance.yahoo.com/quote/%5ESOX/' target='_blank' style='color:#00ffcc; text-decoration:none;'>美股(費半)</a>強勢且<a href='https://finance.yahoo.com/quote/DX-Y.NYB/' target='_blank' style='color:#00ffcc; text-decoration:none;'>美元指數(DXY)</a>回落，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。"
-    else: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"台股跌破關鍵短均線，<a href='https://www.taifex.com.tw/cht/3/futContractsDate' target='_blank' style='color:#00ffcc; text-decoration:none;'>外資期貨未平倉空單(OI)</a>若維持高檔，需防範重大總經數據公佈或法說會不及預期，預防 ({next_dt_str}) 開平低盤回測下檔支撐。"
-    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str
+    if t_close < ma5: risk_score += 15
+    else: risk_score -= 10
+    
+    # 2. 費城半導體 (SOX) 影響
+    sox_pct = macro_data['^SOX']['pct']
+    if sox_pct < -2.0: risk_score += 20
+    elif sox_pct < -0.5: risk_score += 10
+    elif sox_pct > 1.5: risk_score -= 15
+    
+    # 3. 恐慌指數 (VIX) 影響
+    vix_curr = macro_data['^VIX']['price']
+    vix_pct = macro_data['^VIX']['pct']
+    if vix_curr > 20 or vix_pct > 10.0: risk_score += 20
+    elif vix_pct < -5.0: risk_score -= 10
+    
+    # 4. 日圓匯率 / 日本央行動向影響
+    jpy_pct = macro_data['JPY=X']['pct']
+    # 如果美元兌日圓下跌，代表日圓急升 (日本央行升息/避險資金撤出) -> 增加台股開盤風險
+    if jpy_pct < -0.8: risk_score += 15 
+    elif jpy_pct > 0.5: risk_score -= 5
+    
+    risk_score = max(5, min(95, int(risk_score))) # 限制分數在 5% ~ 95% 之間
+    
+    if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經環境穩定且台股技術面轉強，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。"
+    elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或台股跌破關鍵短均線，預防 ({next_dt_str}) 開平低盤回測下檔支撐。"
+    else: tmr_title, tmr_desc = "🚨 極度警戒", f"全球宏觀風險飆高（費半重挫或避險情緒升溫），強烈建議減碼防範 ({next_dt_str}) 跳空重挫的系統性風險。"
+    
+    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
 
 # ==========================================
-# 🏠 首頁大盤看板渲染
+# 🏠 首頁大盤看板與風險儀表板渲染 (加入即時抓取時間標籤)
 # ==========================================
 def render_index_board():
     try:
         twii_close, twii_change, twii_time_str = get_twii_quote()
         twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
         twii_df_for_pred = get_stock_data("^TWII")
-        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
+        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
         
         with st.container(border=True):
             col1, col2 = st.columns([1.1, 1.2])
@@ -656,16 +726,46 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 2.3rem; font-weight: 900; color: {twii_color}; margin: 5px 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1.2rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                if st.button("🔄 更新大盤即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
+                if st.button("🔄 更新即時報價", use_container_width=True): st.cache_data.clear(); st.rerun()
             with col2:
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
+                # 🔴 修正：將抓取時間 twii_time_str 寫入盤勢分析標題
+                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(資料抓取時間: {twii_time_str})</span></div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次一交易日開盤預測</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: right; color: #666; font-size: 0.8rem; margin-top: 10px;'>🔄 台灣加權指數最後更新時間: {twii_time_str}</div>", unsafe_allow_html=True)
-    except: st.error(f"大盤資料載入發生錯誤，請稍後再試或重新整理。")
+        
+        # 🌍 總經風險護衛儀表板
+        st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
+        
+        # 風險進度條
+        bar_color = "#00cc00" if risk_score < 40 else ("#ffcc00" if risk_score < 70 else "#ff3333")
+        risk_label = "🟢 資金充沛，安心佈局" if risk_score < 40 else ("🟡 變數增加，控制倉位" if risk_score < 70 else "🔴 系統風險，嚴格減碼")
+        st.markdown(f"<div style='text-align:center; font-size:1.1rem; font-weight:bold;'>系統量化開低風險度：<span style='color:{bar_color};'>{risk_score}%</span></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="risk-bar-container">
+            <div class="risk-bar-fill" style="width: {risk_score}%; background-color: {bar_color};"></div>
+        </div>
+        <div style='text-align:center; font-size:0.9rem; color:{bar_color}; font-weight:bold; margin-bottom:15px;'>{risk_label}</div>
+        """, unsafe_allow_html=True)
+        
+        # 總經三要素小方塊
+        mc1, mc2, mc3 = st.columns(3)
+        sox_p = macro['^SOX']['pct']; sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
+        with mc1.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{macro['^SOX']['price']:.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div>", unsafe_allow_html=True)
+        
+        vix_p = macro['^VIX']['pct']; vix_c = "#00cc00" if vix_p <= 0 else "#ff3333"
+        with mc2.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{macro['^VIX']['price']:.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div>", unsafe_allow_html=True)
+        
+        jpy_p = macro['JPY=X']['pct']; jpy_c = "#ffcc00" # 日圓貶值利多股市，升值(變綠)利空
+        jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
+        with mc3.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{macro['JPY=X']['price']:.2f}<br>{jpy_status}</div>", unsafe_allow_html=True)
+
+    except: st.error(f"大盤與總經資料載入發生錯誤，請稍後再試或重新整理。")
 
 # ==========================================
 # 🚀 頁面路由控制中心
@@ -673,7 +773,7 @@ def render_index_board():
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     
-    # 🎯 渲染大盤盤勢日分析面版
+    # 🎯 渲染大盤與總經防護面板
     render_index_board()
     
     st.markdown("<h3 style='margin-top: 15px;'>🎯 掃描買點</h3>", unsafe_allow_html=True)
@@ -760,7 +860,7 @@ elif st.session_state.page == "analysis":
             
             twii_close, twii_change, twii_time_str = get_twii_quote()
             twii_df_for_pred = get_stock_data("^TWII")
-            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
+            t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt, risk_score, macro = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
             
             display_time = get_stock_live_time(target)
             p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
@@ -828,7 +928,7 @@ elif st.session_state.page == "analysis":
                 
                 if not buy_points_prices:
                     if month_trend_pct > 0: summary_text = "近一個月股價呈現高檔推升，因未落入超賣區，未曾觸發任何 A/S 級買點條件，追高需控制風險。"
-                    else: summary_text = "近一個月股價持續修正，但可能因成交量不足或 MACD 綠柱擴大被扣分，未曾發出安全訊號，建議保持觀望。"
+                    else: summary_text = "近一個月股價持續修正，可能因成交量不足或 MACD 綠柱擴大被過濾，未發出安全訊號，建議保持觀望。"
                 else:
                     avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
                     profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
