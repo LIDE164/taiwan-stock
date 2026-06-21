@@ -81,28 +81,31 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
-def handle_global_search():
-    if "global_search" in st.session_state and st.session_state.global_search:
-        s_val = st.session_state.global_search.strip().replace(" ", "")
-        if s_val:
-            target_ticker = None
-            if re.match(r'^[A-Za-z0-9]+$', s_val):
-                target_ticker = s_val.upper()
-            else:
-                for code, name in CURRENT_STOCK_NAMES.items():
-                    if s_val in name:
-                        target_ticker = code
-                        break
-            if target_ticker:
-                st.session_state.current_stock = target_ticker
-                st.session_state.page = "analysis"
-                st.session_state.date_offset = 0
-            else:
-                st.session_state.search_error = f"⚠️ 找不到與「{s_val}」相關的標的。"
-        st.session_state.global_search = ""
-
 st.sidebar.title("🔍 快速搜尋")
-st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (按Enter)", label_visibility="collapsed", key="global_search", on_change=handle_global_search)
+
+# 🚀 核心升級：改用表單(Form)包裝，徹底解決「按 Enter 沒反應」的狀態衝突 Bug
+with st.sidebar.form(key="search_form"):
+    search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
+    submit_search = st.form_submit_button("送出搜尋", use_container_width=True)
+    
+if submit_search and search_input:
+    s_val = search_input.strip().replace(" ", "")
+    if s_val:
+        target_ticker = None
+        if re.match(r'^[A-Za-z0-9]+$', s_val):
+            target_ticker = s_val.upper()
+        else:
+            for code, name in CURRENT_STOCK_NAMES.items():
+                if s_val in name:
+                    target_ticker = code
+                    break
+        if target_ticker:
+            st.session_state.current_stock = target_ticker
+            st.session_state.page = "analysis"
+            st.session_state.date_offset = 0
+            st.rerun()  # 強制重新整理跳轉頁面，保證 100% 觸發
+        else:
+            st.session_state.search_error = f"⚠️ 找不到與「{s_val}」相關的標的。"
 
 if "search_error" in st.session_state and st.session_state.search_error:
     st.sidebar.warning(st.session_state.search_error)
