@@ -606,12 +606,6 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
 
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
-    
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
@@ -619,6 +613,21 @@ def get_decision_score(data, fund_data, inst_data=None):
         sc += 2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
     if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
         sc -= 2; rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
+
+    # 🚨 最嚴格高檔防護網：狙擊假突破與騙線
+    is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
+    has_buy_trigger = data.get('紅吞') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
+    
+    if is_extreme_high and has_buy_trigger:
+        sc -= 10
+        rs.append("🚨 嚴格高檔誘多警報：乖離過大/KDJ極度超買，防範假突破騙線！")
+    else:
+        if data['J值'] >= 80: sc-=5; rs.append("⚠️ KDJ高檔過熱 (追高極易回檔)")
+        if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=3; rs.append("⚠️ 觸及布林上軌壓力")
+        if data['BIAS'] > 7: sc-=5; rs.append("⚠️ 正乖離過大 (追高風險劇增)")
+
+    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
+    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
 
     return sc, rs
 
@@ -694,6 +703,12 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         if "多" in market_tmr_clean or "高" in market_tmr_clean: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境偏多有利個股發揮。</span>")
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
         else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
+
+    # 🚨 新增：高檔誘多警報 (於解析區塊置頂顯示)
+    is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
+    has_buy_trigger = data.get('紅吞') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
+    if is_extreme_high and has_buy_trigger:
+        analysis_bullets.append(f"🚨 <span style='color:#ff3333; font-weight:bold; font-size:1.1rem; text-decoration: underline;'>【致命誘多警報】股價處於絕對高檔 (高乖離/超買)，此突破訊號極高機率為「主力騙線出貨」，系統已強制否決此買點！</span>")
 
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
