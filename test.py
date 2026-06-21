@@ -612,7 +612,6 @@ def get_decision_score(data, fund_data, inst_data=None):
     is_5ma_up = data.get('5日線即將上彎', False)
     is_20ma_up = data.get('月線即將上彎', False)
 
-    # 🚀 雙引擎判斷：5MA 與 20MA 同步上彎且站上 20MA
     if data['收盤價'] >= data['20MA'] and is_5ma_up and is_20ma_up:
         sc += 4
         rs.append("🚀 雙均線扣低上彎 (5MA與20MA同步翻揚，波段爆發力極強)")
@@ -718,7 +717,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
         else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
 
-    # 🚨 高檔誘多警報 (置頂顯示)
+    # 🚨 新增：高檔誘多警報 (於解析區塊置頂顯示)
     is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
     has_buy_trigger = data.get('紅吞') or data.get('雙扣底') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
     if is_extreme_high and has_buy_trigger:
@@ -795,10 +794,13 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     text_c = "#333" if is_light_mode else "#ccc"
     
+    # 🚀 將 K線圖的 name 修改為空字串或更簡潔的名稱，減少 Hover 衝突
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
+    
+    # 🚀 強制綁定 hovertemplate 到均線，確保不管游標移到哪，數值都會被統一捕捉
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新報價: {latest_price:.2f} ",
@@ -834,11 +836,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
-                re_y.append(t_low * 0.98) 
+                re_y.append(t_low * 0.94) 
                 re_text.append("<b>吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
-                be_y.append(t_high * 1.02) 
+                be_y.append(t_high * 1.04) 
                 be_text.append("<b>吞</b>")
             
             total_range = t_high - t_low
@@ -853,11 +855,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
-                sup_y.append(t_low * 0.96) 
+                sup_y.append(t_low * 0.90) 
                 sup_text.append("<b>撐</b>")
             if is_resistance_rejection:
                 res_x.append(date.strftime('%Y-%m-%d'))
-                res_y.append(t_high * 1.04) 
+                res_y.append(t_high * 1.08) 
                 res_text.append("<b>壓</b>")
 
             if pos >= 5:
@@ -884,31 +886,32 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 is_double_up_curr = curr_5_up and curr_20_up
                 is_double_up_prev = prev_5_up and prev_20_up
                 
-                # 🚀 只有發生轉折的第一天才畫圖，雙扣底顯示 🚀，單純 5MA 上彎顯示 ↗️
+                # 🚀 將 ↗️ 往下推移至 0.85，避開 K 線主體，且與買點錯開
                 if is_double_up_curr and not is_double_up_prev:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.94) 
-                    deduct_up_text.append("<b>↗️</b>")
+                    deduct_up_y.append(t_low * 0.85) 
+                    deduct_up_text.append("<b>🚀</b>")
                 elif curr_5_up and not prev_5_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.94) 
+                    deduct_up_y.append(t_low * 0.85) 
                     deduct_up_text.append("<b>↗️</b>")
                 
+                # 🚀 將 ↘️ 往上推移至 1.15，避開 K 線主體
                 if curr_down_5 and not prev_down_5:
                     deduct_down_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_down_y.append(t_high * 1.06)
+                    deduct_down_y.append(t_high * 1.15)
                     deduct_down_text.append("<b>↘️</b>")
 
     if show_signals:
-        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=12), name="紅吞", hoverinfo='skip'), row=1, col=1)
-        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=12), name="黑吞", hoverinfo='skip'), row=1, col=1)
-        if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), name="回測有撐", hoverinfo='skip'), row=1, col=1)
-        if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=12), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
-        if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=12), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
-        if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=12), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
+        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
+        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞", hoverinfo='skip'), row=1, col=1)
+        if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
+        if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
+        if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
+        if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
-        buy_x, buy_y = [], []
+        buy_x, buy_y, buy_text = [], [], []
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -917,23 +920,26 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.92)
+                    buy_y.append(df_view['Low'].iloc[i] * 0.90) 
+                    buy_text.append("買")
         if buy_x:
-            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#0066cc' if is_light_mode else '#00ffcc'), name="買進訊號", hoverinfo='x'), row=1, col=1)
+            # 🚀 加回「買」字，並且確保它的 Y 軸位置 (0.90) 與 ↗️ (0.85) 錯開，維持層次感
+            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL", hovertemplate="%{y:,.0f}"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K", hovertemplate="%{y:.2f}"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D", hovertemplate="%{y:.2f}"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J", hovertemplate="%{y:.2f}"), row=4, col=1)
 
     fig.update_xaxes(type='category', nticks=15, fixedrange=True, showgrid=True, gridcolor=grid_c)
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     
-    fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', dragmode=False, showlegend=False)
+    # 🚀 Hovermode 關鍵修正：確保 x unified 能正確抓到 Candlestick 與 Scatter 的疊層資料
+    fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', hoverlabel=dict(bgcolor=bg_c, font_size=13, font_color=text_c), dragmode=False, showlegend=False)
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / WantGoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
@@ -1146,7 +1152,6 @@ if st.session_state.page == "home":
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
-        # 🚀 計算多方保護符號數量，建立「最強趨勢三維排序法」
         df_results['Bullish_Count'] = df_results.apply(
             lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
                       (1 if r.get('回測有撐') else 0) + 
@@ -1162,14 +1167,14 @@ if st.session_state.page == "home":
             )
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (精選強勢動能)")
+            st.markdown("##### 🎯 尋找買點榜單 (最強趨勢優先排序)")
             
-            # 🚀 終極精煉濾網：除了分數達標，還要具備「強勢動能」或「量價齊揚」才准上榜！
+            # 🚀 終極精煉濾網：剔除假裝站上 5MA 的騙線股，要求乖離 > 0.5% 或 帶量大漲
             strong_momentum_filter = (
                 (df_results['Score'] >= 2) & 
                 (
-                    ((df_results['收盤價'] - df_results['5MA']) / df_results['5MA'] > 0.005) |  # 乖離 5MA 超過 0.5% (明顯發散)
-                    ((df_results['漲跌幅'] >= 1.5) & (df_results['成交量'] > df_results['5日均量']))   # 漲幅 > 1.5% 且帶量
+                    ((df_results['收盤價'] - df_results['5MA']) / df_results['5MA'] > 0.005) | 
+                    ((df_results['漲跌幅'] >= 1.5) & (df_results['成交量'] > df_results['5日均量'])) 
                 )
             )
             
