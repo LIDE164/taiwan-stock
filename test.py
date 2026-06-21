@@ -1064,7 +1064,9 @@ if st.session_state.page == "home":
             df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
+        # 🚀 核心升級：不僅存 ticker，連整包運算好的 dataframe 一起存入記憶體！
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
+        st.session_state.nav_pool_data = df_disp.to_dict('records') # 將 DataFrame 轉成 dict 存起來
             
         for _, r in df_disp.iterrows():
             p_val = r['漲跌']
@@ -1259,9 +1261,32 @@ elif st.session_state.page == "analysis":
             st.markdown(f'''<div style="text-align: center; font-size: 1.15rem; font-weight: bold; background-color: {bg_col}; border: 1px solid {border_col}; padding: 8px; border-radius: 6px; color: #ffcc00 !important; margin-bottom: 12px;">{active_title}</div>''', unsafe_allow_html=True)
             
             if n_pool:
+                # 取得記憶體中完整的資料字典
+                nav_data = st.session_state.get('nav_pool_data', [])
+                
                 for stock_id in n_pool:
                     is_current = (stock_id == target)
-                    btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
+                    
+                    # 嘗試從存下的字典中找出這支股票的完整資訊
+                    stock_info = next((item for item in nav_data if item["ticker_raw"] == stock_id), None)
+                    
+                    if stock_info:
+                        p_val = stock_info['漲跌']
+                        sign = "+" if p_val > 0 else ""
+                        trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+                        s_score = stock_info['Score']
+                        score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+                        p_tag = "🔥紅吞" if stock_info.get('紅吞') else ("🩸黑吞" if stock_info.get('黑吞') else ("📈近期紅吞" if stock_info.get('近七日紅吞') else ""))
+                        shadow_tag = " 📌回測有撐" if stock_info.get('回測有撐') else (" ⚠️反彈遇壓" if stock_info.get('反彈遇壓') else "")
+                        tag_display = f" | {p_tag}{shadow_tag}".strip()
+                        if tag_display == "|": tag_display = ""
+                        
+                        btn_prefix = "⭐ " if is_current else "▪️ "
+                        # 將與首頁完全一致的標籤組合起來
+                        btn_label = f"{btn_prefix}{stock_info['代號']} {stock_info['名稱']} {trend_icon}{stock_info['收盤價']}({sign}{stock_info['漲跌幅']}%) | {score_icon}{tag_display}"
+                    else:
+                        # 萬一沒有抓到詳細資料的防呆顯示
+                        btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
                     
                     if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
                         st.session_state.current_stock = stock_id
