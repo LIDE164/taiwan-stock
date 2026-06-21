@@ -15,7 +15,6 @@ from bs4 import BeautifulSoup
 import re
 import concurrent.futures
 
-# 🚀 引入自動更新套件
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
@@ -114,12 +113,10 @@ if "search_error" in st.session_state and st.session_state.search_error:
 
 st.sidebar.divider()
 
-# 🚀 加入盤中自動更新開關
 st.sidebar.title("⏱️ 盤中即時跳動雷達")
 auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False)
 
 if auto_refresh:
-    # 啟動背景計時器，每 30,000 毫秒 (30秒) 自動重整一次畫面，不限制次數
     st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
     st.sidebar.success("⚡ 盤中高頻探測已啟動！")
 
@@ -468,6 +465,7 @@ def get_global_macro_data():
     except:
         return {"^SOX": {"price": 0, "pct": 0}, "^VIX": {"price": 0, "pct": 0}, "JPY=X": {"price": 0, "pct": 0}}
 
+# 🚀 核心修正 1：移除法人籌碼的直接加扣分，維持首頁掃描與細節頁面分數絕對一致！
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -484,10 +482,11 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
+    # 僅作文字提醒，不干擾分數，確保外外榜單分數與內頁一致
     if inst_data and len(inst_data) >= 3:
         net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: sc+=2; rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: sc-=2; rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
@@ -498,7 +497,6 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
     if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
     
-    # 🚀 寫入影片傳授的「K線影線支撐/壓力」判斷邏輯
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
 
@@ -520,17 +518,14 @@ def analyze_today(df, ticker_number, inst_data=None):
         is_black_engulfing = bool(black_mask.iloc[-1])
         recent_7_red = bool(red_mask.tail(7).any())
         
-        # 🚀 影片實戰邏輯：影線計算
         total_range = t_high - t_low
         if total_range == 0: total_range = 0.001
         upper_shadow = t_high - max(t_open, t_close)
         lower_shadow = min(t_open, t_close) - t_low
         body = abs(t_close - t_open)
 
-        # 1. 回測有撐 (對應影片中突破後拉回測試支撐留長下影線)
         is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
-
-        # 2. 反彈遇壓 (對應影片中跌破後反彈測均線留長上影線)
+        
         ma_resistance = min(t['5MA'], t['10MA']) 
         is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
 
@@ -623,15 +618,10 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
     return analysis_bullets, v_t, v_c, v_a
 
+# 🚀 核心修正 2：在專業K線圖中，精準標出 [撐] 與 [壓] 訊號
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
-    prev_open = df['Open'].shift(1)
-    prev_close = df['Close'].shift(1)
-    red_mask = (prev_open > prev_close) & (df['Close'] > df['Open']) & (df['Close'] > prev_open) & (df['Open'] < prev_close)
-    black_mask = (prev_close > prev_open) & (df['Open'] > df['Close']) & (df['Open'] > prev_close) & (df['Close'] < prev_open)
-    
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
-    last_row = df_view.iloc[-1]
     x_vals = df_view.index.strftime('%Y-%m-%d')
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.45, 0.15, 0.15, 0.25], vertical_spacing=0.06)
     line_k, line_d, line_j = ("#0066cc", "#ff9900", "#9900cc") if is_light_mode else ("white", "yellow", "magenta")
@@ -657,20 +647,66 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     re_x, re_y, re_text = [], [], []
     be_x, be_y, be_text = [], [], []
+    sup_x, sup_y, sup_text = [], [], []
+    res_x, res_y, res_text = [], [], []
+    
+    start_pos = len(df) - len(df_view)
+    
     for i, date in enumerate(df_view.index):
-        if red_mask.loc[date]:
-            re_x.append(date.strftime('%Y-%m-%d'))
-            re_y.append(df_view['Low'].iloc[i] * 0.94) 
-            re_text.append("<b>紅</b>")
-        if black_mask.loc[date]:
-            be_x.append(date.strftime('%Y-%m-%d'))
-            be_y.append(df_view['High'].iloc[i] * 1.04) 
-            be_text.append("<b>黑</b>")
+        pos = start_pos + i
+        if pos >= 1:
+            t = df.iloc[pos]
+            p = df.iloc[pos-1]
             
+            t_open, t_close, t_high, t_low = t['Open'], t['Close'], t['High'], t['Low']
+            p_open, p_close = p['Open'], p['Close']
+            
+            # 紅吞黑吞計算
+            is_red = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
+            is_black = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
+            
+            if is_red:
+                re_x.append(date.strftime('%Y-%m-%d'))
+                re_y.append(t_low * 0.94) 
+                re_text.append("<b>紅</b>")
+            if is_black:
+                be_x.append(date.strftime('%Y-%m-%d'))
+                be_y.append(t_high * 1.04) 
+                be_text.append("<b>黑</b>")
+            
+            # 影線撐壓計算
+            total_range = t_high - t_low
+            if total_range == 0: total_range = 0.001
+            upper_shadow = t_high - max(t_open, t_close)
+            lower_shadow = min(t_open, t_close) - t_low
+            body = abs(t_close - t_open)
+
+            is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
+            
+            ma_resistance = min(t['5MA'], t['10MA']) 
+            is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
+
+            if is_support_pullback:
+                sup_x.append(date.strftime('%Y-%m-%d'))
+                sup_y.append(t_low * 0.90) # 刻意設定比紅吞更低，避免文字重疊
+                sup_text.append("<b>[撐]</b>")
+            if is_resistance_rejection:
+                res_x.append(date.strftime('%Y-%m-%d'))
+                res_y.append(t_high * 1.08) # 刻意設定比黑吞更高，避免文字重疊
+                res_text.append("<b>[壓]</b>")
+
     if re_x:
         fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=14), name="紅吞", hoverinfo='skip'), row=1, col=1)
     if be_x:
         fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=14), name="黑吞", hoverinfo='skip'), row=1, col=1)
+    
+    # 畫出 [撐] 與 [壓]
+    if sup_x:
+        sup_c = "#ff9900" if is_light_mode else "#ffcc00"
+        fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color=sup_c, size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
+    if res_x:
+        res_c = "#0066cc" if is_light_mode else "#00ccff"
+        fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color=res_c, size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
@@ -844,7 +880,7 @@ if st.session_state.page == "home":
     
     scan_results = []
     
-    # 🚀 核心修正：將掃描池強制綁定為 Top 100 + 自選股，確保一檔都不會漏掉！
+    # 🚀 確保名單絕對完整，不錯漏任何標的
     top_100_pool = fetch_twse_top_100()
     pool = list(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
@@ -879,17 +915,19 @@ if st.session_state.page == "home":
         
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 📊 近五日成交量排行榜")
+            # 這裡還是保留前20名，不然整個台股成交量會洗版
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
             
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
+            # 🚀 完整顯示所有出現紅吞的標的，不再截斷
             df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: 
                 st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
                 
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (已掛載動能、量能與型態四重濾網)")
-            # 🚀 核心修正：取消 .head(20) 限制，只要符合 2 分以上的標的「全數顯示」！
+            # 🚀 完整顯示所有 2 分 (A級) 以上的標的，不再截斷
             df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
