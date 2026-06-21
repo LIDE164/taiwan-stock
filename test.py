@@ -308,15 +308,11 @@ def get_twii_quote():
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     fallback_curr, fallback_change = 0, 0
     try:
-        # 強制撈 1mo 歷史，保證找到最後收盤日期
         df = yf.Ticker("^TWII").history(period="1mo").dropna(subset=['Close'])
         if not df.empty and len(df) >= 2:
             fallback_curr = float(df['Close'].iloc[-1])
             fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
-            # 把最後K線日期先備著
-            update_time_str = df.index[-1].strftime('%Y/%m/%d 13:30:00')
     except: pass
-    
     try:
         session = requests.Session()
         session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
@@ -337,6 +333,7 @@ def get_twii_quote():
     if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
     return 0, 0, "無資料"
 
+# 🚀 終極防彈快取機制：HiStock 嗨投資 -> 玩股網 -> Yahoo HTML -> yfinance
 FUTURES_CACHE_FILE = "wtx_cache.json"
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -346,48 +343,61 @@ def get_futures_quote():
     success = False
     curr, prev = 0.0, 0.0
     
-    # 防線 1: 玩股網 API
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.wantgoo.com/'}
-        res = requests.get("https://www.wantgoo.com/global/api/quotes/wtmf", headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            curr = float(data.get('lastPrice', 0))
-            prev = float(data.get('previousClose', 0))
-            if prev == 0 and data.get('change'): 
-                prev = curr - float(data['change'])
-            if curr > 10000:
-                success = True
-    except: pass
-
-    # 防線 2: 鉅亨網 TX00
+    # 防線 1: HiStock 嗨投資 (傳統網頁，最抗跌)
     if not success:
         try:
-            res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TX00:FUTURES/quote", timeout=3)
-            if res.status_code == 200:
-                q = res.json()['data']['quote']
-                curr = float(q['23'])
-                prev = float(q['24'])
-                ts = int(q['20'])
-                dt_str = datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
+            res = requests.get("https://histock.tw/index/FITX", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            curr_tag = soup.find(id="Price1_lbTPrice")
+            prev_tag = soup.find(id="Price1_lbYPrice")
+            if curr_tag and prev_tag:
+                curr = float(curr_tag.text.replace(',', ''))
+                prev = float(prev_tag.text.replace(',', ''))
                 if curr > 10000:
                     success = True
         except: pass
 
-    # 防線 3: Yahoo Finance 隱藏 API
+    # 防線 2: Yahoo 奇摩股市 HTML 暴力解析 (JSON)
     if not success:
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
-            res = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/FITXAMP?interval=1d&range=1d", headers=headers, timeout=3)
-            if res.status_code == 200:
-                meta = res.json()['chart']['result'][0]['meta']
-                curr = float(meta['regularMarketPrice'])
-                prev = float(meta['chartPreviousClose'])
+            res = requests.get("https://tw.stock.yahoo.com/quote/FITXAMP", headers=headers, timeout=3)
+            curr_m = re.search(r'"regularMarketPrice"\s*:\s*(?:\{[^}]*"raw"\s*:\s*)?([\d\.]+)', res.text)
+            prev_m = re.search(r'"regularMarketPreviousClose"\s*:\s*(?:\{[^}]*"raw"\s*:\s*)?([\d\.]+)', res.text)
+            if curr_m and prev_m:
+                curr = float(curr_m.group(1))
+                prev = float(prev_m.group(1))
                 if curr > 10000:
                     success = True
         except: pass
 
-    # 若抓取成功，將數值寫入「永久記憶體 (快取檔)」
+    # 防線 3: 玩股網 API
+    if not success:
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.wantgoo.com/', 'X-Requested-With': 'XMLHttpRequest'}
+            res = requests.get("https://www.wantgoo.com/global/api/quotes/wtmf", headers=headers, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                curr = float(data.get('lastPrice', 0))
+                prev = float(data.get('previousClose', 0))
+                if prev == 0 and data.get('change'): 
+                    prev = curr - float(data['change'])
+                if curr > 10000:
+                    success = True
+        except: pass
+
+    # 防線 4: yfinance WTX=F history
+    if not success:
+        try:
+            df = yf.Ticker("WTX=F").history(period="1mo").dropna(subset=['Close'])
+            if not df.empty and len(df) >= 2:
+                df = df.sort_index(ascending=True)
+                curr = float(df['Close'].iloc[-1])
+                prev = float(df['Close'].iloc[-2])
+                if curr > 10000:
+                    success = True
+        except: pass
+
     if success:
         try:
             with open(FUTURES_CACHE_FILE, "w", encoding="utf-8") as f:
@@ -395,7 +405,6 @@ def get_futures_quote():
         except: pass
         return curr, curr - prev, prev, dt_str
     else:
-        # 若所有 API 全數陣亡 (休市或斷線)，讀取記憶體最後一筆資料
         try:
             if os.path.exists(FUTURES_CACHE_FILE):
                 with open(FUTURES_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -444,8 +453,6 @@ def get_stock_data(ticker_number):
 
     df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
     if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
-    
-    # 🚨 就是這裡！將原本打錯的 && 改成了正港的 and 
     if df is None and base_ticker != "^TWII": df = fetch_clean(base_ticker)
     
     if df is None: return None
@@ -568,7 +575,6 @@ def get_global_macro_data():
         except: pass
         return data
     else:
-        # 若抓取全失敗，調用快取
         try:
             if os.path.exists(MACRO_CACHE_FILE):
                 with open(MACRO_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -943,8 +949,9 @@ def render_index_board():
                 if wtx_close > 0:
                     st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {wtx_color}; margin: 0;'>{wtx_close:,.0f}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {wtx_color};'>{'↑' if wtx_change > 0 else '↓'} {abs(wtx_change):.0f}</div>", unsafe_allow_html=True)
-                    wtx_url = "https://www.wantgoo.com/global/wtmf"
-                    st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: #888; margin-top:2px;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取: {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='{wtx_url}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: WantGoo 玩股網</a></div>", unsafe_allow_html=True)
+                    
+                    wtx_url = "https://tw.stock.yahoo.com/quote/FITXAMP"
+                    st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: #888; margin-top:2px;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取: {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='{wtx_url}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo 股市 / HiStock</a></div>", unsafe_allow_html=True)
                 else:
                     st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top:15px;'>暫無報價</div>", unsafe_allow_html=True)
             with col3:
@@ -997,8 +1004,7 @@ def render_index_board():
             wtx_diff_color = "#ff3333" if diff >= 0 else "#00cc00"
             wtx_diff_text = f"{'+' if diff>0 else ''}{diff:.0f}點 (逆/正價差)"
         with mc4.container(border=True):
-            wtx_url = "https://www.wantgoo.com/global/wtmf"
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期夜盤動態</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{wtx_diff_color};'>{wtx_close:,.0f}<br>{wtx_diff_text}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='{wtx_url}' target='_blank' style='color:#888; text-decoration:none;'>🔗 WantGoo 玩股網</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期夜盤動態</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{wtx_diff_color};'>{wtx_close:,.0f}<br>{wtx_diff_text}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='https://tw.stock.yahoo.com/quote/FITXAMP' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo 股市</a></div>", unsafe_allow_html=True)
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
@@ -1241,8 +1247,13 @@ elif st.session_state.page == "analysis":
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
 
+        # 🚀 右側雷達快捷側邊選單：名稱對齊優化
         with col_right_menu:
-            mode_titles = {"buy": "🎯 綜合買點榜", "red_engulf": "🔥 紅吞反轉榜", "recent": "📊 成交量排行榜"}
+            mode_titles = {
+                "buy": "✅ 綜合買點榜", 
+                "red_engulf": "🔥 紅吞反轉榜", 
+                "recent": "📊 近五日成交量"
+            }
             active_title = mode_titles.get(st.session_state.scan_mode, "📋 當前雷達清單")
             
             st.markdown(f'''<div style="text-align: center; font-size: 1.15rem; font-weight: bold; background-color: {bg_col}; border: 1px solid {border_col}; padding: 8px; border-radius: 6px; color: #ffcc00 !important; margin-bottom: 12px;">{active_title}</div>''', unsafe_allow_html=True)
