@@ -620,6 +620,12 @@ def get_decision_score(data, fund_data, inst_data=None):
     
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
+    
+    # 🚀 新增：均線扣底預測加扣分
+    if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'): 
+        sc += 2; rs.append("🔥 月線扣低值 (均線準備上彎發散，波段保護力強)")
+    if data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'): 
+        sc -= 2; rs.append("⚠️ 月線扣高值 (均線即將下彎產生蓋頭壓力)")
 
     return sc, rs
 
@@ -648,10 +654,18 @@ def analyze_today(df, ticker_number, inst_data=None):
         is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
         ma_resistance = min(t['5MA'], t['10MA']) 
         is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
-
     except:
         is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
         is_support_pullback, is_resistance_rejection = False, False
+        
+    # 🚀 新增：計算扣底預測 (Deduction)
+    try:
+        ma20_deduction_tmr = float(df['Close'].iloc[-20]) if len(df) >= 20 else float(t_close)
+        ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
+        is_ma20_turning_up = t_close > ma20_deduction_tmr
+        is_ma60_turning_up = t_close > ma60_deduction_tmr
+    except:
+        is_ma20_turning_up, is_ma60_turning_up = False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -668,11 +682,16 @@ def analyze_today(df, ticker_number, inst_data=None):
         "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
         "近七日紅吞": recent_7_red,
         "回測有撐": is_support_pullback,
-        "反彈遇壓": is_resistance_rejection
+        "反彈遇壓": is_resistance_rejection,
+        "月線即將上彎": is_ma20_turning_up,
+        "季線即將上彎": is_ma60_turning_up
     }
+    
     sc, rs = get_decision_score(data, fund, inst_data)
     data['Score'] = sc
     data['Reasons'] = rs
+    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
+    
     return data
 
 def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
@@ -707,6 +726,12 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
 
     if data['BIAS'] < -5: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
+
+    # 🚀 新增：解析頁面中的扣底預測文字解讀
+    if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'):
+        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來月線即將扣低值，均線將持續翻揚向上，提供強大波段保護力。</span>")
+    elif data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'):
+        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來月線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應優先減碼。</b></span>")
 
     if data['成交量'] > data['5日均量'] * 1.1 and data.get('漲跌',0) > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
     elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
@@ -1079,8 +1104,13 @@ if st.session_state.page == "home":
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
             p_tag = "🔥紅吞" if r.get('紅吞') else ("🩸黑吞" if r.get('黑吞') else ("📈近期紅吞" if r.get('近七日紅吞') else ""))
             shadow_tag = " 📌回測有撐" if r.get('回測有撐') else (" ⚠️反彈遇壓" if r.get('反彈遇壓') else "")
-            tag_display = f" | {p_tag}{shadow_tag}".strip()
-            if tag_display == "|": tag_display = ""
+            
+            # 🚀 新增：將扣底狀態加入網頁版榜單顯示
+            deduct_tag = " ↗️扣低上彎" if r.get('月線即將上彎') else " ↘️扣高下彎"
+            
+            tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
+            if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
+            if tag_display: tag_display = f" | {tag_display}"
             
             button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
