@@ -336,20 +336,22 @@ def get_twii_quote():
     if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
     return 0, 0, "無資料"
 
-# 🚀 核心升級：抓取台指期貨（夜盤）報價
+# 🚀 核心升級：抓取台指期貨（含精準時間戳與昨日收盤紀錄）
 @st.cache_data(ttl=5, show_spinner=False)
 def get_futures_quote():
+    tz_tpe = timezone(timedelta(hours=8))
+    fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     try:
         df = yf.Ticker("WTX=F").history(period="5d")
         if not df.empty and len(df) >= 2:
             curr = float(df['Close'].iloc[-1])
             prev = float(df['Close'].iloc[-2])
-            return curr, curr - prev
+            return curr, curr - prev, prev, fetch_time
         elif not df.empty and len(df) == 1:
             curr = float(df['Close'].iloc[0])
-            return curr, 0
+            return curr, 0, curr, fetch_time
     except: pass
-    return 0, 0
+    return 0, 0, 0, fetch_time
 
 @st.cache_data(ttl=5, show_spinner=False)
 def get_stock_live_time(ticker):
@@ -646,7 +648,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
-                  annotation_text=f" 🎯 最新收盤價: {latest_price:.2f} ",
+                  annotation_text=f" 🎯 最新報價: {latest_price:.2f} ",
                   annotation_position="top right",
                   annotation_font=dict(color="#ffcc00", size=15, weight="bold"))
     
@@ -739,7 +741,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-# 🚀 核心預測修正：掛載台指期夜盤即時價差運算
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     macro_data = get_global_macro_data()
     if twii_df is None or len(twii_df) < 2: 
@@ -805,8 +806,7 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     if jpy_pct < -0.8: risk_score += 15 
     elif jpy_pct > 0.5: risk_score -= 5
     
-    # 🚀 掛載台指期夜盤風險修正
-    wtx_close, _ = get_futures_quote()
+    wtx_close, _, _, _ = get_futures_quote()
     night_diff_text = ""
     if wtx_close > 0 and t_close > 0:
         night_diff = wtx_close - t_close
@@ -836,36 +836,35 @@ def render_index_board():
         twii_close, twii_change, twii_time_str = get_twii_quote()
         twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
         
-        # 🚀 取得台指期最新報價
-        wtx_close, wtx_change = get_futures_quote()
+        wtx_close, wtx_change, wtx_prev, wtx_time_str = get_futures_quote()
         wtx_color = '#ff3333' if wtx_change >= 0 else '#00cc00'
         
         twii_df_for_pred = get_stock_data("^TWII")
         today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = predict_tomorrow_open(twii_df_for_pred, twii_time_str)
         
         with st.container(border=True):
-            # 🚀 更新為三欄式頂級儀表板
             col1, col2, col3 = st.columns([1, 1, 1.5])
             with col1:
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}</div>", unsafe_allow_html=True)
             with col2:
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台指期貨 (含夜盤) 🌙</div>", unsafe_allow_html=True)
                 if wtx_close > 0:
                     st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {wtx_color}; margin: 0;'>{wtx_close:,.0f}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {wtx_color};'>{'↑' if wtx_change > 0 else '↓'} {abs(wtx_change):.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取時間: {wtx_time_str}</div>", unsafe_allow_html=True)
                 else:
                     st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top:15px;'>暫無報價</div>", unsafe_allow_html=True)
             with col3:
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析 <span style='font-size:0.75rem; color:#888; font-weight:normal;'>(抓取時間: {twii_time_str})</span></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 今日盤勢分析</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
             
-            # 手動更新按鈕置底
             if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
         
         st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
@@ -1047,8 +1046,11 @@ elif st.session_state.page == "analysis":
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
+        
+        # 🚀 顯示最新報價，並追加昨日收盤的對照
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 10px;'>📊 檢視日期與時間: [{display_time}]</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1rem; margin-top: 5px;'>昨日收盤: {data['昨日收盤價']} | 最新報價: {data['收盤價']}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 即時抓取時間: {display_time}</div>", unsafe_allow_html=True)
         
         _, up_c, _ = st.columns([1, 2, 1])
         if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
