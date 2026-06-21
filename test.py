@@ -333,31 +333,56 @@ def get_twii_quote():
     if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
     return 0, 0, "無資料"
 
-# 🚀 終極防彈修復：直連 Yahoo 隱藏底層 API，保證任何時候都抓得到台指期夜盤
+# 🚀 終極修復：導入鉅亨網原生 API，無縫接軌夜盤資料
 @st.cache_data(ttl=5, show_spinner=False)
 def get_futures_quote():
     tz_tpe = timezone(timedelta(hours=8))
     fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    # 戰術 1：直通 Yahoo Finance 隱藏 API (最強最穩)
+    # 防線 1：鉅亨網台指期連續合約 API (最穩定的夜盤來源)
+    try:
+        res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TX00:FUTURES/quote", timeout=3)
+        if res.status_code == 200:
+            q = res.json()['data']['quote']
+            curr = float(q['23'])
+            prev = float(q['24']) 
+            if curr > 10000:
+                return curr, curr - prev, prev, fetch_time
+    except: pass
+    
+    # 防線 2：鉅亨網期貨指數 API
+    try:
+        res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TXFI:INDEX/quote", timeout=3)
+        if res.status_code == 200:
+            q = res.json()['data']['quote']
+            curr = float(q['23'])
+            prev = float(q['24']) 
+            if curr > 10000:
+                return curr, curr - prev, prev, fetch_time
+    except: pass
+
+    # 防線 3：Yahoo TW HTML 暴力正則解析 (無視網頁改版)
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/WTX=F?interval=1d", headers=headers, timeout=3)
+        res = requests.get("https://tw.stock.yahoo.com/quote/FITXAMP", headers=headers, timeout=3)
+        curr_m = re.search(r'"regularMarketPrice"\s*:\s*(?:\{"raw"\s*:\s*)?"?([\d\.]+)', res.text)
+        prev_m = re.search(r'"regularMarketPreviousClose"\s*:\s*(?:\{"raw"\s*:\s*)?"?([\d\.]+)', res.text)
+        if curr_m and prev_m:
+            curr = float(curr_m.group(1))
+            prev = float(prev_m.group(1))
+            if curr > 10000:
+                return curr, curr - prev, prev, fetch_time
+    except: pass
+
+    # 防線 4：Yahoo Finance Query1 API
+    try:
+        res = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/WTX=F?interval=1d", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
         if res.status_code == 200:
             meta = res.json()['chart']['result'][0]['meta']
             curr = float(meta['regularMarketPrice'])
             prev = float(meta['chartPreviousClose'])
             if curr > 10000:
                 return curr, curr - prev, prev, fetch_time
-    except: pass
-
-    # 戰術 2：yfinance fast_info (即時光速引擎)
-    try:
-        tk = yf.Ticker("WTX=F")
-        curr = float(tk.fast_info.last_price)
-        prev = float(tk.fast_info.previous_close)
-        if curr > 10000:
-            return curr, curr - prev, prev, fetch_time
     except: pass
     
     return 0, 0, 0, fetch_time
@@ -475,7 +500,6 @@ def get_institutional_trading(ticker):
     except: pass
     return []
 
-# 🚀 終極修復：確保每個指數都透過 API 抓出精準時間與連結，並防呆避免當機
 @st.cache_data(ttl=600, show_spinner=False)
 def get_global_macro_data():
     tz_tpe = timezone(timedelta(hours=8))
@@ -579,7 +603,7 @@ def analyze_today(df, ticker_number, inst_data=None):
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
-        "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
+        "涨跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
         "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
@@ -631,7 +655,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['BIAS'] < -5: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
-    if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
+    if data['成交量'] > data['5日均量'] * 1.1 and data.get('漲跌',0) > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
     elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
         
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
@@ -770,6 +794,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes / Yahoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
+# 🚀 終極精準修正：強制綁死台灣證交所傳回的最後報價時間
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     macro_data = get_global_macro_data()
     if twii_df is None or len(twii_df) < 2: 
@@ -778,9 +803,17 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
     tz_tpe = timezone(timedelta(hours=8))
     
-    real_last_date = twii_df.index[-1]
-    last_dt_str = real_last_date.strftime('%Y/%m/%d')
-    next_dt = real_last_date + timedelta(days=1)
+    # 絕對鎖定大盤K線裡的「最後一個真實交易日」，優先採信官方 API 給的時間
+    if twii_time_str and "/" in twii_time_str:
+        try:
+            last_dt = datetime.strptime(twii_time_str.split(" ")[0], '%Y/%m/%d')
+        except:
+            last_dt = twii_df.index[-1]
+    else:
+        last_dt = twii_df.index[-1]
+        
+    last_dt_str = last_dt.strftime('%Y/%m/%d')
+    next_dt = last_dt + timedelta(days=1)
     
     TW_MARKET_HOLIDAYS = {
         "2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", 
@@ -880,8 +913,9 @@ def render_index_board():
                     st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {wtx_color}; margin: 0;'>{wtx_close:,.0f}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {wtx_color};'>{'↑' if wtx_change > 0 else '↓'} {abs(wtx_change):.0f}</div>", unsafe_allow_html=True)
                     
-                    wtx_url = "https://finance.yahoo.com/quote/WTX=F"
-                    st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: #888; margin-top:2px;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取時間: {wtx_time_str[5:16]}<br><a href='{wtx_url}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo Finance</a></div>", unsafe_allow_html=True)
+                    # 🚀 修復連結並確保不當機
+                    wtx_url = "https://ws.cnyes.com/charting/api/v1/TWS:TX00:FUTURES/quote"
+                    st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: #888; margin-top:2px;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取時間: {wtx_time_str[-8:]}</div>", unsafe_allow_html=True)
                 else:
                     st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top:15px;'>暫無報價</div>", unsafe_allow_html=True)
             with col3:
@@ -909,29 +943,29 @@ def render_index_board():
         mc1, mc2, mc3, mc4 = st.columns(4)
         
         sox_data = macro.get('^SOX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^SOX"})
-        sox_p = sox_data['pct']
+        sox_p = sox_data.get('pct', 0)
         sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
         with mc1.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div>"
-                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data['price']:,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div>"
-                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data['time']}<br><a href='{sox_data['url']}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data.get('price', 0):,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div>"
+                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data.get('time', '無')}<br><a href='{sox_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
         
         vix_data = macro.get('^VIX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^VIX"})
-        vix_p = vix_data['pct']
+        vix_p = vix_data.get('pct', 0)
         vix_c = "#00cc00" if vix_p <= 0 else "#ff3333"
         with mc2.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div>"
-                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data['price']:,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div>"
-                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data['time']}<br><a href='{vix_data['url']}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div>"
+                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
         
         jpy_data = macro.get('JPY=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/JPY=X"})
-        jpy_p = jpy_data['pct']
+        jpy_p = jpy_data.get('pct', 0)
         jpy_c = "#ffcc00" 
         jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
         with mc3.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div>"
-                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data['price']:,.2f}<br>{jpy_status}</div>"
-                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data['time']}<br><a href='{jpy_data['url']}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+                        f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div>"
+                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
             
         wtx_diff_text = "無報價"
         wtx_diff_color = "#888"
@@ -943,7 +977,7 @@ def render_index_board():
         with mc4.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期夜盤動態</div>"
                         f"<div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{wtx_diff_color};'>{wtx_close:,.0f}<br>{wtx_diff_text}</div>"
-                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {wtx_time_str[5:16] if len(wtx_time_str) >= 16 else wtx_time_str}<br><a href='https://finance.yahoo.com/quote/WTX=F' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+                        f"<div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {wtx_time_str[-8:] if len(wtx_time_str) >= 8 else wtx_time_str}<br><a href='https://finance.yahoo.com/quote/WTX=F' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
 
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，請稍後再試或重整。(除錯訊息: {str(e)})")
