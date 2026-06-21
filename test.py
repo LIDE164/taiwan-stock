@@ -612,6 +612,7 @@ def get_decision_score(data, fund_data, inst_data=None):
     is_5ma_up = data.get('5日線即將上彎', False)
     is_20ma_up = data.get('月線即將上彎', False)
 
+    # 🚀 雙引擎判斷：5MA 與 20MA 同步上彎且站上 20MA
     if data['收盤價'] >= data['20MA'] and is_5ma_up and is_20ma_up:
         sc += 4
         rs.append("🚀 雙均線扣低上彎 (5MA與20MA同步翻揚，波段爆發力極強)")
@@ -717,7 +718,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
         else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
 
-    # 🚨 新增：高檔誘多警報 (於解析區塊置頂顯示)
+    # 🚨 高檔誘多警報 (置頂顯示)
     is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
     has_buy_trigger = data.get('紅吞') or data.get('雙扣底') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
     if is_extreme_high and has_buy_trigger:
@@ -833,11 +834,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
-                re_y.append(t_low * 0.94) 
+                re_y.append(t_low * 0.98) 
                 re_text.append("<b>吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
-                be_y.append(t_high * 1.04) 
+                be_y.append(t_high * 1.02) 
                 be_text.append("<b>吞</b>")
             
             total_range = t_high - t_low
@@ -852,11 +853,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
-                sup_y.append(t_low * 0.90) 
+                sup_y.append(t_low * 0.96) 
                 sup_text.append("<b>撐</b>")
             if is_resistance_rejection:
                 res_x.append(date.strftime('%Y-%m-%d'))
-                res_y.append(t_high * 1.08) 
+                res_y.append(t_high * 1.04) 
                 res_text.append("<b>壓</b>")
 
             if pos >= 5:
@@ -883,30 +884,31 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 is_double_up_curr = curr_5_up and curr_20_up
                 is_double_up_prev = prev_5_up and prev_20_up
                 
+                # 🚀 只有發生轉折的第一天才畫圖，雙扣底顯示 🚀，單純 5MA 上彎顯示 ↗️
                 if is_double_up_curr and not is_double_up_prev:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.92) 
-                    deduct_up_text.append("<b>🚀</b>")
+                    deduct_up_y.append(t_low * 0.94) 
+                    deduct_up_text.append("<b>↗️</b>")
                 elif curr_5_up and not prev_5_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.80) 
+                    deduct_up_y.append(t_low * 0.94) 
                     deduct_up_text.append("<b>↗️</b>")
                 
                 if curr_down_5 and not prev_down_5:
                     deduct_down_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_down_y.append(t_high * 1.12)
+                    deduct_down_y.append(t_high * 1.06)
                     deduct_down_text.append("<b>↘️</b>")
 
     if show_signals:
-        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
-        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞", hoverinfo='skip'), row=1, col=1)
-        if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
-        if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
-        if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
-        if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
+        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=12), name="紅吞", hoverinfo='skip'), row=1, col=1)
+        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=12), name="黑吞", hoverinfo='skip'), row=1, col=1)
+        if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), name="回測有撐", hoverinfo='skip'), row=1, col=1)
+        if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=12), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
+        if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=12), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
+        if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=12), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_text = [], [], []
+        buy_x, buy_y = [], []
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -915,10 +917,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.85) 
-                    buy_text.append("買")
+                    buy_y.append(df_view['Low'].iloc[i] * 0.92)
         if buy_x:
-            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='x'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#0066cc' if is_light_mode else '#00ffcc'), name="買進訊號", hoverinfo='x'), row=1, col=1)
             
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
@@ -1145,7 +1146,7 @@ if st.session_state.page == "home":
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
-        # 🚀 核心升級：計算多方保護符號數量，建立「最強趨勢三維排序法」
+        # 🚀 計算多方保護符號數量，建立「最強趨勢三維排序法」
         df_results['Bullish_Count'] = df_results.apply(
             lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
                       (1 if r.get('回測有撐') else 0) + 
@@ -1156,18 +1157,26 @@ if st.session_state.page == "home":
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
-            # 排序：優先 S 級 > 多方符號最多 > 當日漲幅最強
             df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             )
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (最強趨勢優先排序)")
-            # 排序：優先 S 級 > 多方符號最多 > 當日漲幅最強
-            df_disp = df_results[df_results['Score'] >= 2].sort_values(
+            st.markdown("##### 🎯 尋找買點榜單 (精選強勢動能)")
+            
+            # 🚀 終極精煉濾網：除了分數達標，還要具備「強勢動能」或「量價齊揚」才准上榜！
+            strong_momentum_filter = (
+                (df_results['Score'] >= 2) & 
+                (
+                    ((df_results['收盤價'] - df_results['5MA']) / df_results['5MA'] > 0.005) |  # 乖離 5MA 超過 0.5% (明顯發散)
+                    ((df_results['漲跌幅'] >= 1.5) & (df_results['成交量'] > df_results['5日均量']))   # 漲幅 > 1.5% 且帶量
+                )
+            )
+            
+            df_disp = df_results[strong_momentum_filter].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             )
-            if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
+            if df_disp.empty: st.info("目前雷達池內沒有符合強勢啟動條件的標的，建議耐心等待絕佳買點。")
             
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -1179,7 +1188,6 @@ if st.session_state.page == "home":
             s_score = r['Score']
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
             
-            # 🚀 動態陣列組合：確保每個符號之間都有完美的分隔線
             tags = []
             if r.get('紅吞'): tags.append("🔺吞")
             elif r.get('黑吞'): tags.append("🔻吞")
@@ -1405,7 +1413,6 @@ elif st.session_state.page == "analysis":
                         s_score = stock_info['Score']
                         score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
                         
-                        # 🚀 右側菜單：同步套用陣列分隔線邏輯
                         tags = []
                         if stock_info.get('紅吞'): tags.append("🔺吞")
                         elif stock_info.get('黑吞'): tags.append("🔻吞")
