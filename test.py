@@ -111,7 +111,7 @@ if "search_error" in st.session_state and st.session_state.search_error:
 st.sidebar.divider()
 
 st.sidebar.title("⏱️ 盤中即時跳動雷達")
-auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (朝 30 秒逼近)", False)
+auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False)
 
 if auto_refresh:
     st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
@@ -308,11 +308,15 @@ def get_twii_quote():
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     fallback_curr, fallback_change = 0, 0
     try:
+        # 強制撈 1mo 歷史，保證找到最後收盤日期
         df = yf.Ticker("^TWII").history(period="1mo").dropna(subset=['Close'])
         if not df.empty and len(df) >= 2:
             fallback_curr = float(df['Close'].iloc[-1])
             fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
+            # 把最後K線日期先備著
+            update_time_str = df.index[-1].strftime('%Y/%m/%d 13:30:00')
     except: pass
+    
     try:
         session = requests.Session()
         session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
@@ -342,6 +346,7 @@ def get_futures_quote():
     success = False
     curr, prev = 0.0, 0.0
     
+    # 防線 1: 玩股網 API
     try:
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.wantgoo.com/'}
         res = requests.get("https://www.wantgoo.com/global/api/quotes/wtmf", headers=headers, timeout=3)
@@ -355,6 +360,7 @@ def get_futures_quote():
                 success = True
     except: pass
 
+    # 防線 2: 鉅亨網 TX00
     if not success:
         try:
             res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TX00:FUTURES/quote", timeout=3)
@@ -368,6 +374,7 @@ def get_futures_quote():
                     success = True
         except: pass
 
+    # 防線 3: Yahoo Finance 隱藏 API
     if not success:
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -380,6 +387,7 @@ def get_futures_quote():
                     success = True
         except: pass
 
+    # 若抓取成功，將數值寫入「永久記憶體 (快取檔)」
     if success:
         try:
             with open(FUTURES_CACHE_FILE, "w", encoding="utf-8") as f:
@@ -387,6 +395,7 @@ def get_futures_quote():
         except: pass
         return curr, curr - prev, prev, dt_str
     else:
+        # 若所有 API 全數陣亡 (休市或斷線)，讀取記憶體最後一筆資料
         try:
             if os.path.exists(FUTURES_CACHE_FILE):
                 with open(FUTURES_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -435,7 +444,10 @@ def get_stock_data(ticker_number):
 
     df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
     if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
-    if df is None && base_ticker != "^TWII": df = fetch_clean(base_ticker)
+    
+    # 🚨 就是這裡！將原本打錯的 && 改成了正港的 and 
+    if df is None and base_ticker != "^TWII": df = fetch_clean(base_ticker)
+    
     if df is None: return None
     
     try:
@@ -545,7 +557,7 @@ def get_global_macro_data():
                         latest_time_str = time_str
                     continue
         except: pass
-        data[t] = {"price": 0, "pct": 0, "time": "無資料", "url": url}
+        data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
             
     data['global_time'] = latest_time_str
 
@@ -556,10 +568,12 @@ def get_global_macro_data():
         except: pass
         return data
     else:
+        # 若抓取全失敗，調用快取
         try:
             if os.path.exists(MACRO_CACHE_FILE):
                 with open(MACRO_CACHE_FILE, "r", encoding="utf-8") as f:
                     cache_data = json.load(f)
+                    cache_data['global_time'] = cache_data.get('global_time', '') + " (快取)"
                     return cache_data
         except: pass
 
@@ -821,7 +835,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', dragmode=False, showlegend=False)
-    fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes / Yahoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
+    fig.add_annotation(text="📊 資料來源: yfinance / TWSE / WantGoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
 def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
@@ -1044,7 +1058,6 @@ if st.session_state.page == "home":
             df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
-        # 🚀 核心優化 1：同步將排好序的清單緩存到 nav_pool 記憶體中，完美修復上一檔/下一檔功能
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
             
         for _, r in df_disp.iterrows():
@@ -1067,7 +1080,6 @@ elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
     
-    # 🚀 核心優化 2：精準對齊上下一檔的數據引擎
     n_pool = st.session_state.get('nav_pool', [])
     p_stk, n_stk = None, None
     if target in n_pool and len(n_pool) > 1:
@@ -1126,7 +1138,6 @@ elif st.session_state.page == "analysis":
         p_color = '#ff3333' if data['漲跌'] >= 0 else '#00cc00'
         analysis_date = df_slice.index[-1].strftime('%Y/%m/%d')
         
-        # 🚀 核心優化 3：分流側邊選單布局（左側主戰情版面 78%，右側清單選單 22%）
         col_main_view, col_right_menu = st.columns([3.9, 1.1])
         
         with col_main_view:
@@ -1230,7 +1241,6 @@ elif st.session_state.page == "analysis":
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
 
-        # 🚀 核心優化 4：右側雷達快捷側邊選單渲染模組
         with col_right_menu:
             mode_titles = {"buy": "🎯 綜合買點榜", "red_engulf": "🔥 紅吞反轉榜", "recent": "📊 成交量排行榜"}
             active_title = mode_titles.get(st.session_state.scan_mode, "📋 當前雷達清單")
@@ -1242,7 +1252,6 @@ elif st.session_state.page == "analysis":
                     is_current = (stock_id == target)
                     btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
                     
-                    # 點擊右側按鈕無縫切換當前個股細節
                     if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
                         st.session_state.current_stock = stock_id
                         st.rerun()
