@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timezone, timedelta
-import plotly.graph_objects as go
+
 from plotly.subplots import make_subplots
 import json
 import os
@@ -1102,11 +1102,11 @@ if st.session_state.page == "home":
             trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
             s_score = r['Score']
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
-            p_tag = "🔥紅吞" if r.get('紅吞') else ("🩸黑吞" if r.get('黑吞') else ("📈近期紅吞" if r.get('近七日紅吞') else ""))
-            shadow_tag = " 📌回測有撐" if r.get('回測有撐') else (" ⚠️反彈遇壓" if r.get('反彈遇壓') else "")
+            p_tag = "🔥紅吞" if r.get('紅吞') else ("🩸黑吞" if r.get('黑吞') else ("📈紅吞" if r.get('近七日紅吞') else ""))
+            shadow_tag = " 📌撐" if r.get('回測有撐') else (" ⚠️壓" if r.get('反彈遇壓') else "")
             
             # 🚀 新增：將扣底狀態加入網頁版榜單顯示
-            deduct_tag = " ↗️扣低上彎" if r.get('月線即將上彎') else " ↘️扣高下彎"
+            deduct_tag = " ↗️扣上" if r.get('月線即將上彎') else " ↘️扣下"
             
             tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
             if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
