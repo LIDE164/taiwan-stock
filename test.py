@@ -615,10 +615,10 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'): 
-        sc += 2; rs.append("🔥 月線扣低值 (均線準備上彎發散，波段保護力強)")
-    if data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'): 
-        sc -= 2; rs.append("⚠️ 月線扣高值 (均線即將下彎產生蓋頭壓力)")
+    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
+        sc += 2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
+    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
+        sc -= 2; rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
 
     return sc, rs
 
@@ -652,12 +652,12 @@ def analyze_today(df, ticker_number, inst_data=None):
         is_support_pullback, is_resistance_rejection = False, False
         
     try:
-        ma20_deduction_tmr = float(df['Close'].iloc[-20]) if len(df) >= 20 else float(t_close)
+        ma5_deduction_tmr = float(df['Close'].iloc[-5]) if len(df) >= 5 else float(t_close)
         ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
-        is_ma20_turning_up = t_close > ma20_deduction_tmr
+        is_ma5_turning_up = t_close > ma5_deduction_tmr
         is_ma60_turning_up = t_close > ma60_deduction_tmr
     except:
-        is_ma20_turning_up, is_ma60_turning_up = False, False
+        is_ma5_turning_up, is_ma60_turning_up = False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -675,7 +675,7 @@ def analyze_today(df, ticker_number, inst_data=None):
         "近七日紅吞": recent_7_red,
         "回測有撐": is_support_pullback,
         "反彈遇壓": is_resistance_rejection,
-        "月線即將上彎": is_ma20_turning_up,
+        "5日線即將上彎": is_ma5_turning_up,
         "季線即將上彎": is_ma60_turning_up
     }
     
@@ -719,10 +719,10 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['BIAS'] < -5: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
-    if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'):
-        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來月線即將扣低值，均線將持續翻揚向上，提供強大波段保護力。</span>")
-    elif data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'):
-        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來月線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應優先減碼。</b></span>")
+    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'):
+        analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來5日線即將扣低值，均線將持續翻揚向上，提供短線強大保護力。</span>")
+    elif data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'):
+        analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來5日線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應防範回檔。</b></span>")
 
     if data['成交量'] > data['5日均量'] * 1.1 and data.get('漲跌',0) > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
     elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
@@ -828,13 +828,13 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 res_y.append(t_high * 1.08) 
                 res_text.append("<b>壓</b>")
 
-            if pos >= 20:
-                curr_deduct = df.iloc[pos - 20]['Close']
-                curr_up = (t_close >= t['20MA']) and (t_close > curr_deduct)
+            if pos >= 5:
+                curr_deduct = df.iloc[pos - 5]['Close']
+                curr_up = (t_close >= t['5MA']) and (t_close > curr_deduct)
                 prev_up = False
-                if pos >= 21:
-                    prev_deduct = df.iloc[pos - 21]['Close']
-                    prev_up = (p_close >= p['20MA']) and (p_close > prev_deduct)
+                if pos >= 6:
+                    prev_deduct = df.iloc[pos - 6]['Close']
+                    prev_up = (p_close >= p['5MA']) and (p_close > prev_deduct)
                 
                 if curr_up and not prev_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
@@ -1091,7 +1091,7 @@ if st.session_state.page == "home":
         df_results['Bullish_Count'] = df_results.apply(
             lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
                       (1 if r.get('回測有撐') else 0) + 
-                      (1 if r.get('月線即將上彎') else 0), axis=1)
+                      (1 if r.get('5日線即將上彎') else 0), axis=1)
 
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 📊 近五日成交量排行榜")
@@ -1121,12 +1121,19 @@ if st.session_state.page == "home":
             s_score = r['Score']
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
             
-            p_tag = "🔴吞" if r.get('紅吞') else ("🟢吞" if r.get('黑吞') else ("🟡吞" if r.get('近七日紅吞') else ""))
-            shadow_tag = " 📌撐" if r.get('回測有撐') else (" ⚠️壓" if r.get('反彈遇壓') else "")
-            deduct_tag = " ↗️" if r.get('月線即將上彎') else " ↘️"
+            # 🚀 動態陣列組合：確保每個符號之間都有完美的分隔線
+            tags = []
+            if r.get('紅吞'): tags.append("🔺吞")
+            elif r.get('黑吞'): tags.append("🔻吞")
+            elif r.get('近七日紅吞'): tags.append("🔸吞")
             
-            tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
-            if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
+            if r.get('回測有撐'): tags.append("📌撐")
+            elif r.get('反彈遇壓'): tags.append("⚠️壓")
+            
+            if '5日線即將上彎' in r:
+                tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
+                
+            tag_display = " | ".join(tags)
             if tag_display: tag_display = f" | {tag_display}"
             
             button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
@@ -1336,16 +1343,22 @@ elif st.session_state.page == "analysis":
                         s_score = stock_info['Score']
                         score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
                         
-                        p_tag = "🔴吞" if stock_info.get('紅吞') else ("🟢吞" if stock_info.get('黑吞') else ("🟡吞" if stock_info.get('近七日紅吞') else ""))
-                        shadow_tag = " 📌撐" if stock_info.get('回測有撐') else (" ⚠️壓" if stock_info.get('反彈遇壓') else "")
+                        # 🚀 右側菜單：同步套用陣列分隔線邏輯
+                        tags = []
+                        if stock_info.get('紅吞'): tags.append("🔺吞")
+                        elif stock_info.get('黑吞'): tags.append("🔻吞")
+                        elif stock_info.get('近七日紅吞'): tags.append("🔸吞")
                         
-                        btn_prefix = "⭐ " if is_current else "▪️ "
-                        deduct_tag = " ↗️" if stock_info.get('月線即將上彎') else " ↘️"
+                        if stock_info.get('回測有撐'): tags.append("📌撐")
+                        elif stock_info.get('反彈遇壓'): tags.append("⚠️壓")
                         
-                        tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
-                        if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
+                        if '5日線即將上彎' in stock_info:
+                            tags.append("↗️" if stock_info.get('5日線即將上彎') else "↘️")
+                            
+                        tag_display = " | ".join(tags)
                         if tag_display: tag_display = f" | {tag_display}"
                         
+                        btn_prefix = "⭐ " if is_current else "▪️ "
                         btn_label = f"{btn_prefix}{stock_info['代號']} {stock_info['名稱']} {trend_icon}{stock_info['收盤價']}({sign}{stock_info['漲跌幅']}%) | {score_icon}{tag_display}"
                     else:
                         btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
