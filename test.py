@@ -834,11 +834,20 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 curr_up = (t_close >= t['5MA']) and (t_close > curr_deduct)
                 curr_down = (t_close < t['5MA']) and (t_close < curr_deduct)
                 
-                if curr_up:
+                # 🚀 加回轉折點判斷：計算昨天的狀態
+                prev_up = False
+                prev_down = False
+                if pos >= 6:
+                    prev_deduct = df.iloc[pos - 6]['Close']
+                    prev_up = (p_close >= p['5MA']) and (p_close > prev_deduct)
+                    prev_down = (p_close < p['5MA']) and (p_close < prev_deduct)
+                
+                # 🚀 只有在「今天發生轉折 (今天有、昨天沒有)」時才畫出符號
+                if curr_up and not prev_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
                     deduct_up_y.append(t_low * 0.80) 
                     deduct_up_text.append("<b>↗️</b>")
-                if curr_down:
+                if curr_down and not prev_down:
                     deduct_down_x.append(date.strftime('%Y-%m-%d'))
                     deduct_down_y.append(t_high * 1.12)
                     deduct_down_text.append("<b>↘️</b>")
