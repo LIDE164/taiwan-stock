@@ -609,14 +609,24 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        sc += 2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
+    is_5ma_up = data.get('5日線即將上彎', False)
+    is_20ma_up = data.get('月線即將上彎', False)
+
+    if data['收盤價'] >= data['20MA'] and is_5ma_up and is_20ma_up:
+        sc += 4
+        rs.append("🚀 雙均線扣低上彎 (5MA與20MA同步翻揚，波段爆發力極強)")
+        data['雙扣底'] = True
+    else:
+        data['雙扣底'] = False
+        if data['收盤價'] >= data['5MA'] and is_5ma_up:
+            sc += 2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
+
+    if data['收盤價'] < data['5MA'] and not is_5ma_up:
         sc -= 2; rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
 
     # 🚨 最嚴格高檔防護網：狙擊假突破與騙線
     is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
-    has_buy_trigger = data.get('紅吞') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
+    has_buy_trigger = data.get('紅吞') or data.get('雙扣底') or (data['收盤價'] >= data['5MA'] and is_5ma_up)
     
     if is_extreme_high and has_buy_trigger:
         sc -= 10
@@ -662,11 +672,13 @@ def analyze_today(df, ticker_number, inst_data=None):
         
     try:
         ma5_deduction_tmr = float(df['Close'].iloc[-5]) if len(df) >= 5 else float(t_close)
+        ma20_deduction_tmr = float(df['Close'].iloc[-20]) if len(df) >= 20 else float(t_close)
         ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
         is_ma5_turning_up = t_close > ma5_deduction_tmr
+        is_ma20_turning_up = t_close > ma20_deduction_tmr
         is_ma60_turning_up = t_close > ma60_deduction_tmr
     except:
-        is_ma5_turning_up, is_ma60_turning_up = False, False
+        is_ma5_turning_up, is_ma20_turning_up, is_ma60_turning_up = False, False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -685,6 +697,7 @@ def analyze_today(df, ticker_number, inst_data=None):
         "回測有撐": is_support_pullback,
         "反彈遇壓": is_resistance_rejection,
         "5日線即將上彎": is_ma5_turning_up,
+        "月線即將上彎": is_ma20_turning_up,
         "季線即將上彎": is_ma60_turning_up
     }
     
@@ -706,7 +719,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
 
     # 🚨 新增：高檔誘多警報 (於解析區塊置頂顯示)
     is_extreme_high = (data['J值'] >= 85) or (data['BIAS'] >= 8) or (data['收盤價'] >= data['BB_UP'] * 1.02)
-    has_buy_trigger = data.get('紅吞') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
+    has_buy_trigger = data.get('紅吞') or data.get('雙扣底') or (data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'))
     if is_extreme_high and has_buy_trigger:
         analysis_bullets.append(f"🚨 <span style='color:#ff3333; font-weight:bold; font-size:1.1rem; text-decoration: underline;'>【致命誘多警報】股價處於絕對高檔 (高乖離/超買)，此突破訊號極高機率為「主力騙線出貨」，系統已強制否決此買點！</span>")
 
@@ -734,7 +747,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['BIAS'] < -5: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'):
+    if data.get('雙扣底'):
+        analysis_bullets.append(f"🚀 <span style='color:#ff3333; font-weight:bold;'>雙均線扣抵發動：5日與20日線同步扣低上彎發散，具備極強波段爆發力！</span>")
+    elif data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'):
         analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來5日線即將扣低值，均線將持續翻揚向上，提供短線強大保護力。</span>")
     elif data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'):
         analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來5日線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應防範回檔。</b></span>")
@@ -845,24 +860,39 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 res_text.append("<b>壓</b>")
 
             if pos >= 5:
-                curr_deduct = df.iloc[pos - 5]['Close']
-                curr_up = (t_close >= t['5MA']) and (t_close > curr_deduct)
-                curr_down = (t_close < t['5MA']) and (t_close < curr_deduct)
+                curr_deduct_5 = df.iloc[pos - 5]['Close']
+                curr_5_up = (t_close >= t['5MA']) and (t_close > curr_deduct_5)
+                curr_down_5 = (t_close < t['5MA']) and (t_close < curr_deduct_5)
                 
-                # 🚀 加回轉折點判斷：計算昨天的狀態
-                prev_up = False
-                prev_down = False
+                prev_5_up = False
+                prev_down_5 = False
                 if pos >= 6:
-                    prev_deduct = df.iloc[pos - 6]['Close']
-                    prev_up = (p_close >= p['5MA']) and (p_close > prev_deduct)
-                    prev_down = (p_close < p['5MA']) and (p_close < prev_deduct)
+                    prev_deduct_5 = df.iloc[pos - 6]['Close']
+                    prev_5_up = (p_close >= p['5MA']) and (p_close > prev_deduct_5)
+                    prev_down_5 = (p_close < p['5MA']) and (p_close < prev_deduct_5)
                 
-                # 🚀 只有在「今天發生轉折 (今天有、昨天沒有)」時才畫出符號
-                if curr_up and not prev_up:
+                curr_20_up = False
+                prev_20_up = False
+                if pos >= 20:
+                    curr_deduct_20 = df.iloc[pos - 20]['Close']
+                    curr_20_up = (t_close >= t['20MA']) and (t_close > curr_deduct_20)
+                    if pos >= 21:
+                        prev_deduct_20 = df.iloc[pos - 21]['Close']
+                        prev_20_up = (p_close >= p['20MA']) and (p_close > prev_deduct_20)
+
+                is_double_up_curr = curr_5_up and curr_20_up
+                is_double_up_prev = prev_5_up and prev_20_up
+                
+                if is_double_up_curr and not is_double_up_prev:
+                    deduct_up_x.append(date.strftime('%Y-%m-%d'))
+                    deduct_up_y.append(t_low * 0.92) 
+                    deduct_up_text.append("<b>🚀</b>")
+                elif curr_5_up and not prev_5_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
                     deduct_up_y.append(t_low * 0.80) 
                     deduct_up_text.append("<b>↗️</b>")
-                if curr_down and not prev_down:
+                
+                if curr_down_5 and not prev_down_5:
                     deduct_down_x.append(date.strftime('%Y-%m-%d'))
                     deduct_down_y.append(t_high * 1.12)
                     deduct_down_text.append("<b>↘️</b>")
@@ -1119,7 +1149,7 @@ if st.session_state.page == "home":
         df_results['Bullish_Count'] = df_results.apply(
             lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
                       (1 if r.get('回測有撐') else 0) + 
-                      (1 if r.get('5日線即將上彎') else 0), axis=1)
+                      (2 if r.get('雙扣底') else (1 if r.get('5日線即將上彎') else 0)), axis=1)
 
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 📊 近五日成交量排行榜")
@@ -1158,7 +1188,9 @@ if st.session_state.page == "home":
             if r.get('回測有撐'): tags.append("📌撐")
             elif r.get('反彈遇壓'): tags.append("⚠️壓")
             
-            if '5日線即將上彎' in r:
+            if r.get('雙扣底'):
+                tags.append("🚀雙扣底")
+            elif '5日線即將上彎' in r:
                 tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
                 
             tag_display = " | ".join(tags)
@@ -1382,7 +1414,9 @@ elif st.session_state.page == "analysis":
                         if stock_info.get('回測有撐'): tags.append("📌撐")
                         elif stock_info.get('反彈遇壓'): tags.append("⚠️壓")
                         
-                        if '5日線即將上彎' in stock_info:
+                        if stock_info.get('雙扣底'):
+                            tags.append("🚀雙扣底")
+                        elif '5日線即將上彎' in stock_info:
                             tags.append("↗️" if stock_info.get('5日線即將上彎') else "↘️")
                             
                         tag_display = " | ".join(tags)
