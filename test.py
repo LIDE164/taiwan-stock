@@ -387,7 +387,7 @@ def get_futures_quote():
     if not success:
         try:
             df = yf.Ticker("WTX=F").history(period="1mo").dropna(subset=['Close'])
-            if not df.empty and len(df) >= 2:
+            if not df.empty && len(df) >= 2:
                 df = df.sort_index(ascending=True)
                 curr = float(df['Close'].iloc[-1])
                 prev = float(df['Close'].iloc[-2])
@@ -609,13 +609,12 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    # 回歸原始：只看 5MA 上彎
+    # 🎯 核心更正 1：扣抵值「完全不參與加減分」，僅保留 Reasons 作為報告分析與圖表標記
     if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        sc += 2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
+        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
     if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        sc -= 2; rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
+        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
 
-    # 移除強制扣 -10 分的誘多濾網，回歸原版溫和扣分
     if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
     if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
     if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
@@ -766,9 +765,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     text_c = "#333" if is_light_mode else "#ccc"
     
-    # 🚀 保留除錯：將 K線圖的 name 修改為空字串，強制綁定 hovertemplate 解決 Hover 衝突
+    # 🚀 修正 2：Candlestick 的 name 簡化，讓出主要懸停控制權
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     
+    # 🚀 修正 2：利用高靈敏度標準格式綁定，強制拉回 5T, 10T, 20T 的十字線懸停顯示
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hoverinfo="y", hovertemplate="%{y:.2f}"), row=1, col=1)
@@ -805,10 +805,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             is_red = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
             is_black = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
             
-            # 🚀 保留階層式排版，避免符號重疊
+            # 🚀 修正 2：啟動全新「四維分流坐標系」，拉開各自的乘算數值，絕不重疊
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
-                re_y.append(t_low * 0.98) 
+                re_y.append(t_low * 0.98) # 第一層：吞型態
                 re_text.append("<b>吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
@@ -827,34 +827,33 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
-                sup_y.append(t_low * 0.96) 
+                sup_y.append(t_low * 0.95) # 第二層：撐型態 (移開與吞、買的距離)
                 sup_text.append("<b>撐</b>")
             if is_resistance_rejection:
                 res_x.append(date.strftime('%Y-%m-%d'))
-                res_y.append(t_high * 1.04) 
+                res_y.append(t_high * 1.05) 
                 res_text.append("<b>壓</b>")
 
             if pos >= 5:
-                curr_deduct_5 = df.iloc[pos - 5]['Close']
-                curr_5_up = (t_close >= t['5MA']) and (t_close > curr_deduct_5)
-                curr_down_5 = (t_close < t['5MA']) and (t_close < curr_deduct_5)
+                curr_deduct = df.iloc[pos - 5]['Close']
+                curr_up = (t_close >= t['5MA']) and (t_close > curr_deduct)
+                curr_down = (t_close < t['5MA']) and (t_close < curr_deduct)
                 
-                prev_5_up = False
-                prev_down_5 = False
+                prev_up = False
+                prev_down = False
                 if pos >= 6:
-                    prev_deduct_5 = df.iloc[pos - 6]['Close']
-                    prev_5_up = (p_close >= p['5MA']) and (p_close > prev_deduct_5)
-                    prev_down_5 = (p_close < p['5MA']) and (p_close < prev_deduct_5)
+                    prev_deduct = df.iloc[pos - 6]['Close']
+                    prev_up = (p_close >= p['5MA']) and (p_close > prev_deduct)
+                    prev_down = (p_close < p['5MA']) and (p_close < prev_deduct)
                 
-                # 🚀 恢復純淨的 ↗️ 符號，移至 0.89 避免擋到「買」字
-                if curr_5_up and not prev_5_up:
+                # 🚀 修正 2：上彎 ↗️ 與 下彎 ↘️ 推至外圍邊疆 (0.85/1.15)，完全避開主要字體
+                if curr_up and not prev_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.89) 
+                    deduct_up_y.append(t_low * 0.85) 
                     deduct_up_text.append("<b>↗️</b>")
-                
-                if curr_down_5 and not prev_down_5:
+                if curr_down and not prev_down:
                     deduct_down_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_down_y.append(t_high * 1.11)
+                    deduct_down_y.append(t_high * 1.15)
                     deduct_down_text.append("<b>↘️</b>")
 
     if show_signals:
@@ -875,10 +874,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.93) 
+                    buy_y.append(df_view['Low'].iloc[i] * 0.90) # 第三層：買訊
                     buy_text.append("買")
         if buy_x:
-            # 🚀 加回「買」字，並且確保它的 Y 軸位置與 ↗️ 錯開
+            # 🚀 修正 2：正式重啟經典「三角形 + 買字」，設定在 0.90 軸線，與 ↗️(0.85) 精巧分開
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL", hovertemplate="%{y:,.0f}"), row=2, col=1)
@@ -1062,7 +1061,7 @@ def render_index_board():
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
 # ==========================================
-# 🚀 背景極速快取模組 (0.1秒秒發引擎)
+# 🚀 背景極速快取模組 (0.1秒秒發快取引擎)
 # ==========================================
 @st.cache_data(ttl=180, show_spinner=False)
 def get_global_scan_results(pool_tuple):
@@ -1097,7 +1096,7 @@ if st.session_state.page == "home":
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
-    with st.spinner("🚀 大腦背景資料庫存取中 (若無快取約需 5 秒，快取命中則 0.1 秒極速秒發)..."):
+    with st.spinner("🚀 大腦背景資料庫存取中 (快取命中則 0.1 秒極速秒發)..."):
         scan_results = get_global_scan_results(pool)
             
     if scan_results:
@@ -1118,7 +1117,7 @@ if st.session_state.page == "home":
             ).head(20)
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (5MA超強力買點)")
+            st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
             df_disp = df_results[df_results['Score'] >= 2].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
@@ -1273,7 +1272,7 @@ elif st.session_state.page == "analysis":
                 temp_df = df_slice.iloc[:len(df_slice) - 30 + idx + 1]
                 if len(temp_df) >= 5:
                     t_data = analyze_today(temp_df, target, inst_data=None)
-                    if t_data:
+                    if t_data {
                         if t_data['Score'] >= 5: s_count += 1; buy_points_prices.append(t_data['收盤價'])
                         elif t_data['Score'] >= 2: a_count += 1; buy_points_prices.append(t_data['收盤價'])
             
@@ -1283,7 +1282,7 @@ elif st.session_state.page == "analysis":
                 with col_sum2: st.markdown(f"<div style='text-align:center;'>🟢 S級 強烈買進<br><span style='font-size:1.6rem; font-weight:900; color:#00cc00;'>{s_count} 次</span></div>", unsafe_allow_html=True)
                 with col_sum3: st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
                 if not buy_points_prices:
-                    summary_text = "近一個月股價呈現高檔推升或低迷打底，未曾觸發 any A/S 級超賣點條件，建議控制風險。"
+                    summary_text = "近一個月股價呈現高檔推推升或低迷打底，未曾觸發 any A/S 級超賣點條件，建議控制風險。"
                 else:
                     avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
                     profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
