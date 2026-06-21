@@ -1106,14 +1106,20 @@ elif st.session_state.page == "analysis":
     with c3:
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
+    # 定義天數切換回呼函數，確保按鈕點擊時狀態能優先更新，不卡頓
+    def set_view_days(days):
+        st.session_state.view_days = days
+
     load_ph = st.empty()
+    pre_rendered_fig = None  # 核心優化：建立預渲染存放區
+
     with load_ph.container():
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 分析大腦...</h4>", unsafe_allow_html=True)
         p_bar = st.progress(0)
         status = st.empty()
         status.markdown("<div style='text-align:center; color:#888;'>⏳ 讀取 K 線與價量歷史...</div>", unsafe_allow_html=True)
         df_chart = get_stock_data(target)
-        p_bar.progress(25)
+        p_bar.progress(20)
 
         if df_chart is not None:
             df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
@@ -1123,20 +1129,29 @@ elif st.session_state.page == "analysis":
             else:
                 status.markdown("<div style='text-align:center; color:#888;'>🏦 追蹤三大法人籌碼流向...</div>", unsafe_allow_html=True)
                 inst_data = get_institutional_trading(target)
-                p_bar.progress(50)
+                p_bar.progress(40)
                 status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組...</div>", unsafe_allow_html=True)
                 data = analyze_today(df_slice, target, inst_data)
                 sc = data['Score']
-                p_bar.progress(70)
+                p_bar.progress(60)
                 status.markdown("<div style='text-align:center; color:#888;'>📑 獲取基本面與產業定位...</div>", unsafe_allow_html=True)
                 f_data = get_fundamental_and_industry_data(target, data['收盤價'])
-                p_bar.progress(85)
+                p_bar.progress(75)
                 status.markdown("<div style='text-align:center; color:#888;'>🌍 交叉比對總體經濟與大盤風險...</div>", unsafe_allow_html=True)
                 twii_close, twii_change, twii_time_str = get_twii_quote()
                 twii_df_for_pred = get_stock_data("^TWII")
                 t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
+                p_bar.progress(85)
+                
+                # 🚀 核心優化：將最耗費效能的「圖表渲染」塞進進度條中！
+                status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
+                current_show_buy = st.session_state.get('toggle_buy_sig', True)
+                current_show_sup = st.session_state.get('toggle_sup_res', False)
+                pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup)
+                p_bar.progress(95)
+
+                status.markdown("<div style='text-align:center; color:#00cc00; font-weight:bold;'>✅ 解析完成！即將顯示...</div>", unsafe_allow_html=True)
                 p_bar.progress(100)
-                status.markdown("<div style='text-align:center; color:#00cc00; font-weight:bold;'>✅ 解析完成！渲染戰情儀表板...</div>", unsafe_allow_html=True)
                 time.sleep(0.1) 
         else:
             load_ph.empty()
@@ -1217,15 +1232,18 @@ elif st.session_state.page == "analysis":
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc4, dc5, dc6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
-            if dc1.button("1個月"): st.session_state.view_days = 20
-            if dc2.button("3個月"): st.session_state.view_days = 60
-            if dc3.button("6個月"): st.session_state.view_days = 120
-            if dc4.button("1年"): st.session_state.view_days = 240
-            with dc5: show_buy_sig = st.toggle("🛒 顯示買進訊號", value=True)
-            with dc6: show_sup_res = st.toggle("📏 顯示支撐/壓力", value=False)
+            # 🚀 核心優化：按鈕綁定 on_click 回呼函數，不再需要手動 st.rerun
+            dc1.button("1個月", on_click=set_view_days, args=(20,))
+            dc2.button("3個月", on_click=set_view_days, args=(60,))
+            dc3.button("6個月", on_click=set_view_days, args=(120,))
+            dc4.button("1年", on_click=set_view_days, args=(240,))
+            # 🚀 開關綁定 key，透過記憶體連動渲染狀態
+            with dc5: st.toggle("🛒 顯示買進訊號", value=True, key='toggle_buy_sig')
+            with dc6: st.toggle("📏 顯示支撐/壓力", value=False, key='toggle_sup_res')
                 
-            fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, show_buy_sig, f_data, show_sup_res)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
+            # 直接將預先渲染好的圖表丟上螢幕，零秒延遲顯示！
+            if pre_rendered_fig is not None:
+                st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
