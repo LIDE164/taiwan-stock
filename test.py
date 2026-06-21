@@ -765,13 +765,21 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     text_c = "#333" if is_light_mode else "#ccc"
     
-    # 🚀 恢復 K 線名稱，讓資訊框抬頭顯示正常
-    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
+    # 🚀 終極修復：將 5T, 10T, 20T 的數據直接「打包」塞進 K 線的自定義數據 (customdata) 裡
+    custom_hover_data = df_view[['5MA', '10MA', '20MA']].fillna(0).values
     
-    # 🚀 移除會產生衝突的 hoverinfo="y"，讓均線乖乖回到十字游標統一資訊框內！
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hovertemplate="%{y:.2f}"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hovertemplate="%{y:.2f}"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hovertemplate="%{y:.2f}"), row=1, col=1)
+    fig.add_trace(go.Candlestick(
+        x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], 
+        customdata=custom_hover_data,
+        increasing_line_color='#ff3333', decreasing_line_color='#00cc00', 
+        name="K線",
+        hovertemplate="開盤: %{open:.2f}<br>最高: %{high:.2f}<br>最低: %{low:.2f}<br>收盤: %{close:.2f}<br><br><b>5T:</b> %{customdata[0]:.2f}<br><b>10T:</b> %{customdata[1]:.2f}<br><b>20T:</b> %{customdata[2]:.2f}<extra></extra>"
+    ), row=1, col=1)
+    
+    # 🚀 將均線的 hoverinfo 設為 "skip"，因為數值已經統一顯示在上面 K 線的框框裡了！
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hoverinfo="skip"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hoverinfo="skip"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hoverinfo="skip"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新報價: {latest_price:.2f} ",
@@ -805,7 +813,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             is_red = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
             is_black = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
             
-            # 🚀 階梯式四層圖層分佈：第一層 (吞)
+            # 階梯式四層圖層分佈：第一層 (吞)
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
                 re_y.append(t_low * 0.98) 
@@ -825,7 +833,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             ma_resistance = min(t['5MA'], t['10MA']) 
             is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
 
-            # 🚀 階梯式四層圖層分佈：第二層 (撐/壓)
+            # 階梯式四層圖層分佈：第二層 (撐/壓)
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
                 sup_y.append(t_low * 0.95) 
@@ -847,7 +855,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                     prev_5_up = (p_close >= p['5MA']) and (p_close > prev_deduct_5)
                     prev_down_5 = (p_close < p['5MA']) and (p_close < prev_deduct_5)
                 
-                # 🚀 階梯式四層圖層分佈：第四層 (扣抵轉折 ↗️ ↘️)
+                # 階梯式四層圖層分佈：第四層 (扣抵轉折 ↗️ ↘️)
                 if curr_5_up and not prev_5_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
                     deduct_up_y.append(t_low * 0.85) 
@@ -876,7 +884,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    # 🚀 階梯式四層圖層分佈：第三層 (買訊)，與撐、↗️ 完全錯開
+                    # 階梯式四層圖層分佈：第三層 (買訊)，與撐、↗️ 完全錯開
                     buy_y.append(df_view['Low'].iloc[i] * 0.90) 
                     buy_text.append("買")
         if buy_x:
