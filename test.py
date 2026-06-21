@@ -812,11 +812,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
                 re_y.append(t_low * 0.94) 
-                re_text.append("<b>🔥紅吞</b>")
+                re_text.append("<b>紅吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
                 be_y.append(t_high * 1.04) 
-                be_text.append("<b>🩸黑吞</b>")
+                be_text.append("<b>黑吞</b>")
             
             total_range = t_high - t_low
             if total_range == 0: total_range = 0.001
@@ -831,11 +831,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
                 sup_y.append(t_low * 0.90) 
-                sup_text.append("<b>📌撐</b>")
+                sup_text.append("<b>撐</b>")
             if is_resistance_rejection:
                 res_x.append(date.strftime('%Y-%m-%d'))
                 res_y.append(t_high * 1.08) 
-                res_text.append("<b>⚠️壓</b>")
+                res_text.append("<b>壓</b>")
 
             # 🚀 新增：K線圖動態畫出扣底上彎標示
             if pos >= 20:
@@ -849,7 +849,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 # 只有當「剛轉為」扣低上彎時，才標示出來，保持畫面簡潔
                 if curr_up and not prev_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.85)
+                    deduct_up_y.append(t_low * 0.80)  # 往下移避免與「買」重疊
                     deduct_up_text.append("<b>↗️<br>扣</b>")
 
     if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
