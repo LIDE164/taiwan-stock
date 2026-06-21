@@ -83,7 +83,6 @@ CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 st.sidebar.title("🔍 快速搜尋")
 
-# 🚀 核心升級：改用表單(Form)包裝，徹底解決「按 Enter 沒反應」的狀態衝突 Bug
 with st.sidebar.form(key="search_form"):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
     submit_search = st.form_submit_button("送出搜尋", use_container_width=True)
@@ -103,7 +102,7 @@ if submit_search and search_input:
             st.session_state.current_stock = target_ticker
             st.session_state.page = "analysis"
             st.session_state.date_offset = 0
-            st.rerun()  # 強制重新整理跳轉頁面，保證 100% 觸發
+            st.rerun() 
         else:
             st.session_state.search_error = f"⚠️ 找不到與「{s_val}」相關的標的。"
 
@@ -336,7 +335,6 @@ def get_twii_quote():
     if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
     return 0, 0, "無資料"
 
-# 🚀 終極防彈快取機制：HiStock 嗨投資 -> 玩股網 -> Yahoo HTML -> yfinance
 FUTURES_CACHE_FILE = "wtx_cache.json"
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -346,7 +344,6 @@ def get_futures_quote():
     success = False
     curr, prev = 0.0, 0.0
     
-    # 防線 1: HiStock 嗨投資 (傳統網頁，最抗跌)
     if not success:
         try:
             res = requests.get("https://histock.tw/index/FITX", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
@@ -360,7 +357,6 @@ def get_futures_quote():
                     success = True
         except: pass
 
-    # 防線 2: Yahoo 奇摩股市 HTML 暴力解析 (JSON)
     if not success:
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -374,7 +370,6 @@ def get_futures_quote():
                     success = True
         except: pass
 
-    # 防線 3: 玩股網 API
     if not success:
         try:
             headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.wantgoo.com/', 'X-Requested-With': 'XMLHttpRequest'}
@@ -389,7 +384,6 @@ def get_futures_quote():
                     success = True
         except: pass
 
-    # 防線 4: yfinance WTX=F history
     if not success:
         try:
             df = yf.Ticker("WTX=F").history(period="1mo").dropna(subset=['Close'])
@@ -621,7 +615,6 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    # 🚀 新增：均線扣底預測加扣分
     if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'): 
         sc += 2; rs.append("🔥 月線扣低值 (均線準備上彎發散，波段保護力強)")
     if data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'): 
@@ -658,7 +651,6 @@ def analyze_today(df, ticker_number, inst_data=None):
         is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
         is_support_pullback, is_resistance_rejection = False, False
         
-    # 🚀 新增：計算扣底預測 (Deduction)
     try:
         ma20_deduction_tmr = float(df['Close'].iloc[-20]) if len(df) >= 20 else float(t_close)
         ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
@@ -727,7 +719,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['BIAS'] < -5: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
-    # 🚀 新增：解析頁面中的扣底預測文字解讀
     if data['收盤價'] >= data['20MA'] and data.get('月線即將上彎'):
         analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來月線即將扣低值，均線將持續翻揚向上，提供強大波段保護力。</span>")
     elif data['收盤價'] < data['20MA'] and not data.get('月線即將上彎'):
@@ -837,7 +828,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 res_y.append(t_high * 1.08) 
                 res_text.append("<b>壓</b>")
 
-            # 🚀 新增：K線圖動態畫出扣底上彎標示
             if pos >= 20:
                 curr_deduct = df.iloc[pos - 20]['Close']
                 curr_up = (t_close >= t['20MA']) and (t_close > curr_deduct)
@@ -846,10 +836,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                     prev_deduct = df.iloc[pos - 21]['Close']
                     prev_up = (p_close >= p['20MA']) and (p_close > prev_deduct)
                 
-                # 只有當「剛轉為」扣低上彎時，才標示出來，保持畫面簡潔
                 if curr_up and not prev_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
-                    deduct_up_y.append(t_low * 0.80)  # 往下移避免與「買」重疊
+                    deduct_up_y.append(t_low * 0.80) 
                     deduct_up_text.append("<b>↗️</b>")
 
     if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
@@ -1097,21 +1086,33 @@ if st.session_state.page == "home":
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
+        
+        # 🚀 核心升級：計算多方保護符號數量，建立「最強趨勢三維排序法」
+        df_results['Bullish_Count'] = df_results.apply(
+            lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
+                      (1 if r.get('回測有撐') else 0) + 
+                      (1 if r.get('月線即將上彎') else 0), axis=1)
+
         if st.session_state.scan_mode == "recent":
             st.markdown("##### 📊 近五日成交量排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
-            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
+            # 排序：優先 S 級 > 多方符號最多 > 當日漲幅最強
+            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(
+                by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
+            )
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (已掛載動能、量能與型態四重濾網)")
-            df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
+            st.markdown("##### 🎯 尋找買點榜單 (最強趨勢優先排序)")
+            # 排序：優先 S 級 > 多方符號最多 > 當日漲幅最強
+            df_disp = df_results[df_results['Score'] >= 2].sort_values(
+                by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
+            )
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
-        # 🚀 核心升級：不僅存 ticker，連整包運算好的 dataframe 一起存入記憶體！
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
-        st.session_state.nav_pool_data = df_disp.to_dict('records') # 將 DataFrame 轉成 dict 存起來
+        st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
         for _, r in df_disp.iterrows():
             p_val = r['漲跌']
@@ -1120,7 +1121,6 @@ if st.session_state.page == "home":
             s_score = r['Score']
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
             
-            # 🚀 精簡化：按鈕標籤用顏色圈圈取代，扣抵只留符號
             p_tag = "🔴吞" if r.get('紅吞') else ("🟢吞" if r.get('黑吞') else ("🟡吞" if r.get('近七日紅吞') else ""))
             shadow_tag = " 📌撐" if r.get('回測有撐') else (" ⚠️壓" if r.get('反彈遇壓') else "")
             deduct_tag = " ↗️" if r.get('月線即將上彎') else " ↘️"
@@ -1153,12 +1153,11 @@ elif st.session_state.page == "analysis":
     with c3:
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
-    # 定義天數切換回呼函數，確保按鈕點擊時狀態能優先更新，不卡頓
     def set_view_days(days):
         st.session_state.view_days = days
 
     load_ph = st.empty()
-    pre_rendered_fig = None  # 核心優化：建立預渲染存放區
+    pre_rendered_fig = None  
 
     with load_ph.container():
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 分析大腦...</h4>", unsafe_allow_html=True)
@@ -1190,7 +1189,6 @@ elif st.session_state.page == "analysis":
                 t_title, t_desc, tmr_title, tmr_desc, l_dt, n_dt, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
                 p_bar.progress(85)
                 
-                # 🚀 核心優化：將最耗費效能的「圖表渲染」塞進進度條中！
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
                 current_show_buy = st.session_state.get('toggle_buy_sig', True)
                 current_show_sup = st.session_state.get('toggle_sup_res', False)
@@ -1279,16 +1277,13 @@ elif st.session_state.page == "analysis":
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc4, dc5, dc6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
-            # 🚀 核心優化：按鈕綁定 on_click 回呼函數，不再需要手動 st.rerun
             dc1.button("1個月", on_click=set_view_days, args=(20,))
             dc2.button("3個月", on_click=set_view_days, args=(60,))
             dc3.button("6個月", on_click=set_view_days, args=(120,))
             dc4.button("1年", on_click=set_view_days, args=(240,))
-            # 🚀 開關綁定 key，透過記憶體連動渲染狀態
             with dc5: st.toggle("🛒 顯示買進訊號", value=True, key='toggle_buy_sig')
             with dc6: st.toggle("📏 顯示支撐/壓力", value=False, key='toggle_sup_res')
                 
-            # 直接將預先渲染好的圖表丟上螢幕，零秒延遲顯示！
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
@@ -1317,7 +1312,6 @@ elif st.session_state.page == "analysis":
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
 
-        # 🚀 右側雷達快捷側邊選單：名稱對齊優化
         with col_right_menu:
             mode_titles = {
                 "buy": "✅ 綜合買點榜", 
@@ -1329,13 +1323,10 @@ elif st.session_state.page == "analysis":
             st.markdown(f'''<div style="text-align: center; font-size: 1.15rem; font-weight: bold; background-color: {bg_col}; border: 1px solid {border_col}; padding: 8px; border-radius: 6px; color: #ffcc00 !important; margin-bottom: 12px;">{active_title}</div>''', unsafe_allow_html=True)
             
             if n_pool:
-                # 取得記憶體中完整的資料字典
                 nav_data = st.session_state.get('nav_pool_data', [])
                 
                 for stock_id in n_pool:
                     is_current = (stock_id == target)
-                    
-                    # 嘗試從存下的字典中找出這支股票的完整資訊
                     stock_info = next((item for item in nav_data if item["ticker_raw"] == stock_id), None)
                     
                     if stock_info:
@@ -1345,7 +1336,6 @@ elif st.session_state.page == "analysis":
                         s_score = stock_info['Score']
                         score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
                         
-                        # 🚀 精簡化：右側名單標籤也同步對齊
                         p_tag = "🔴吞" if stock_info.get('紅吞') else ("🟢吞" if stock_info.get('黑吞') else ("🟡吞" if stock_info.get('近七日紅吞') else ""))
                         shadow_tag = " 📌撐" if stock_info.get('回測有撐') else (" ⚠️壓" if stock_info.get('反彈遇壓') else "")
                         
@@ -1356,10 +1346,8 @@ elif st.session_state.page == "analysis":
                         if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
                         if tag_display: tag_display = f" | {tag_display}"
                         
-                        # 將與首頁完全一致的標籤組合起來
                         btn_label = f"{btn_prefix}{stock_info['代號']} {stock_info['名稱']} {trend_icon}{stock_info['收盤價']}({sign}{stock_info['漲跌幅']}%) | {score_icon}{tag_display}"
                     else:
-                        # 萬一沒有抓到詳細資料的防呆顯示
                         btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
                     
                     if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
