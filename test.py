@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime, timezone, timedelta
-
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
@@ -793,6 +793,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     be_x, be_y, be_text = [], [], []
     sup_x, sup_y, sup_text = [], [], []
     res_x, res_y, res_text = [], [], []
+    deduct_up_x, deduct_up_y, deduct_up_text = [], [], []
     
     start_pos = len(df) - len(df_view)
     
@@ -811,11 +812,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
                 re_y.append(t_low * 0.94) 
-                re_text.append("<b>紅</b>")
+                re_text.append("<b>🔥紅吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
                 be_y.append(t_high * 1.04) 
-                be_text.append("<b>黑</b>")
+                be_text.append("<b>🩸黑吞</b>")
             
             total_range = t_high - t_low
             if total_range == 0: total_range = 0.001
@@ -830,16 +831,32 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if is_support_pullback:
                 sup_x.append(date.strftime('%Y-%m-%d'))
                 sup_y.append(t_low * 0.90) 
-                sup_text.append("<b>[撐]</b>")
+                sup_text.append("<b>📌撐</b>")
             if is_resistance_rejection:
                 res_x.append(date.strftime('%Y-%m-%d'))
                 res_y.append(t_high * 1.08) 
-                res_text.append("<b>[壓]</b>")
+                res_text.append("<b>⚠️壓</b>")
 
-    if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=14), name="紅吞", hoverinfo='skip'), row=1, col=1)
-    if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=14), name="黑吞", hoverinfo='skip'), row=1, col=1)
+            # 🚀 新增：K線圖動態畫出扣底上彎標示
+            if pos >= 20:
+                curr_deduct = df.iloc[pos - 20]['Close']
+                curr_up = (t_close >= t['20MA']) and (t_close > curr_deduct)
+                prev_up = False
+                if pos >= 21:
+                    prev_deduct = df.iloc[pos - 21]['Close']
+                    prev_up = (p_close >= p['20MA']) and (p_close > prev_deduct)
+                
+                # 只有當「剛轉為」扣低上彎時，才標示出來，保持畫面簡潔
+                if curr_up and not prev_up:
+                    deduct_up_x.append(date.strftime('%Y-%m-%d'))
+                    deduct_up_y.append(t_low * 0.85)
+                    deduct_up_text.append("<b>↗️<br>扣</b>")
+
+    if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
+    if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞", hoverinfo='skip'), row=1, col=1)
     if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
     if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
+    if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
@@ -1106,7 +1123,7 @@ if st.session_state.page == "home":
             shadow_tag = " 📌撐" if r.get('回測有撐') else (" ⚠️壓" if r.get('反彈遇壓') else "")
             
             # 🚀 新增：將扣底狀態加入網頁版榜單顯示
-            deduct_tag = " ↗️扣上" if r.get('月線即將上彎') else " ↘️扣下"
+            deduct_tag = " ↗️扣" if r.get('月線即將上彎') else " ↘️扣"
             
             tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
             if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
@@ -1327,12 +1344,16 @@ elif st.session_state.page == "analysis":
                         trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
                         s_score = stock_info['Score']
                         score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
-                        p_tag = "🔥紅吞" if stock_info.get('紅吞') else ("🩸黑吞" if stock_info.get('黑吞') else ("📈近期紅吞" if stock_info.get('近七日紅吞') else ""))
-                        shadow_tag = " 📌回測有撐" if stock_info.get('回測有撐') else (" ⚠️反彈遇壓" if stock_info.get('反彈遇壓') else "")
-                        tag_display = f" | {p_tag}{shadow_tag}".strip()
-                        if tag_display == "|": tag_display = ""
+                        p_tag = "🔥紅吞" if stock_info.get('紅吞') else ("🩸黑吞" if stock_info.get('黑吞') else ("📈紅吞" if stock_info.get('近七日紅吞') else ""))
+                        shadow_tag = " 📌撐" if stock_info.get('回測有撐') else (" ⚠️壓" if stock_info.get('反彈遇壓') else "")
                         
                         btn_prefix = "⭐ " if is_current else "▪️ "
+                        deduct_tag = " ↗️扣" if stock_info.get('月線即將上彎') else " ↘️扣"
+                        
+                        tag_display = f" | {p_tag}{shadow_tag}{deduct_tag}".strip()
+                        if tag_display.startswith("|"): tag_display = tag_display[1:].strip()
+                        if tag_display: tag_display = f" | {tag_display}"
+                        
                         # 將與首頁完全一致的標籤組合起來
                         btn_label = f"{btn_prefix}{stock_info['代號']} {stock_info['名稱']} {trend_icon}{stock_info['收盤價']}({sign}{stock_info['漲跌幅']}%) | {score_icon}{tag_display}"
                     else:
