@@ -302,7 +302,6 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     except: pass
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
-# 🚀 核心升級：抓取大盤時將區間放大為 1mo，避免長假抓不到資料
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
     tz_tpe = timezone(timedelta(hours=8))
@@ -334,45 +333,44 @@ def get_twii_quote():
     if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
     return 0, 0, "無資料"
 
-# 🚀 核心升級：防彈級台指期抓取，區間延長至 1mo，徹底解決假日空白
+# 🚀 終極修復：破甲級 Regex，無視引號與排版，強行提取夜盤收盤價
 @st.cache_data(ttl=5, show_spinner=False)
 def get_futures_quote():
     tz_tpe = timezone(timedelta(hours=8))
     fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     
-    # 嘗試 1：yfinance WTX=F (期間放大為 1 個月確保有資料)
+    # 第一道防線：Yahoo 台指期網頁版 (破除雙引號限制)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get("https://tw.stock.yahoo.com/quote/FITXAMP", headers=headers, timeout=3)
+        # \s*"? 代表不管有沒有空白或引號都抓
+        curr_match = re.search(r'"regularMarketPrice":\s*"?([\d\.]+)"?', res.text)
+        prev_match = re.search(r'"regularMarketPreviousClose":\s*"?([\d\.]+)"?', res.text)
+        if curr_match and prev_match:
+            curr = float(curr_match.group(1))
+            prev = float(prev_match.group(1))
+            if curr > 10000: # 確保數字正常
+                return curr, curr - prev, prev, fetch_time
+    except: pass
+
+    # 第二道防線：yfinance WTX=F 使用 fast_info (即時光速引擎)
+    try:
+        tk = yf.Ticker("WTX=F")
+        curr = tk.fast_info.last_price
+        prev = tk.fast_info.previous_close
+        if curr and prev and curr > 10000:
+            return float(curr), float(curr - prev), float(prev), fetch_time
+    except: pass
+
+    # 第三道防線：yfinance 歷史 K 線
     try:
         df = yf.Ticker("WTX=F").history(period="1mo")
         if not df.empty and len(df) >= 2:
             df = df.sort_index(ascending=True)
             curr = float(df['Close'].iloc[-1])
             prev = float(df['Close'].iloc[-2])
-            return curr, curr - prev, prev, fetch_time
-    except: pass
-
-    # 嘗試 2：鉅亨網期貨 API
-    try:
-        res = requests.get("https://ws.cnyes.com/charting/api/v1/TWS:TX00:FUTURES/quote", timeout=3)
-        if res.status_code == 200:
-            data = res.json()['data']['quote']
-            curr = float(data['23'])
-            prev = float(data['24']) 
-            return curr, curr - prev, prev, fetch_time
-    except: pass
-
-    # 嘗試 3：Yahoo html
-    try:
-        res = requests.get("https://tw.stock.yahoo.com/quote/FITXAMP", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            script = soup.find('script', string=re.compile("root.App.main"))
-            if script:
-                match = re.search(r'"regularMarketPrice":"([\d\.]+)"', script.text)
-                match_prev = re.search(r'"regularMarketPreviousClose":"([\d\.]+)"', script.text)
-                if match and match_prev:
-                    curr = float(match.group(1))
-                    prev = float(match_prev.group(1))
-                    return curr, curr - prev, prev, fetch_time
+            if curr > 10000:
+                return curr, curr - prev, prev, fetch_time
     except: pass
     
     return 0, 0, 0, fetch_time
@@ -490,24 +488,36 @@ def get_institutional_trading(ticker):
     except: pass
     return []
 
-# 🚀 加入抓取時間紀錄
+# 🚀 終極修復：總經資料改用 fast_info 光速抓取，破除日K線結算延遲
 @st.cache_data(ttl=600, show_spinner=False)
 def get_global_macro_data():
     tz_tpe = timezone(timedelta(hours=8))
     fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-    try:
-        data = {"fetch_time": fetch_time}
-        tickers = ["^SOX", "^VIX", "JPY=X"]
-        for t in tickers:
+    data = {"fetch_time": fetch_time}
+    tickers = ["^SOX", "^VIX", "JPY=X"]
+    for t in tickers:
+        try:
+            # 優先使用 fast_info 獲取最即時的光速報價
+            tk = yf.Ticker(t)
+            curr = tk.fast_info.last_price
+            prev = tk.fast_info.previous_close
+            if curr and prev:
+                data[t] = {"price": float(curr), "pct": float((curr-prev)/prev*100)}
+                continue
+        except: pass
+        
+        try:
+            # 備用防線：日K線
             df = yf.Ticker(t).history(period="1mo")
             if len(df) >= 2:
                 c, p = float(df['Close'].iloc[-1]), float(df['Close'].iloc[-2])
                 data[t] = {"price": c, "pct": (c-p)/p*100}
             else:
                 data[t] = {"price": 0, "pct": 0}
-        return data
-    except:
-        return {"fetch_time": fetch_time, "^SOX": {"price": 0, "pct": 0}, "^VIX": {"price": 0, "pct": 0}, "JPY=X": {"price": 0, "pct": 0}}
+        except:
+            data[t] = {"price": 0, "pct": 0}
+            
+    return data
 
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
@@ -765,10 +775,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', dragmode=False, showlegend=False)
-    fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
+    fig.add_annotation(text="📊 資料來源: yfinance / TWSE / Cnyes / Yahoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
-# 🚀 核心升級：精準對齊大盤真實日期
 def predict_tomorrow_open(twii_df, twii_time_str=""):
     macro_data = get_global_macro_data()
     if twii_df is None or len(twii_df) < 2: 
@@ -777,17 +786,10 @@ def predict_tomorrow_open(twii_df, twii_time_str=""):
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
     tz_tpe = timezone(timedelta(hours=8))
     
-    # 確保由抓取的時間字串精準判斷日期
-    if twii_time_str and "/" in twii_time_str:
-        try:
-            last_dt = datetime.strptime(twii_time_str.split(" ")[0], '%Y/%m/%d')
-        except:
-            last_dt = twii_df.index[-1]
-    else:
-        last_dt = twii_df.index[-1]
-        
-    last_dt_str = last_dt.strftime('%Y/%m/%d')
-    next_dt = last_dt + timedelta(days=1)
+    # 精準綁定大盤歷史的最後一天日期
+    real_last_date = twii_df.index[-1]
+    last_dt_str = real_last_date.strftime('%Y/%m/%d')
+    next_dt = real_last_date + timedelta(days=1)
     
     TW_MARKET_HOLIDAYS = {
         "2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", 
@@ -883,11 +885,10 @@ def render_index_board():
                 if wtx_close > 0:
                     st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {wtx_color}; margin: 0;'>{wtx_close:,.0f}</div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {wtx_color};'>{'↑' if wtx_change > 0 else '↓'} {abs(wtx_change):.0f}</div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取時間: {wtx_time_str}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取時間: {wtx_time_str[-8:]}</div>", unsafe_allow_html=True)
                 else:
                     st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top:15px;'>暫無報價</div>", unsafe_allow_html=True)
             with col3:
-                # 🚀 動態日期標題，假日也不會混淆
                 st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
@@ -898,8 +899,7 @@ def render_index_board():
             if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
         
         st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
-        # 🚀 新增總經資料的抓取時間標示
-        st.markdown(f"<div style='text-align:center; font-size:0.85rem; color:#888; margin-top:-10px; margin-bottom:10px;'>🕒 資料來源與抓取時間: {macro.get('fetch_time', '無')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align:center; font-size:0.85rem; color:#888; margin-top:-10px; margin-bottom:10px;'>🕒 資料來源與即時抓取時間: {macro.get('fetch_time', '無')}</div>", unsafe_allow_html=True)
 
         bar_color = "#00cc00" if risk_score < 40 else ("#ffcc00" if risk_score < 70 else "#ff3333")
         risk_label = "🟢 資金充沛，安心佈局" if risk_score < 40 else ("🟡 變數增加，控制倉位" if risk_score < 70 else "🔴 系統風險，嚴格減碼")
@@ -911,7 +911,6 @@ def render_index_board():
         <div style='text-align:center; font-size:0.9rem; color:{bar_color}; font-weight:bold; margin-bottom:15px;'>{risk_label}</div>
         """, unsafe_allow_html=True)
         
-        # 🚀 將版面切為四欄，把台指期夜盤價差加進來！
         mc1, mc2, mc3, mc4 = st.columns(4)
         sox_p = macro['^SOX']['pct']; sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
         with mc1.container(border=True):
