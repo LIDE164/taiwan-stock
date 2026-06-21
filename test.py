@@ -15,6 +15,9 @@ from bs4 import BeautifulSoup
 import re
 import concurrent.futures
 
+# 🚀 引入自動更新套件
+from streamlit_autorefresh import st_autorefresh
+
 # ==========================================
 # 0. 系統初始化與風格設定
 # ==========================================
@@ -108,6 +111,17 @@ st.sidebar.text_input("隱藏", placeholder="輸入股票代號或中文名稱 (
 if "search_error" in st.session_state and st.session_state.search_error:
     st.sidebar.warning(st.session_state.search_error)
     st.session_state.search_error = ""
+
+st.sidebar.divider()
+
+# 🚀 加入盤中自動更新開關
+st.sidebar.title("⏱️ 盤中即時跳動雷達")
+auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False)
+
+if auto_refresh:
+    # 啟動背景計時器，每 30,000 毫秒 (30秒) 自動重整一次畫面，不限制次數
+    st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
+    st.sidebar.success("⚡ 盤中高頻探測已啟動！")
 
 st.sidebar.divider()
 
@@ -483,6 +497,11 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
     if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
     if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+    
+    # 🚀 寫入影片傳授的「K線影線支撐/壓力」判斷邏輯
+    if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
+    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
+
     return sc, rs
 
 def analyze_today(df, ticker_number, inst_data=None):
@@ -491,31 +510,50 @@ def analyze_today(df, ticker_number, inst_data=None):
     fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
     
     try:
-        prev_open = df['Open'].shift(1)
-        prev_close = df['Close'].shift(1)
-        red_mask = (prev_open > prev_close) & (df['Close'] > df['Open']) & (df['Close'] > prev_open) & (df['Open'] < prev_close)
-        black_mask = (prev_close > prev_open) & (df['Open'] > df['Close']) & (df['Open'] > prev_close) & (df['Close'] < prev_open)
+        t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
+        p_open, p_close = float(p['Open']), float(p['Close'])
+        
+        red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
+        black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
         
         is_red_engulfing = bool(red_mask.iloc[-1])
         is_black_engulfing = bool(black_mask.iloc[-1])
         recent_7_red = bool(red_mask.tail(7).any())
+        
+        # 🚀 影片實戰邏輯：影線計算
+        total_range = t_high - t_low
+        if total_range == 0: total_range = 0.001
+        upper_shadow = t_high - max(t_open, t_close)
+        lower_shadow = min(t_open, t_close) - t_low
+        body = abs(t_close - t_open)
+
+        # 1. 回測有撐 (對應影片中突破後拉回測試支撐留長下影線)
+        is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
+
+        # 2. 反彈遇壓 (對應影片中跌破後反彈測均線留長上影線)
+        ma_resistance = min(t['5MA'], t['10MA']) 
+        is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
+
     except:
         is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
+        is_support_pullback, is_resistance_rejection = False, False
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
-        "產業": fund['Industry'], "昨日收盤價": round(p['Close'], 2), "收盤價": round(t['Close'], 2), 
-        "漲跌": round(t['Close'] - p['Close'], 2), "漲跌幅": round((t['Close'] - p['Close']) / p['Close'] * 100, 2), 
-        "近5日漲幅(%)": f"{round((t['Close'] - p5['Close'])/p5['Close']*100, 2)}%",
+        "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
+        "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
+        "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
         "60MA": round(t['60MA'], 2),
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "訊號": (t['Close'] > t['20MA']) and (t['Close'] < t['5MA']) and (t['J'] < 20),
+        "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
-        "近七日紅吞": recent_7_red
+        "近七日紅吞": recent_7_red,
+        "回測有撐": is_support_pullback,
+        "反彈遇壓": is_resistance_rejection
     }
     sc, rs = get_decision_score(data, fund, inst_data)
     data['Score'] = sc
@@ -541,6 +579,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     elif data.get('近七日紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
     elif data.get('黑吞'): analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
     
+    if data.get('回測有撐'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>支撐確認：今日價格下殺後爆出買盤，收出長下影線，主力防守支撐強勁。</span>")
+    if data.get('反彈遇壓'): analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>均線壓力：今日反彈遭遇均線壓力被打回，收長上影線，空方壓制強烈。</b></span>")
+    
     if data['J值'] < 20: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 極度超賣：J 值來到 ({data['J值']})，隨時醞釀強力技術性反彈。</span>")
     elif data['J值'] > 80: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，短線過熱步入超買區。</span>")
     if data['K'] > data['D']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 黃金交叉：K值 大於 D值，指標呈現多頭向上發散。</span>")
@@ -553,7 +594,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     elif data['BIAS'] > 7: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
     if data['成交量'] > data['5日均量'] * 1.1 and data['漲跌'] > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
-    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支 হত্যার虛假反彈。</span>")
+    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
         
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
@@ -799,10 +840,13 @@ if st.session_state.page == "home":
     if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
     if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
     
-    st.markdown("<div style='font-size: 0.9rem; color: #888; text-align: center; margin-bottom: 10px;'>💡 掃描範圍為左側「雷達池設定」內的標的（預設為 Top 100 加上您的自選股）。</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size: 0.9rem; color: #888; text-align: center; margin-bottom: 10px;'>💡 掃描範圍為左側「雷達池設定」內的標的（已解鎖全數展示）。</div>", unsafe_allow_html=True)
     
     scan_results = []
-    pool = list(set(st.session_state.custom_pool + ["2330", "2317", "2454", "2308", "2382", "2603", "2881", "2409"]))
+    
+    # 🚀 核心修正：將掃描池強制綁定為 Top 100 + 自選股，確保一檔都不會漏掉！
+    top_100_pool = fetch_twse_top_100()
+    pool = list(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
     st.markdown("##### 🚀 大腦極速掃描中...")
     progress_bar = st.progress(0)
@@ -839,18 +883,17 @@ if st.session_state.page == "home":
             
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
-            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(by='Score', ascending=False)
+            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: 
                 st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
                 
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (已掛載動能、量能與型態四重濾網)")
-            df_s = df_results[df_results['Score'] >= 5].sort_values(by='Score', ascending=False)
-            df_a = df_results[(df_results['Score'] >= 2) & (df_results['Score'] < 5)].sort_values(by='Score', ascending=False)
-            df_disp = pd.concat([df_s, df_a]).head(20)
+            # 🚀 核心修正：取消 .head(20) 限制，只要符合 2 分以上的標的「全數顯示」！
+            df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
             
-        # 🚀 網頁版極簡條列式清單按鈕
+        # 網頁版極簡條列式清單按鈕
         for _, r in df_disp.iterrows():
             p_val = r['漲跌']
             sign = "+" if p_val > 0 else ""
@@ -860,9 +903,10 @@ if st.session_state.page == "home":
             score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
             
             p_tag = "🔥紅吞" if r.get('紅吞') else ("🩸黑吞" if r.get('黑吞') else ("📈近期紅吞" if r.get('近七日紅吞') else ""))
-            tag_display = f" | {p_tag}" if p_tag else ""
+            shadow_tag = " 📌回測有撐" if r.get('回測有撐') else (" ⚠️反彈遇壓" if r.get('反彈遇壓') else "")
+            tag_display = f" | {p_tag}{shadow_tag}".strip()
+            if tag_display == "|": tag_display = ""
             
-            # 濃縮成單行字串
             button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
             
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
@@ -888,7 +932,7 @@ elif st.session_state.page == "analysis":
     with c3:
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
-    # 🚀 動態進度條特效
+    # 動態進度條特效
     load_ph = st.empty()
     with load_ph.container():
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 分析大腦...</h4>", unsafe_allow_html=True)
