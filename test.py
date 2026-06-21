@@ -754,7 +754,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
     return analysis_bullets, v_t, v_c, v_a
 
-def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False):
+def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True):
     df_view = df.tail(view_days)
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#00cc00' for _, row in df_view.iterrows()]
     x_vals = df_view.index.strftime('%Y-%m-%d')
@@ -785,6 +785,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     sup_x, sup_y, sup_text = [], [], []
     res_x, res_y, res_text = [], [], []
     deduct_up_x, deduct_up_y, deduct_up_text = [], [], []
+    deduct_down_x, deduct_down_y, deduct_down_text = [], [], []
     
     start_pos = len(df) - len(df_view)
     
@@ -831,21 +832,24 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if pos >= 5:
                 curr_deduct = df.iloc[pos - 5]['Close']
                 curr_up = (t_close >= t['5MA']) and (t_close > curr_deduct)
-                prev_up = False
-                if pos >= 6:
-                    prev_deduct = df.iloc[pos - 6]['Close']
-                    prev_up = (p_close >= p['5MA']) and (p_close > prev_deduct)
+                curr_down = (t_close < t['5MA']) and (t_close < curr_deduct)
                 
-                if curr_up and not prev_up:
+                if curr_up:
                     deduct_up_x.append(date.strftime('%Y-%m-%d'))
                     deduct_up_y.append(t_low * 0.80) 
                     deduct_up_text.append("<b>↗️</b>")
+                if curr_down:
+                    deduct_down_x.append(date.strftime('%Y-%m-%d'))
+                    deduct_down_y.append(t_high * 1.12)
+                    deduct_down_text.append("<b>↘️</b>")
 
-    if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
-    if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞", hoverinfo='skip'), row=1, col=1)
-    if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
-    if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
-    if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
+    if show_signals:
+        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=re_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="紅吞", hoverinfo='skip'), row=1, col=1)
+        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=be_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="黑吞", hoverinfo='skip'), row=1, col=1)
+        if sup_x: fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=sup_text, textposition="bottom center", textfont=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=13), name="回測有撐", hoverinfo='skip'), row=1, col=1)
+        if res_x: fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=res_text, textposition="top center", textfont=dict(color="#0066cc" if is_light_mode else "#00ccff", size=13), name="反彈遇壓", hoverinfo='skip'), row=1, col=1)
+        if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
+        if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
@@ -1199,7 +1203,8 @@ elif st.session_state.page == "analysis":
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
                 current_show_buy = st.session_state.get('toggle_buy_sig', True)
                 current_show_sup = st.session_state.get('toggle_sup_res', False)
-                pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup)
+                current_show_signals = st.session_state.get('toggle_signals', True)
+                pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
                 p_bar.progress(95)
 
                 status.markdown("<div style='text-align:center; color:#00cc00; font-weight:bold;'>✅ 解析完成！即將顯示...</div>", unsafe_allow_html=True)
@@ -1283,13 +1288,14 @@ elif st.session_state.page == "analysis":
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
-            dc1, dc2, dc3, dc4, dc5, dc6 = st.columns([1, 1, 1, 1, 1.5, 1.5])
+            dc1, dc2, dc3, dc4, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("1個月", on_click=set_view_days, args=(20,))
             dc2.button("3個月", on_click=set_view_days, args=(60,))
             dc3.button("6個月", on_click=set_view_days, args=(120,))
             dc4.button("1年", on_click=set_view_days, args=(240,))
-            with dc5: st.toggle("🛒 顯示買進訊號", value=True, key='toggle_buy_sig')
-            with dc6: st.toggle("📏 顯示支撐/壓力", value=False, key='toggle_sup_res')
+            with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig')
+            with dc6: st.toggle("📏 支撐/壓力", value=False, key='toggle_sup_res')
+            with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals')
                 
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
