@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 import re
 import concurrent.futures
+import sys
 
 from streamlit_autorefresh import st_autorefresh
 
@@ -198,7 +199,7 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "23
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
-if 'view_days' not in st.session_state: st.session_state.view_days = 20
+if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 if 'url_parsed' not in st.session_state:
@@ -228,9 +229,18 @@ def fetch_twse_top_100():
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    
     def fetch_clean(sym):
         try:
-            d = yf.Ticker(sym).history(period="1y")
+            # 🚀 靜音 yfinance 的錯誤輸出，避免上櫃股票找不到 .TW 時洗版
+            with open(os.devnull, 'w') as devnull:
+                old_stderr = sys.stderr
+                sys.stderr = devnull
+                try:
+                    d = yf.Ticker(sym).history(period="1y")
+                finally:
+                    sys.stderr = old_stderr
+                    
             if d is not None and not d.empty:
                 d = d.dropna(subset=['Close'])
                 if len(d) >= 20: 
@@ -872,10 +882,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_annotation(x=0.01, y=0.92, xref="paper", yref="y domain", text=f"現價: {latest_price:.2f}", showarrow=False, font=dict(color="#ffcc00", size=14, weight="bold"), xanchor="left", bgcolor="rgba(0,0,0,0.5)")
     
     if show_sup_res:
-        highest_price = df_view['High'].max()
-        lowest_price = df_view['Low'].min()
-        fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"壓力 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333"))
-        fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"支撐 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00"))
+        highest_price = df['High'].max()
+        lowest_price = df['Low'].min()
+        fig.add_hline(y=highest_price, line_dash="dash", line_color="#ff3333", row=1, col=1, annotation_text=f"歷史高點 {highest_price:.2f}", annotation_position="top right", annotation_font=dict(size=12, color="#ff3333", bgcolor="rgba(0,0,0,0.5)"))
+        fig.add_hline(y=lowest_price, line_dash="dash", line_color="#00cc00", row=1, col=1, annotation_text=f"歷史低點 {lowest_price:.2f}", annotation_position="bottom right", annotation_font=dict(size=12, color="#00cc00", bgcolor="rgba(0,0,0,0.5)"))
     
     re_x, re_y, re_text = [], [], []
     be_x, be_y, be_text = [], [], []
