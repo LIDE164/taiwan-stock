@@ -425,12 +425,10 @@ def get_global_macro_data():
     latest_ts = 0
     latest_time_str = "無資料"
     success_count = 0
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     for t, url in tickers.items():
         success = False
-        
-        # 🚀 第一層防護：駭入 Yahoo 底層 API，強取「絕對即時」的報價
         try:
             api_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=1d"
             res = requests.get(api_url, headers=headers, timeout=3)
@@ -450,7 +448,6 @@ def get_global_macro_data():
                     latest_time_str = time_str
         except: pass
 
-        # 🛡️ 第二層防護：若底層 API 被阻擋，才退回使用 yfinance 歷史日線
         if not success:
             try:
                 df = yf.Ticker(t).history(period="5d")
@@ -865,13 +862,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     text_c = "#333" if is_light_mode else "#ccc"
     
-    # 🚀 使用空白 name 徹底迴避 hover 衝突，K線與均線皆能正常繪製
-    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name=""), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="", hoverinfo="skip"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="", hoverinfo="skip"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="", hoverinfo="skip"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
+    fig.add_annotation(x=0.01, y=0.92, xref="paper", yref="y domain", text=f"現價: {latest_price:.2f}", showarrow=False, font=dict(color="#ffcc00", size=14, weight="bold"), xanchor="left", bgcolor="rgba(0,0,0,0.5)")
     
     if show_sup_res:
         highest_price = df_view['High'].max()
@@ -973,18 +971,17 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL", hovertemplate="%{y:,.0f}"), row=2, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC", hovertemplate="%{y:.3f}"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF", hovertemplate="%{y:.3f}"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD", hovertemplate="%{y:.3f}"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K", hovertemplate="%{y:.2f}"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D", hovertemplate="%{y:.2f}"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J", hovertemplate="%{y:.2f}"), row=4, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
 
-    # 🚀 完美整合固定式左上角儀表板：繞過 x unified 缺陷，保證數字穩如泰山
     ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"現價:{latest_price:.2f} | 5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -1085,6 +1082,41 @@ if st.session_state.page == "home":
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                 st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                 st.rerun()
+
+        # 🚀 全新加入：LINE 格式推播報告視窗
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📱 顯示 LINE 格式推播純文字報告 (可直接複製)", expanded=False):
+            mode_titles = {
+                "buy": "🎯 【尋找買點榜單】(高靈敏度動能榜)", 
+                "red_engulf": "🔥 【紅吞反轉榜】(S、A級強勢優先)", 
+                "recent": "📊 【近五日成交量熱門榜】"
+            }
+            report_title = mode_titles.get(st.session_state.scan_mode, "📋 雷達大腦掃描報告")
+            update_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
+            
+            report_text = f"{report_title}\n(⏱️ 最新掃描時間: {update_time})\n----------------------------\n"
+            for _, r in df_disp.iterrows():
+                p_val = r['漲跌']
+                sign = "+" if p_val > 0 else ""
+                trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+                s_score = r['Score']
+                score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+                
+                tags = []
+                if r.get('紅吞'): tags.append("🔺吞")
+                elif r.get('黑吞'): tags.append("🔻吞")
+                elif r.get('近七日紅吞'): tags.append("🔸吞")
+                if r.get('回測有撐'): tags.append("📌撐")
+                elif r.get('反彈遇壓'): tags.append("⚠️壓")
+                if '5日線即將上彎' in r:
+                    tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
+                    
+                tag_display = " | ".join(tags)
+                if tag_display: tag_display = f" | {tag_display}"
+                
+                report_text += f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}\n\n"
+            
+            st.text_area("報告內容", report_text, height=300, label_visibility="collapsed")
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
@@ -1229,13 +1261,12 @@ elif st.session_state.page == "analysis":
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
-            dc1, dc2, dc3, dc4, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
-            dc1.button("1個月", on_click=set_view_days, args=(20,))
-            dc2.button("3個月", on_click=set_view_days, args=(60,))
-            dc3.button("6個月", on_click=set_view_days, args=(120,))
-            dc4.button("1年", on_click=set_view_days, args=(240,))
+            dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
+            dc1.button("30日", on_click=set_view_days, args=(30,))
+            dc2.button("60日", on_click=set_view_days, args=(60,))
+            dc3.button("90日", on_click=set_view_days, args=(90,))
             with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig')
-            with dc6: st.toggle("📏 支撐/壓力", value=False, key='toggle_sup_res')
+            with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res')
             with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals')
                 
             if pre_rendered_fig is not None:
