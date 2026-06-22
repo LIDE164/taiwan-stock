@@ -339,7 +339,7 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    # 回歸原始：只看 5MA 上彎 (不加分，只顯示文字診斷)
+    # 🎯 回歸原始：只看 5MA 上彎 (不加減分，僅顯示文字診斷)
     if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
         rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
     if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
@@ -778,22 +778,18 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     bg_c = "#ffffff" if is_light_mode else "#0e1117"
     text_c = "#333" if is_light_mode else "#ccc"
     
-    # 🚀 終極修復：將 5T, 10T, 20T 的數據直接「打包」塞進 K 線的自定義數據 (customdata) 裡
-    custom_hover_data = df_view[['5MA', '10MA', '20MA']].fillna(0).values
+    # 🚀 顯示 5T/10T/20T 的終極解決方案：不再使用 customdata，直接透過空白 name 來迴避衝突
+    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     
-    fig.add_trace(go.Candlestick(
-        x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], 
-        customdata=custom_hover_data,
-        increasing_line_color='#ff3333', decreasing_line_color='#00cc00', 
-        name="K線",
-        hovertemplate="開盤: %{open:.2f}<br>最高: %{high:.2f}<br>最低: %{low:.2f}<br>收盤: %{close:.2f}<br><br><b>5T:</b> %{customdata[0]:.2f}<br><b>10T:</b> %{customdata[1]:.2f}<br><b>20T:</b> %{customdata[2]:.2f}<extra></extra>"
-    ), row=1, col=1)
+    # 直接加入均線並賦予 hovertemplate，不使用 hoverinfo="skip"
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hovertemplate="%{y:.2f}<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hovertemplate="%{y:.2f}<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hovertemplate="%{y:.2f}<extra></extra>"), row=1, col=1)
     
-    # 🚀 將均線的 hoverinfo 設為 "skip"，因為數值已經統一顯示在上面 K 線的框框裡了！
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T", hoverinfo="skip"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T", hoverinfo="skip"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T", hoverinfo="skip"), row=1, col=1)
-    
+    # 第二重保險：建立一個與 Close 價重疊的隱形參考點，強制將所有 MA 資料印在它的文字框上
+    custom_text = [f"5T: {row['5MA']:.2f}<br>10T: {row['10MA']:.2f}<br>20T: {row['20MA']:.2f}" for _, row in df_view.iterrows()]
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Close'], mode='markers', marker=dict(color='rgba(0,0,0,0)'), name="均線數值", hovertemplate="%{text}<extra></extra>", text=custom_text, showlegend=False), row=1, col=1)
+
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1,
                   annotation_text=f" 🎯 最新報價: {latest_price:.2f} ",
                   annotation_position="top right",
@@ -1134,11 +1130,12 @@ if st.session_state.page == "home":
             st.markdown("##### 📊 近五日成交量排行榜")
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
-            st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的")
-            df_disp = df_results[df_results['近七日紅吞'] == True].sort_values(
+            st.markdown("##### 🔥 近七日觸發「紅吞（多頭吞噬）」反轉型態標的 (S、A級)")
+            # 🚀 修正：紅吞榜現在只顯示 S 級與 A 級的股票
+            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 2)].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
-            if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的個股。")
+            if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
             df_disp = df_results[df_results['Score'] >= 2].sort_values(
