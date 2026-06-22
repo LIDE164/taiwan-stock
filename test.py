@@ -21,7 +21,15 @@ from streamlit_autorefresh import st_autorefresh
 # 0. 系統初始化與風格設定
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
-
+st.markdown('''
+<head>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="專業交易雷達">
+    <link rel="apple-touch-icon" href="/logo.png">
+</head>
+''', unsafe_allow_html=True)
 components.html(
     """
     <script>
