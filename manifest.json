@@ -1,0 +1,15 @@
+{
+  "name": "專業交易雷達",
+  "short_name": "交易雷達",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#ffcc00",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
