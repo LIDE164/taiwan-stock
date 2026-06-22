@@ -213,6 +213,221 @@ def fetch_twse_top_100():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
+@st.cache_data(ttl=60, show_spinner=False) 
+def get_stock_data(ticker_number):
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    def fetch_clean(sym):
+        try:
+            d = yf.Ticker(sym).history(period="1y")
+            if d is not None and not d.empty:
+                d = d.dropna(subset=['Close'])
+                if len(d) >= 20: 
+                    d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
+                    return d
+        except: pass
+        return None
+
+    df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
+    if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
+    if df is None and base_ticker != "^TWII": df = fetch_clean(base_ticker)
+    
+    if df is None: return None
+    
+    try:
+        url = "https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote" if base_ticker == "^TWII" else f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
+        res = requests.get(url, timeout=3)
+        if res.status_code == 200:
+            q = res.json()['data']['quote']
+            c_price, o_price = float(q['23']), float(q['22'])
+            h_price, l_price = float(q['25']), float(q['26'])
+            v_vol = float(q.get('14', 0)) * 1000 if base_ticker != "^TWII" else 0
+            ts = int(q['20'])
+            dt_live = pd.to_datetime(datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
+            
+            if dt_live not in df.index:
+                new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
+                df = pd.concat([df, new_row])
+            else:
+                df.at[dt_live, 'Close'] = c_price
+                df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
+                df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
+                if base_ticker != "^TWII": df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
+    except: pass
+
+    df['5MA'] = df['Close'].rolling(5).mean()
+    df['10MA'] = df['Close'].rolling(10).mean()
+    df['20MA'] = df['Close'].rolling(20).mean()
+    df['60MA'] = df['Close'].rolling(60).mean()
+    df['STD20'] = df['Close'].rolling(20).std()
+    df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
+    df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
+    df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
+    df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['Signal']
+    low_9 = df['Low'].rolling(9).min()
+    high_9 = df['High'].rolling(9).max()
+    rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
+    df['K'] = rsv.ewm(com=2, adjust=False).mean()
+    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+    df['J'] = 3 * df['K'] - 2 * df['D']
+    return df
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_fundamental_and_industry_data(ticker_number, current_price=0):
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    eps_val, pe_val = "無", "無"
+    ind = "一般產業"
+    try:
+        url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            text = soup.get_text(separator='|')
+            match = re.search(r'當季EPS\|+([\-\d\.]+)', text)
+            if match: eps_val = match.group(1)
+            else:
+                res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
+                if res_api.status_code == 200:
+                    data = res_api.json()
+                    if 'data' in data and 'eps' in data['data']: eps_val = f"{float(data['data']['eps']):.2f}"
+    except: pass
+    try:
+        info = yf.Ticker(f"{base_ticker}.TW").info
+        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        sec, ind_eng = info.get("sector", ""), info.get("industry", "")
+        tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
+        tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
+        ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
+        if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
+        if eps_val == "無" and 'trailingEps' in info and info['trailingEps'] is not None:
+            eps_val = str(round(info['trailingEps'], 2))
+    except: pass
+    try:
+        if eps_val != "無":
+            eps_f = float(eps_val)
+            if eps_f > 0 and current_price > 0: pe_val = str(round(float(current_price) / eps_f, 2))
+            elif eps_f <= 0: pe_val = "無 (EPS ≦ 0)"
+    except: pass
+    return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
+
+def get_decision_score(data, fund_data, inst_data=None):
+    sc, rs = 0, []
+    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
+    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
+    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
+    
+    try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
+    except: eps_f = 0.0
+    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
+    
+    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
+    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
+        
+    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
+    else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
+
+    if inst_data and len(inst_data) >= 3:
+        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
+        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+
+    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
+    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
+
+    if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
+    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
+    
+    # 回歸原始：只看 5MA 上彎 (不加分，只顯示文字診斷)
+    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
+        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
+    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
+        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
+
+    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
+    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
+    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
+    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
+    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+
+    return sc, rs
+
+def analyze_today(df, ticker_number, inst_data=None):
+    if df is None or len(df) < 5: return None
+    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
+    fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
+    
+    try:
+        t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
+        p_open, p_close = float(p['Open']), float(p['Close'])
+        
+        red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
+        black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
+        
+        is_red_engulfing = bool(red_mask.iloc[-1])
+        is_black_engulfing = bool(black_mask.iloc[-1])
+        recent_7_red = bool(red_mask.tail(7).any())
+        
+        total_range = t_high - t_low
+        if total_range == 0: total_range = 0.001
+        upper_shadow = t_high - max(t_open, t_close)
+        lower_shadow = min(t_open, t_close) - t_low
+        body = abs(t_close - t_open)
+
+        is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
+        ma_resistance = min(t['5MA'], t['10MA']) 
+        is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
+    except:
+        is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
+        is_support_pullback, is_resistance_rejection = False, False
+        
+    try:
+        ma5_deduction_tmr = float(df['Close'].iloc[-5]) if len(df) >= 5 else float(t_close)
+        ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
+        is_ma5_turning_up = t_close > ma5_deduction_tmr
+        is_ma60_turning_up = t_close > ma60_deduction_tmr
+    except:
+        is_ma5_turning_up, is_ma60_turning_up = False, False
+
+    data = {
+        "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
+        "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
+        "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
+        "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
+        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
+        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
+        "60MA": round(t['60MA'], 2),
+        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
+        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
+        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
+        "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
+        "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
+        "近七日紅吞": recent_7_red,
+        "回測有撐": is_support_pullback,
+        "反彈遇壓": is_resistance_rejection,
+        "5日線即將上彎": is_ma5_turning_up,
+        "季線即將上彎": is_ma60_turning_up
+    }
+    
+    sc, rs = get_decision_score(data, fund, inst_data)
+    data['Score'] = sc
+    data['Reasons'] = rs
+    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
+    
+    return data
+
+# 🚀 快速抓取個股單獨評級 (用於側邊欄)
+@st.cache_data(ttl=180, show_spinner=False)
+def get_stock_rating_fast(ticker):
+    try:
+        df = get_stock_data(ticker)
+        if df is not None and len(df) >= 5:
+            data = analyze_today(df, ticker, inst_data=None)
+            if data: return data.get('評級', "⚪ 觀望")
+    except: pass
+    return "⚪ 觀望"
+
 st.sidebar.title("⭐ 我的自選群組")
 
 MAX_GROUPS = 5
@@ -253,7 +468,9 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 st.error("至少需保留一個群組！")
                 
         for fav in g_stocks:
-            if st.button(f"📊 {fav} {get_stock_name(fav)}", key=f"go_{g_name}_{fav}", use_container_width=True):
+            # 🚀 側邊欄：單獨顯示評級字眼
+            fav_rating = get_stock_rating_fast(fav)
+            if st.button(f"📊 {fav} {get_stock_name(fav)} | {fav_rating}", key=f"go_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
 
@@ -264,45 +481,6 @@ if st.sidebar.button("🔄 更新熱門雷達池 (Top 100)", use_container_width
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 雷達池已擴大更新為全台前 100 檔！")
     st.rerun()
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_fundamental_and_industry_data(ticker_number, current_price=0):
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    eps_val, pe_val = "無", "無"
-    ind = "一般產業"
-    try:
-        url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            text = soup.get_text(separator='|')
-            match = re.search(r'當季EPS\|+([\-\d\.]+)', text)
-            if match: eps_val = match.group(1)
-            else:
-                res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
-                if res_api.status_code == 200:
-                    data = res_api.json()
-                    if 'data' in data and 'eps' in data['data']: eps_val = f"{float(data['data']['eps']):.2f}"
-    except: pass
-    try:
-        info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
-        sec, ind_eng = info.get("sector", ""), info.get("industry", "")
-        tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
-        tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
-        ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
-        if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
-        if eps_val == "無" and 'trailingEps' in info and info['trailingEps'] is not None:
-            eps_val = str(round(info['trailingEps'], 2))
-    except: pass
-    try:
-        if eps_val != "無":
-            eps_f = float(eps_val)
-            if eps_f > 0 and current_price > 0: pe_val = str(round(float(current_price) / eps_f, 2))
-            elif eps_f <= 0: pe_val = "無 (EPS ≦ 0)"
-    except: pass
-    return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
@@ -434,66 +612,6 @@ def fetch_twse_index_history():
     except: pass
     return None
 
-@st.cache_data(ttl=60, show_spinner=False) 
-def get_stock_data(ticker_number):
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    def fetch_clean(sym):
-        try:
-            d = yf.Ticker(sym).history(period="1y")
-            if d is not None and not d.empty:
-                d = d.dropna(subset=['Close'])
-                if len(d) >= 20: 
-                    d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
-                    return d
-        except: pass
-        return None
-
-    df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
-    if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
-    if df is None and base_ticker != "^TWII": df = fetch_clean(base_ticker)
-    
-    if df is None: return None
-    
-    try:
-        url = "https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote" if base_ticker == "^TWII" else f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
-        res = requests.get(url, timeout=3)
-        if res.status_code == 200:
-            q = res.json()['data']['quote']
-            c_price, o_price = float(q['23']), float(q['22'])
-            h_price, l_price = float(q['25']), float(q['26'])
-            v_vol = float(q.get('14', 0)) * 1000 if base_ticker != "^TWII" else 0
-            ts = int(q['20'])
-            dt_live = pd.to_datetime(datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
-            
-            if dt_live not in df.index:
-                new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
-                df = pd.concat([df, new_row])
-            else:
-                df.at[dt_live, 'Close'] = c_price
-                df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
-                df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
-                if base_ticker != "^TWII": df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
-    except: pass
-
-    df['5MA'] = df['Close'].rolling(5).mean()
-    df['10MA'] = df['Close'].rolling(10).mean()
-    df['20MA'] = df['Close'].rolling(20).mean()
-    df['60MA'] = df['Close'].rolling(60).mean()
-    df['STD20'] = df['Close'].rolling(20).std()
-    df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
-    df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
-    df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
-    df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    df['MACD_Hist'] = df['MACD'] - df['Signal']
-    low_9 = df['Low'].rolling(9).min()
-    high_9 = df['High'].rolling(9).max()
-    rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
-    df['K'] = rsv.ewm(com=2, adjust=False).mean()
-    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-    df['J'] = 3 * df['K'] - 2 * df['D']
-    return df
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
     try:
@@ -580,111 +698,6 @@ def get_global_macro_data():
                     return cache_data
         except: pass
 
-    return data
-
-def get_decision_score(data, fund_data, inst_data=None):
-    sc, rs = 0, []
-    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
-    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
-    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
-    
-    try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
-    except: eps_f = 0.0
-    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
-    
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
-        
-    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
-    else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
-
-    if inst_data and len(inst_data) >= 3:
-        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
-
-    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
-    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
-
-    if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
-    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
-    
-    # 回歸原始：只看 5MA 上彎 (不加分，只顯示文字診斷)
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
-
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
-
-    return sc, rs
-
-def analyze_today(df, ticker_number, inst_data=None):
-    if df is None or len(df) < 5: return None
-    t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
-    fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
-    
-    try:
-        t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
-        p_open, p_close = float(p['Open']), float(p['Close'])
-        
-        red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
-        black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
-        
-        is_red_engulfing = bool(red_mask.iloc[-1])
-        is_black_engulfing = bool(black_mask.iloc[-1])
-        recent_7_red = bool(red_mask.tail(7).any())
-        
-        total_range = t_high - t_low
-        if total_range == 0: total_range = 0.001
-        upper_shadow = t_high - max(t_open, t_close)
-        lower_shadow = min(t_open, t_close) - t_low
-        body = abs(t_close - t_open)
-
-        is_support_pullback = (lower_shadow > body * 1.5) and (lower_shadow / total_range > 0.4) and (t_low < p_close) and (t_close >= min(p_open, p_close))
-        ma_resistance = min(t['5MA'], t['10MA']) 
-        is_resistance_rejection = (upper_shadow > body * 1.5) and (upper_shadow / total_range > 0.4) and (t_high >= ma_resistance) and (t_close < ma_resistance)
-    except:
-        is_red_engulfing, is_black_engulfing, recent_7_red = False, False, False
-        is_support_pullback, is_resistance_rejection = False, False
-        
-    try:
-        ma5_deduction_tmr = float(df['Close'].iloc[-5]) if len(df) >= 5 else float(t_close)
-        ma60_deduction_tmr = float(df['Close'].iloc[-60]) if len(df) >= 60 else float(t_close)
-        is_ma5_turning_up = t_close > ma5_deduction_tmr
-        is_ma60_turning_up = t_close > ma60_deduction_tmr
-    except:
-        is_ma5_turning_up, is_ma60_turning_up = False, False
-
-    data = {
-        "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
-        "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
-        "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
-        "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
-        "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
-        "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
-        "60MA": round(t['60MA'], 2),
-        "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
-        "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
-        "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
-        "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
-        "近七日紅吞": recent_7_red,
-        "回測有撐": is_support_pullback,
-        "反彈遇壓": is_resistance_rejection,
-        "5日線即將上彎": is_ma5_turning_up,
-        "季線即將上彎": is_ma60_turning_up
-    }
-    
-    sc, rs = get_decision_score(data, fund, inst_data)
-    data['Score'] = sc
-    data['Reasons'] = rs
-    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
-    
     return data
 
 def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
