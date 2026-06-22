@@ -21,15 +21,18 @@ from streamlit_autorefresh import st_autorefresh
 # 0. 系統初始化與風格設定
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
+
+# 🚀 PWA 獨立 APP 宣告：強制隱藏 Safari 網址列，並載入 GitHub 的圖標
 st.markdown('''
 <head>
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="專業交易雷達">
-    <link rel="apple-touch-icon" href="/logo.png">
+    <meta name="apple-mobile-web-app-title" content="交易雷達">
+    <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/LIDE164/taiwan-stock/main/logo.png">
 </head>
 ''', unsafe_allow_html=True)
+
 components.html(
     """
     <script>
@@ -56,23 +59,24 @@ val_col = "#0066cc" if is_light_mode else "#00ffcc"
 sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
 app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
 
-st.markdown(f'''
+# 🚀 終極安全防護：使用傳統字串拼接取代 f-string，徹底根絕 SyntaxError 崩潰
+css_style = """
 <style>
-    .stApp {{ background-color: {app_bg}; }}
-    #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
-    [data-testid="collapsedControl"] {{ border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; }}
-    [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的群組"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
-    .stButton button {{ font-weight: bold !important; border-radius: 8px !important; text-align: left !important; }}
-    button[kind="primary"] {{ font-size: 1.5rem !important; padding: 15px !important; border-radius: 12px !important; background-color: #ffcc00 !important; color: #111 !important; border: none !important; }}
-    .sticky-header {{ position: sticky; top: 0; z-index: 999; background-color: {sticky_bg}; padding: 10px 0; border-bottom: 1px solid {border_col}; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }}
-    div[data-testid="stVerticalBlockBorderWrapper"] > div {{ background-color: {bg_col} !important; border-color: {border_col} !important; padding: 4px !important; }}
-    h1, h2, h3, h4, p, span {{ color: {title_col} !important; }}
-    .compact-btn button {{ padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }}
-    
-    .risk-bar-container {{ width: 100%; background-color: #333; border-radius: 8px; margin-top: 5px; margin-bottom: 15px; overflow: hidden; }}
-    .risk-bar-fill {{ height: 16px; border-radius: 8px; transition: width 0.5s ease-in-out; }}
+    .stApp { background-color: """ + app_bg + """; }
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;}
+    [data-testid="collapsedControl"] { border: 1px solid """ + border_col + """ !important; border-radius: 8px !important; background-color: """ + bg_col + """ !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; }
+    [data-testid="collapsedControl"]::after { content: " ⭐ 我的群組"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }
+    .stButton button { font-weight: bold !important; border-radius: 8px !important; text-align: left !important; }
+    button[kind="primary"] { font-size: 1.5rem !important; padding: 15px !important; border-radius: 12px !important; background-color: #ffcc00 !important; color: #111 !important; border: none !important; }
+    .sticky-header { position: sticky; top: 0; z-index: 999; background-color: """ + sticky_bg + """; padding: 10px 0; border-bottom: 1px solid """ + border_col + """; backdrop-filter: blur(5px); margin-top: -15px; margin-bottom: 15px; }
+    div[data-testid="stVerticalBlockBorderWrapper"] > div { background-color: """ + bg_col + """ !important; border-color: """ + border_col + """ !important; padding: 4px !important; }
+    h1, h2, h3, h4, p, span { color: """ + title_col + """ !important; }
+    .compact-btn button { padding: 0.25rem 0.5rem !important; font-size: 1rem !important; }
+    .risk-bar-container { width: 100%; background-color: #333; border-radius: 8px; margin-top: 5px; margin-bottom: 15px; overflow: hidden; }
+    .risk-bar-fill { height: 16px; border-radius: 8px; transition: width 0.5s ease-in-out; }
 </style>
-''', unsafe_allow_html=True)
+"""
+st.markdown(css_style, unsafe_allow_html=True)
 
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "2376": "技嘉", "1802": "台玻", "2603": "長榮", "1785": "光洋科", "1519": "華城", "6147": "頎邦" }
 
@@ -950,7 +954,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ff3333', decreasing_line_color='#00cc00', name="K線"), row=1, col=1)
     
-    # 🚀 恢復純淨的 Scatter 均線，不加額外的 hack 屬性
+    # 🚀 恢復純淨的 Scatter 均線
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
@@ -1063,16 +1067,16 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL", hovertemplate="%{y:,.0f}"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist'], marker_color=macd_colors, name="OSC", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD'], line=dict(color=line_k, width=1.5), name="DIF", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal'], line=dict(color=line_d, width=1.5), name="MACD", hovertemplate="%{y:.3f}"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K'], line=dict(color=line_k, width=1.5), name="K", hovertemplate="%{y:.2f}"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D'], line=dict(color=line_d, width=1.5), name="D", hovertemplate="%{y:.2f}"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J", hovertemplate="%{y:.2f}"), row=4, col=1)
 
-    # 🚀 將您提供的頂部儀表板設計完美移植進來！(不再依賴 x unified hover)
+    # 🚀 完美整合固定式儀表板：繞過 x unified Hovertool 缺陷，保證數字不消失
     ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
     fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -1085,6 +1089,170 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', hoverlabel=dict(bgcolor=bg_c, font_size=13, font_color=text_c), dragmode=False, showlegend=False)
     fig.add_annotation(text="📊 資料來源: yfinance / TWSE / WantGoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
+
+def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
+    macro_data = get_global_macro_data()
+    if twii_df is None or len(twii_df) < 2: 
+        return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, macro_data
+    if twii_close > 0:
+        t_close = twii_close
+        p_close = twii_close - twii_change
+        t_open = twii_df['Open'].iloc[-1]
+    else:
+        t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
+    tz_tpe = timezone(timedelta(hours=8))
+    if twii_time_str and "/" in twii_time_str:
+        last_dt_str = twii_time_str.split(" ")[0]
+        try: last_dt = datetime.strptime(last_dt_str, '%Y/%m/%d')
+        except: last_dt = datetime.now(tz_tpe)
+    else:
+        last_dt = datetime.now(tz_tpe)
+        last_dt_str = last_dt.strftime('%Y/%m/%d')
+    next_dt = last_dt + timedelta(days=1)
+    TW_MARKET_HOLIDAYS = {"2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", "2026/02/27", "2026/04/02", "2026/04/03", "2026/05/01", "2026/06/19", "2026/09/25", "2026/10/09"}
+    while True:
+        if next_dt.weekday() >= 5: 
+            next_dt += timedelta(days=1)
+            continue
+        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS: 
+            next_dt += timedelta(days=1)
+            continue
+        break
+    next_dt_str = next_dt.strftime('%Y/%m/%d')
+    
+    today_title, today_desc = "⚖️ 平盤震盪", "大盤開在平盤附近，法人現貨買賣超多空拉扯，量價關係呈現縮量，盤勢陷入震盪整理。"
+    if t_open > p_close * 1.003:
+        if t_close > t_open: today_title, today_desc = "🔥 開高走高", "大盤受外資買盤與美股溢價激勵跳空開高，配合融資餘額增加與量能放大，盤勢極度偏多。"
+        else: today_title, today_desc = "⚠️ 開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，動能指標有進入超買區疑慮，呈現高檔回落。"
+    elif t_open < p_close * 0.997:
+        if t_close > t_open: today_title, today_desc = "💪 開低走高", "大盤受國際盤回檔影響開低，但低檔投信承接買盤強勁，出現開低走高收紅K型態。"
+        else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，恐慌指數上升引發散戶多殺多停損賣壓，盤勢極度偏空。"
+    else:
+        if t_close > p_close * 1.003: today_title, today_desc = "📈 平盤走高", "大盤開平盤附近，隨後受權值股買盤帶動，均線乖離擴大，多方發力穩步墊高。"
+        elif t_close < p_close * 0.997: today_title, today_desc = "📉 平盤走低", "大盤開平盤附近，但缺乏主力買盤支撐，資金動能不足導致震盪向下。"
+
+    risk_score = 50 
+    ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
+    if t_close < ma5: risk_score += 15
+    else: risk_score -= 10
+    sox_data = macro_data.get('^SOX', {"price": 0, "pct": 0})
+    sox_pct = sox_data.get('pct', 0)
+    if sox_pct < -2.0: risk_score += 20
+    elif sox_pct < -0.5: risk_score += 10
+    elif sox_pct > 1.5: risk_score -= 15
+    vix_data = macro_data.get('^VIX', {"price": 0, "pct": 0})
+    vix_curr = vix_data.get('price', 0)
+    vix_pct = vix_data.get('pct', 0)
+    if vix_curr > 20 or vix_pct > 10.0: risk_score += 20
+    elif vix_pct < -5.0: risk_score -= 10
+    jpy_data = macro_data.get('JPY=X', {"price": 0, "pct": 0})
+    jpy_pct = jpy_data.get('pct', 0)
+    if jpy_pct < -0.8: risk_score += 15 
+    elif jpy_pct > 0.5: risk_score -= 5
+    
+    wtx_close, _, _, _ = get_futures_quote()
+    night_diff_text = ""
+    if wtx_close > 0 and t_close > 0:
+        night_diff = wtx_close - t_close
+        if night_diff < -150:
+            risk_score += 25
+            night_diff_text = f"<br>⚠️ <span style='color:#00cc00;'><b>期貨逆價差過大 ({night_diff:.0f}點)</b>：夜盤重挫，開低風險劇增！</span>"
+        elif night_diff < -50:
+            risk_score += 10
+            night_diff_text = f"<br>⚠️ <span style='color:#00cc00;'><b>期貨逆價差 ({night_diff:.0f}點)</b>：夜盤走勢偏弱。</span>"
+        elif night_diff > 150:
+            risk_score -= 20
+            night_diff_text = f"<br>🔥 <span style='color:#ff3333;'><b>期貨強勢正價差 (+{night_diff:.0f}點)</b>：夜盤大漲，開高機率極高！</span>"
+        elif night_diff > 50:
+            risk_score -= 10
+            night_diff_text = f"<br>🔥 <span style='color:#ff3333;'><b>期貨正價差 (+{night_diff:.0f}點)</b>：夜盤走勢偏多。</span>"
+
+    risk_score = max(5, min(95, int(risk_score))) 
+    if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經與期貨夜盤環境穩定，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。{night_diff_text}"
+    elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或台股跌破關鍵短均線，預防 ({next_dt_str}) 開平低盤回測下檔支撐。{night_diff_text}"
+    else: tmr_title, tmr_desc = "🚨 極度警戒", f"全球宏觀風險飆高（費半重挫或夜盤大跌），強烈建議減碼防範 ({next_dt_str}) 跳空重挫的系統性風險。{night_diff_text}"
+    
+    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
+
+def render_index_board():
+    try:
+        twii_close, twii_change, twii_time_str = get_twii_quote()
+        twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
+        wtx_close, wtx_change, wtx_prev, wtx_time_str = get_futures_quote()
+        wtx_color = '#ff3333' if wtx_change >= 0 else '#00cc00'
+        twii_df_for_pred = get_stock_data("^TWII")
+        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
+        
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([1, 1, 1.5])
+            with col1:
+                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}</div>", unsafe_allow_html=True)
+            with col2:
+                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台指期貨 (最後收盤/夜盤) 🌙</div>", unsafe_allow_html=True)
+                if wtx_close > 0:
+                    st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {wtx_color}; margin: 0;'>{wtx_close:,.0f}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {wtx_color};'>{'↑' if wtx_change > 0 else '↓'} {abs(wtx_change):.0f}</div>", unsafe_allow_html=True)
+                    
+                    wtx_url = "https://tw.stock.yahoo.com/quote/FITXAMP"
+                    st.markdown(f"<div style='text-align: center; font-size: 0.8rem; color: #888; margin-top:2px;'>前日收盤: {wtx_prev:,.0f} | 🕒 抓取: {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='{wtx_url}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo 股市 / HiStock</a></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div style='text-align: center; font-size: 1.2rem; color: #888; margin-top:15px;'>暫無報價</div>", unsafe_allow_html=True)
+            with col3:
+                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
+            
+            if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
+        
+        st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align:center; font-size:0.85rem; color:#888; margin-top:-10px; margin-bottom:10px;'>🕒 總經最後收盤時間: {macro.get('global_time', '無')}</div>", unsafe_allow_html=True)
+
+        bar_color = "#00cc00" if risk_score < 40 else ("#ffcc00" if risk_score < 70 else "#ff3333")
+        risk_label = "🟢 資金充沛，安心佈局" if risk_score < 40 else ("🟡 變數增加，控制倉位" if risk_score < 70 else "🔴 系統風險，嚴格減碼")
+        st.markdown(f"<div style='text-align:center; font-size:1.1rem; font-weight:bold;'>系統量化開低風險度：<span style='color:{bar_color};'>{risk_score}%</span></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="risk-bar-container">
+            <div class="risk-bar-fill" style="width: {risk_score}%; background-color: {bar_color};"></div>
+        </div>
+        <div style='text-align:center; font-size:0.9rem; color:{bar_color}; font-weight:bold; margin-bottom:15px;'>{risk_label}</div>
+        """, unsafe_allow_html=True)
+        
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        sox_data = macro.get('^SOX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^SOX"})
+        sox_p = sox_data.get('pct', 0)
+        sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
+        with mc1.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data.get('price', 0):,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data.get('time', '無')}<br><a href='{sox_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+        
+        vix_data = macro.get('^VIX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^VIX"})
+        vix_p = vix_data.get('pct', 0)
+        vix_c = "#00cc00" if vix_p <= 0 else "#ff3333"
+        with mc2.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+        
+        jpy_data = macro.get('JPY=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/JPY=X"})
+        jpy_p = jpy_data.get('pct', 0)
+        jpy_c = "#ffcc00" 
+        jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
+        with mc3.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+            
+        wtx_diff_text = "無報價"
+        wtx_diff_color = "#888"
+        if wtx_close > 0 and twii_close > 0:
+            diff = wtx_close - twii_close
+            wtx_diff_color = "#ff3333" if diff >= 0 else "#00cc00"
+            wtx_diff_text = f"{'+' if diff>0 else ''}{diff:.0f}點 (逆/正價差)"
+        with mc4.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期夜盤動態</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{wtx_diff_color};'>{wtx_close:,.0f}<br>{wtx_diff_text}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {wtx_time_str[-13:] if len(wtx_time_str) >= 13 else wtx_time_str}<br><a href='https://tw.stock.yahoo.com/quote/FITXAMP' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo 股市</a></div>", unsafe_allow_html=True)
+    except Exception as e: 
+        st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
 # ==========================================
 # 🚀 背景極速快取模組 (0.1秒秒發快取引擎)
@@ -1163,10 +1331,8 @@ if st.session_state.page == "home":
             if r.get('紅吞'): tags.append("🔺吞")
             elif r.get('黑吞'): tags.append("🔻吞")
             elif r.get('近七日紅吞'): tags.append("🔸吞")
-            
             if r.get('回測有撐'): tags.append("📌撐")
             elif r.get('反彈遇壓'): tags.append("⚠️壓")
-            
             if '5日線即將上彎' in r:
                 tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
                 
@@ -1177,6 +1343,41 @@ if st.session_state.page == "home":
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                 st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                 st.rerun()
+
+        # 🚀 全新加入：LINE 格式推播報告視窗
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander("📱 顯示 LINE 格式推播純文字報告 (可直接複製)", expanded=False):
+            mode_titles = {
+                "buy": "🎯 【尋找買點榜單】(高靈敏度動能榜)", 
+                "red_engulf": "🔥 【紅吞反轉榜】(S、A級強勢優先)", 
+                "recent": "📊 【近五日成交量熱門榜】"
+            }
+            report_title = mode_titles.get(st.session_state.scan_mode, "📋 雷達大腦掃描報告")
+            update_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
+            
+            report_text = f"{report_title}\n(⏱️ 最新掃描時間: {update_time})\n----------------------------\n"
+            for _, r in df_disp.iterrows():
+                p_val = r['漲跌']
+                sign = "+" if p_val > 0 else ""
+                trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+                s_score = r['Score']
+                score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+                
+                tags = []
+                if r.get('紅吞'): tags.append("🔺吞")
+                elif r.get('黑吞'): tags.append("🔻吞")
+                elif r.get('近七日紅吞'): tags.append("🔸吞")
+                if r.get('回測有撐'): tags.append("📌撐")
+                elif r.get('反彈遇壓'): tags.append("⚠️壓")
+                if '5日線即將上彎' in r:
+                    tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
+                    
+                tag_display = " | ".join(tags)
+                if tag_display: tag_display = f" | {tag_display}"
+                
+                report_text += f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}\n\n"
+            
+            st.text_area("報告內容", report_text, height=300, label_visibility="collapsed")
 
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
