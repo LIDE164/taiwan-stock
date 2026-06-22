@@ -1082,42 +1082,7 @@ if st.session_state.page == "home":
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                 st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                 st.rerun()
-
-        # 🚀 全新加入：LINE 格式推播報告視窗
-        st.markdown("<br>", unsafe_allow_html=True)
-        with st.expander("📱 顯示 LINE 格式推播純文字報告 (可直接複製)", expanded=False):
-            mode_titles = {
-                "buy": "🎯 【尋找買點榜單】(高靈敏度動能榜)", 
-                "red_engulf": "🔥 【紅吞反轉榜】(S、A級強勢優先)", 
-                "recent": "📊 【近五日成交量熱門榜】"
-            }
-            report_title = mode_titles.get(st.session_state.scan_mode, "📋 雷達大腦掃描報告")
-            update_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
-            
-            report_text = f"{report_title}\n(⏱️ 最新掃描時間: {update_time})\n----------------------------\n"
-            for _, r in df_disp.iterrows():
-                p_val = r['漲跌']
-                sign = "+" if p_val > 0 else ""
-                trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-                s_score = r['Score']
-                score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
                 
-                tags = []
-                if r.get('紅吞'): tags.append("🔺吞")
-                elif r.get('黑吞'): tags.append("🔻吞")
-                elif r.get('近七日紅吞'): tags.append("🔸吞")
-                if r.get('回測有撐'): tags.append("📌撐")
-                elif r.get('反彈遇壓'): tags.append("⚠️壓")
-                if '5日線即將上彎' in r:
-                    tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
-                    
-                tag_display = " | ".join(tags)
-                if tag_display: tag_display = f" | {tag_display}"
-                
-                report_text += f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}\n\n"
-            
-            st.text_area("報告內容", report_text, height=300, label_visibility="collapsed")
-
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
