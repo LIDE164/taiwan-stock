@@ -411,7 +411,7 @@ def get_institutional_trading(ticker):
 
 MACRO_CACHE_FILE = "macro_cache.json"
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_global_macro_data():
     tz_tpe = timezone(timedelta(hours=8))
     fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
@@ -425,29 +425,55 @@ def get_global_macro_data():
     latest_ts = 0
     latest_time_str = "無資料"
     success_count = 0
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     for t, url in tickers.items():
+        success = False
+        
+        # 🚀 第一層防護：駭入 Yahoo 底層 API，強取「絕對即時」的報價
         try:
-            df = yf.Ticker(t).history(period="1mo")
-            if df is not None and not df.empty:
-                df = df.dropna(subset=['Close'])
-                if len(df) >= 2:
-                    c = float(df['Close'].iloc[-1])
-                    p = float(df['Close'].iloc[-2])
-                    last_dt = df.index[-1]
-                    time_str = last_dt.strftime('%Y/%m/%d')
-                    
-                    data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": time_str, "url": url}
-                    success_count += 1
-                    
-                    if last_dt.timestamp() > latest_ts:
-                        latest_ts = last_dt.timestamp()
-                        latest_time_str = time_str
-                    continue
+            api_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=1d"
+            res = requests.get(api_url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                meta = res.json()['chart']['result'][0]['meta']
+                c = float(meta['regularMarketPrice'])
+                p = float(meta.get('previousClose', meta.get('chartPreviousClose', c)))
+                ts = int(meta['regularMarketTime'])
+                
+                time_str = datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M')
+                data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": time_str, "url": url}
+                success_count += 1
+                success = True
+                
+                if ts > latest_ts:
+                    latest_ts = ts
+                    latest_time_str = time_str
         except: pass
-        data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
+
+        # 🛡️ 第二層防護：若底層 API 被阻擋，才退回使用 yfinance 歷史日線
+        if not success:
+            try:
+                df = yf.Ticker(t).history(period="5d")
+                if df is not None and not df.empty:
+                    df = df.dropna(subset=['Close'])
+                    if len(df) >= 2:
+                        c = float(df['Close'].iloc[-1])
+                        p = float(df['Close'].iloc[-2])
+                        last_dt = df.index[-1]
+                        time_str = last_dt.strftime('%Y/%m/%d')
+                        
+                        data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": time_str, "url": url}
+                        success_count += 1
+                        
+                        if last_dt.timestamp() > latest_ts:
+                            latest_ts = last_dt.timestamp()
+                            latest_time_str = time_str
+            except: pass
             
-    data['global_time'] = latest_time_str
+        if t not in data:
+            data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
+            
+    data['global_time'] = latest_time_str if latest_time_str != "無資料" else fetch_time
 
     if success_count > 0:
         try:
