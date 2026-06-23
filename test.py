@@ -575,6 +575,7 @@ def get_global_macro_data():
 def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     sc, rs = 0, []
     
+    # ---------------- 基礎加分區 ----------------
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
@@ -589,6 +590,11 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
+    if inst_data and len(inst_data) >= 3:
+        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
+        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     
@@ -601,6 +607,8 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         ask_r = tick_data.get('ask_ratio', 50)
         if ask_r > 55.0: sc+=3; rs.append(f"🔥 盤中買氣極強 (外盤比高達 {ask_r}%)")
 
+    # ---------------- 🚨 一票否決 / 強制降級防護區 (極致限縮風險) ----------------
+    
     fatal_risk = False
 
     max_support = max(data['5MA'], data['10MA'], data['20MA'])
@@ -943,12 +951,13 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
+    # 🎯 升級需求 3 & 完美合併：法人籌碼動向與逐日買賣超合併顯示成內嵌式 HTML 數據表
     if inst_data and len(inst_data) >= 1:
-        recent_days_summary = inst_data[:3]
-        foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in recent_days_summary if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
-        trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in recent_days_summary if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+        recent_days = inst_data[:3]
+        foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in recent_days if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
+        trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in recent_days if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         
-        chip_status = f"⚪ <b>法人籌碼動向 (近3日累計)</b>："
+        chip_status = f"⚪ <b>法人籌碼動向 (近{len(recent_days)}日累計)</b>："
         if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多 (買超 {foreign_net} 張)</span>；"
         elif foreign_net < 0: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節 (賣超 {abs(foreign_net)} 張)</span>；"
         else: chip_status += f"⚪ 外資平盤中立；"
@@ -957,27 +966,31 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         elif trust_net < 0: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         else: chip_status += f"⚪ 投信籌碼維持中立。"
         
-        chip_status += "<br>　 <b>⏳ 近五日三大法人逐日買賣超明細 (張)：</b>"
-        chip_status += "<table style='width:100%; text-align:center; margin-top:8px; border-collapse: collapse; font-size: 0.95rem; background-color: rgba(0,0,0,0.03); border-radius: 6px; overflow: hidden;'>"
-        chip_status += "<tr style='border-bottom: 1px solid #aaa; background-color: rgba(0,0,0,0.05);'><th style='padding:5px;'>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr>"
+        chip_status += "<br><br><b>📊 近期三大法人逐日買賣超明細：</b>"
+        chip_status += "<table style='width:100%; text-align:center; border-collapse: collapse; margin-top: 8px; font-size: 0.95rem; border: 1px solid rgba(128,128,128,0.3);'>"
+        chip_status += "<tr style='background-color: rgba(128,128,128,0.1); border-bottom: 1px solid rgba(128,128,128,0.3);'><th>日期</th><th>外資(張)</th><th>投信(張)</th><th>自營商(張)</th><th>合計(張)</th></tr>"
         
-        for d in inst_data[:5]: 
+        # 抓取近 7 天顯示在表格內
+        for d in inst_data[:7]:
             f_val = int(str(d['外資(張)']).replace(',', ''))
             t_val = int(str(d['投信(張)']).replace(',', ''))
-            s_val = int(str(d['自營商(張)']).replace(',', ''))
-            total_val = int(str(d['單日合計(張)']).replace(',', ''))
+            d_val = int(str(d['自營商(張)']).replace(',', ''))
+            tot_val = int(str(d['單日合計(張)']).replace(',', ''))
             
-            def get_c(v): return "#ff3333" if v>0 else ("#00cc00" if v<0 else "#888")
+            f_color = "#ff3333" if f_val > 0 else ("#00cc00" if f_val < 0 else "inherit")
+            t_color = "#ff3333" if t_val > 0 else ("#00cc00" if t_val < 0 else "inherit")
+            d_color = "#ff3333" if d_val > 0 else ("#00cc00" if d_val < 0 else "inherit")
+            tot_color = "#ff3333" if tot_val > 0 else ("#00cc00" if tot_val < 0 else "inherit")
             
-            chip_status += f"<tr style='border-bottom: 1px dashed #ccc;'>"
-            chip_status += f"<td style='padding:4px;'>{d['日期']}</td>"
-            chip_status += f"<td style='color:{get_c(f_val)}; font-weight:bold;'>{f_val}</td>"
-            chip_status += f"<td style='color:{get_c(t_val)}; font-weight:bold;'>{t_val}</td>"
-            chip_status += f"<td style='color:{get_c(s_val)}; font-weight:bold;'>{s_val}</td>"
-            chip_status += f"<td style='color:{get_c(total_val)}; font-weight:bold;'>{total_val}</td>"
+            chip_status += f"<tr style='border-bottom: 1px solid rgba(128,128,128,0.2);'>"
+            chip_status += f"<td style='padding: 6px;'>{d['日期']}</td>"
+            chip_status += f"<td style='color:{f_color}; font-weight:bold; padding: 6px;'>{f_val}</td>"
+            chip_status += f"<td style='color:{t_color}; font-weight:bold; padding: 6px;'>{t_val}</td>"
+            chip_status += f"<td style='color:{d_color}; font-weight:bold; padding: 6px;'>{d_val}</td>"
+            chip_status += f"<td style='color:{tot_color}; font-weight:bold; padding: 6px; background-color: rgba(128,128,128,0.05);'>{tot_val}</td>"
             chip_status += "</tr>"
-            
         chip_status += "</table>"
+            
         analysis_bullets.append(chip_status)
 
     lower_bound = max(data['5MA'] * 0.99, data['BB_DN'])
@@ -1103,14 +1116,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
-    # 🎯 升級需求：統一藍色箭頭 +「買」字
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_text, buy_colors = [], [], [], []
+        buy_x, buy_y, buy_text = [], [], []
         prev_score = 0
-        
-        # 定義統一的科技藍色 (支援深淺色模式)
-        unified_blue = '#0066cc' if is_light_mode else '#00ccff'
-        
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -1119,29 +1127,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None, tick_data=None) 
                 if t_data:
                     current_score = t_data['Score']
-                    
-                    # 只要達標 S 級或初次達標 A 級，統一標示為藍色的「買」
                     if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("買")
-                        buy_colors.append(unified_blue)
-                    elif 3 <= current_score < 7 and prev_score < 3:
-                        buy_x.append(current_date.strftime('%Y-%m-%d'))
-                        buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("買")
-                        buy_colors.append(unified_blue)
-                        
+                        buy_text.append("S買")
                     prev_score = current_score
                     
         if buy_x:
-            fig.add_trace(go.Scatter(
-                x=buy_x, y=buy_y, mode='markers+text', 
-                marker=dict(symbol='triangle-up', size=14, color=buy_colors), 
-                text=buy_text, textposition="bottom center", 
-                textfont=dict(color=buy_colors, size=12, weight="bold"), 
-                name="買進訊號", hoverinfo='skip'
-            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
@@ -1240,7 +1233,6 @@ if st.session_state.page == "home":
             if r.get('紅吞'): tags.append("紅吞")
             elif r.get('黑吞'): tags.append("黑吞")
             elif r.get('近七日紅吞'): tags.append("近七日紅吞")
-            
             if r.get('回測有撐'): tags.append("📌撐")
             elif r.get('反彈遇壓'): tags.append("⚠️壓")
             if '5日線即將上彎' in r:
@@ -1377,7 +1369,7 @@ elif st.session_state.page == "analysis":
                     </div>
                     """, unsafe_allow_html=True)
                     if ask_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#ff3333; font-weight:bold; margin-top:8px;'>🔥 多方點火：盤中由買方主動積極「往上追價」敲進，短線點火動能強勁！(系統已加分)</p>", unsafe_allow_html=True)
-                    elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主動積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
+                    elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主ٹی積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
                     else: st.markdown("<p style='font-size:0.85rem; color:#888; margin-top:8px;'>⚖️ 盤中多空勢均力敵，呈現平盤搓合狹幅震盪。</p>", unsafe_allow_html=True)
             
             st.markdown("---")
