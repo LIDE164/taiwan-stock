@@ -575,7 +575,6 @@ def get_global_macro_data():
 
     return data
 
-
 # =========================================================================================
 # 🌟 核心引擎：加入「一票否決」防線與更嚴格的得分制 (Veto System) 🌟
 # =========================================================================================
@@ -590,45 +589,13 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     except: eps_f = 0.0
     if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
-    vol = data.get('成交量', 0)
-    vol_5ma = data.get('5日均量', 1)
-    is_red_k = data['收盤價'] > data.get('Open', data['收盤價'])
-    
-    # 🎯 AI 升級 A：底部爆量判定 (主力初動)
-    if vol > vol_5ma * 3 and is_red_k and data['BIAS'] < 5:
-        sc += 4
-        rs.append(f"🚀 底部異常爆量 (成交量達均量 {round(vol/vol_5ma, 1)} 倍，主力進場點火)")
-        data['主力初動'] = True
-    elif vol > vol_5ma * 1.5:
-        sc += 2
-        rs.append(f"✅ 量能明顯放大 (達均量 {round(vol/vol_5ma, 1)} 倍)")
-    elif vol < vol_5ma:
-        sc -= 1
-        rs.append("⚠️ 量能萎縮 (缺乏追價動能)")
+    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
+    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
         
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
-    # 🎯 AI 升級 B：籌碼集中度 (土洋合買佔比)
-    if inst_data and len(inst_data) >= 1:
-        t0 = inst_data[0]
-        f_t0 = int(str(t0['外資(張)']).replace(',', ''))
-        t_t0 = int(str(t0['投信(張)']).replace(',', ''))
-        if f_t0 > 0 and t_t0 > 0:
-            total_inst = f_t0 + t_t0
-            ratio = (total_inst / vol) * 100 if vol > 0 else 0
-            if ratio >= 10.0:
-                sc += 3
-                rs.append(f"🤝 土洋合買高度集中 (兩大法人齊買，佔總成交量 {ratio:.1f}%)")
-                data['土洋合買'] = True
-            else:
-                sc += 1
-                rs.append("✅ 土洋合買 (外資與投信同步站在買方)")
-        elif f_t0 < 0 and t_t0 < 0:
-            sc -= 2
-            rs.append("🩸 土洋雙殺 (外資與投信同步賣超，留意籌碼鬆動)")
-            
-    # 法人由賣轉買
+    # 🎯 升級：AI 偵測「法人由賣轉買」
     if inst_data and len(inst_data) >= 2:
         t0, t1 = inst_data[0], inst_data[1]
         f_t0 = int(str(t0['外資(張)']).replace(',', ''))
@@ -734,7 +701,7 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
         "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
         "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
-        "Open": t_open, 
+        "Open": t_open, # For main force scanner
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
         "60MA": round(t['60MA'], 2),
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
@@ -755,8 +722,9 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     
     data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
-    if "主力初動" not in data:
-        data['主力初動'] = (data['成交量'] > max(500, data['5日均量'] * 3)) and (t_close > t_open) and (t_close > t['10MA']) and (data['漲跌幅'] > 2.0)
+    # 🎯 標記主力初動特徵 (用於掃描器)
+    is_main_force = (data['成交量'] > max(500, data['5日均量'] * 2)) and (t_close > t_open) and (t_close > t['10MA']) and (data['漲跌幅'] > 2.0)
+    data['主力初動'] = is_main_force
     
     return data
 
@@ -778,7 +746,8 @@ def format_stock_label_from_data(r, is_current=False):
     if r_dict.get('回測有撐'): tags.append("📌撐")
     elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
     
-    if r_dict.get('主力初動') or r_dict.get('土洋合買'): tags.append("🚀起漲")
+    # 加入主力初動標籤
+    if r_dict.get('主力初動'): tags.append("🚀爆量起漲")
     
     if '5日線即將上彎' in r_dict and r_dict['5日線即將上彎'] is not None:
         tags.append("↗️" if r_dict.get('5日線即將上彎') else "↘️")
@@ -1296,7 +1265,7 @@ def format_stock_label_from_data(r, is_current=False):
     if r_dict.get('回測有撐'): tags.append("📌撐")
     elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
     
-    if r_dict.get('主力初動') or r_dict.get('土洋合買'): tags.append("🚀起漲")
+    if r_dict.get('主力初動'): tags.append("🚀爆量起漲")
     
     if '5日線即將上彎' in r_dict and r_dict['5日線即將上彎'] is not None:
         tags.append("↗️" if r_dict.get('5日線即將上彎') else "↘️")
@@ -1499,7 +1468,7 @@ elif st.session_state.page == "analysis":
                     st.markdown(f"""
                     <div style='display: flex; font-size: 0.85rem; justify-content: space-between; margin-bottom: 4px; font-weight: bold;'>
                         <span style='color: #ff3333;'>外盤 (主動買進): {ask_r}%</span>
-                        <span style='color: #00cc00;'>內盤 (主تدائي出): {bid_r}%</span>
+                        <span style='color: #00cc00;'>內盤 (主動賣出): {bid_r}%</span>
                     </div>
                     <div style='width: 100%; background-color: #00cc00; height: 18px; border-radius: 4px; overflow: hidden; display: flex;'>
                         <div style='width: {ask_r}%; background-color: #ff3333; height: 100%; transition: width 0.3s;'></div>
@@ -1580,10 +1549,8 @@ elif st.session_state.page == "analysis":
             a1, a2 = st.columns(2)
             with a1.container(border=True): st.markdown(f"##### 📊 技術與動能指標<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br>**MACD 柱狀體:** `{data['MACD柱']}`<br><br>**5日均量:** `{data['5日均量']} 張`", unsafe_allow_html=True)
             with a2.container(border=True):
-                eps = f_data['EPS']
-                try: m_eps = round(float(eps)/12, 2) if eps != "無" else "無"
-                except: m_eps = "無"
-                st.markdown(f"##### 📑 基本面價值評估<br><br>**近四季累計 EPS (TTM):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
+                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
+                st.markdown(f"##### 📑 基本面價值評估<br><br>**近四季累計 EPS (TTM):** `{eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
