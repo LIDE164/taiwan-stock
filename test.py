@@ -217,9 +217,6 @@ if 'fav_groups' not in st.session_state:
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_live_tick_data(ticker):
-    """
-    🚀 盤中探針模組：從WantGoo獲取即時Tick逐筆明細與動態內外盤比
-    """
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     fallback = {"ticks": [], "ask_ratio": 50.0, "bid_ratio": 50.0, "total_volume": 0}
     try:
@@ -241,7 +238,7 @@ def fetch_live_tick_data(ticker):
                 t_time = t.get('time', '')
                 t_price = float(t.get('price', 0))
                 t_vol = int(t.get('volume', 0))
-                t_type = t.get('type', 'mid') # buy=外盤(紅), sell=內盤(綠), mid=中立
+                t_type = t.get('type', 'mid') 
                 
                 if t_type == 'buy': ask_vol += t_vol
                 elif t_type == 'sell': bid_vol += t_vol
@@ -534,9 +531,14 @@ def get_global_macro_data():
 
     return data
 
-# 🌟 大腦核心升級：將所有新元素寫入 AI 評分系統中 🌟
+
+# =========================================================================================
+# 🌟 核心引擎優化：加入「一票否決」防線與更嚴格的得分制 (Veto System) 🌟
+# =========================================================================================
 def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     sc, rs = 0, []
+    
+    # ---------------- 基礎加分區 ----------------
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
@@ -557,44 +559,47 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
-    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
-
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
-    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
     
-    # 🎯 升級 1：5日線即將上彎扣低值，寫入實質加減分
     if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        sc+=2
-        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        sc-=2
-        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
-
-    # 🎯 升級 2：極短線均線架構 (5MA 與 10MA) 寫入評分
+        sc+=2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散)")
     if data['5MA'] >= data['10MA']:
-        sc+=2
-        rs.append("🔥 短線多頭排列 (5MA > 10MA)")
-    else:
-        sc-=1
-        rs.append("⚠️ 短均線空頭蓋頂 (5MA < 10MA)")
+        sc+=2; rs.append("🔥 短線多頭排列 (5MA > 10MA)")
 
-    # 🎯 升級 3：盤中即時 Tick 追價力道 (內外盤比) 寫入評分
     if tick_data and tick_data.get('total_volume', 0) > 0:
         ask_r = tick_data.get('ask_ratio', 50)
         bid_r = tick_data.get('bid_ratio', 50)
-        if ask_r > 55.0:
-            sc+=3
-            rs.append(f"🔥 盤中買氣極強 (外盤比高達 {ask_r}%)")
-        elif bid_r > 55.0:
-            sc-=3
-            rs.append(f"🩸 盤中賣壓沉重 (內盤比高達 {bid_r}%)")
+        if ask_r > 55.0: sc+=3; rs.append(f"🔥 盤中買氣極強 (外盤比高達 {ask_r}%)")
 
-    # 負面扣分項目
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+    # ---------------- 🚨 一票否決 / 強制降級防護區 (極致限縮風險) ----------------
+    
+    fatal_risk = False
+    
+    # 1. 高檔過熱防護 (防追高套牢)
+    if data['J值'] >= 85 or data['BIAS'] > 8 or data['收盤價'] >= data['BB_UP'] * 0.98:
+        sc -= 10  # 施加極大懲罰，強制降為非買點
+        rs.append("🚨 【Veto 一票否決】高檔過熱防護：J值過高或正乖離過大，追高極易套牢，強制降級！")
+        fatal_risk = True
+
+    # 2. 空方出貨型態防護
+    if data.get('黑吞') or data.get('反彈遇壓'):
+        sc -= 10
+        rs.append("🚨 【Veto 一票否決】空方型態防護：出現黑吞或帶量長上影線，主力出貨風險極高，強制降級！")
+        fatal_risk = True
+
+    # 3. 破線接刀防護 (均線蓋頭)
+    if data['收盤價'] < data['20MA'] and not data.get('紅吞') and data.get('成交量', 0) < data.get('5日均量', 0):
+        sc -= 8
+        rs.append("🚨 【Veto 一票否決】破線接刀防護：股價跌破月線且呈無量下跌，嚴防續跌，禁止做多！")
+        fatal_risk = True
+        
+    if data['5MA'] < data['10MA']: sc -= 2; rs.append("⚠️ 短均線空頭蓋頂 (5MA < 10MA)")
+    if eps_f < 0: sc -= 1; rs.append("⚠️ 基本面虧損")
+    if tick_data and tick_data.get('bid_ratio', 50) > 55.0: sc-=3; rs.append(f"🩸 盤中賣壓沉重 (內盤比高達 {tick_data.get('bid_ratio')}%)")
+
+    # 確保如果有致命風險，最高分數不能超過 2 (強制無法成為A級或S級)
+    if fatal_risk and sc >= 3:
+        sc = 2 
 
     return sc, rs
 
@@ -659,7 +664,6 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     data['Score'] = sc
     data['Reasons'] = rs
     
-    # 因應總分天花板提高，重新校準評級門檻 (S級提升至7分，A級提升至3分)
     data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
     return data
@@ -919,7 +923,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     upper_bound = min(data['5MA'] * 1.015, data['20MA'])
     if lower_bound > upper_bound: lower_bound, upper_bound = data['BB_DN'], data['5MA']
 
-    # 配合核心分數調升，升級提示門檻
     if sc >= 7: 
         v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
         v_a = f"✅ <b>進場判斷：強烈買進</b><br>短線多方動能、量能、型態三道關卡全數確認過關！<br>📌 建議精緊湊建倉區間：{lower_bound:.2f} ~ {upper_bound:.2f} 之間分批防守，嚴格守住 {data['BB_DN']*0.98:.2f} 停損。"
@@ -931,7 +934,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         v_a = f"⏳ <b>進場判斷：暫緩進場</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。"
     else: 
         v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
-        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、短均與動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
+        v_a = f"⛔ <b>進場判斷：絕對空手 (觸發高風險 VETO)</b><br>量能、短均與動能完全走空，或已達過熱區。強烈建議空手觀望，切勿拿資金接落下的飛刀或盲目追高。"
     return analysis_bullets, v_t, v_c, v_a
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True):
@@ -1041,17 +1044,22 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text = [], [], []
+        prev_score = 0
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
             sub_df = df.iloc[:pos+1]
             if len(sub_df) >= 5:
-                # 歷史回測畫買點，使用基礎 A級 門檻 >= 3
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None, tick_data=None) 
-                if t_data and t_data['Score'] >= 3:
-                    buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                    buy_text.append("買")
+                if t_data:
+                    current_score = t_data['Score']
+                    # 🌟 視覺淨化：只在分數達到 S級(>=7)，或「剛由弱轉強的首日 (>=3 但昨天 <3)」時才畫買點
+                    if current_score >= 7 or (current_score >= 3 and prev_score < 3):
+                        buy_x.append(current_date.strftime('%Y-%m-%d'))
+                        buy_y.append(df_view['Low'].iloc[i] * 0.90) 
+                        buy_text.append("買")
+                    prev_score = current_score
+                    
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
@@ -1127,14 +1135,12 @@ if st.session_state.page == "home":
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
-            # 配合新計分標準，篩選 A級以上 (>= 3 分)
             df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 3)].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
-            # 配合新計分標準，篩選 A級以上 (>= 3 分)
             df_disp = df_results[df_results['Score'] >= 3].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
@@ -1215,7 +1221,6 @@ elif st.session_state.page == "analysis":
                 inst_data = get_institutional_trading(target)
                 p_bar.progress(50)
                 status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組 (包含Tick熱度寫入)...</div>", unsafe_allow_html=True)
-                # 🎯 這裡將最新的 tick_info 餵入大腦計分模組中
                 data = analyze_today(df_slice, target, inst_data, tick_data=tick_info)
                 sc = data['Score']
                 p_bar.progress(65)
@@ -1262,38 +1267,37 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
             st.markdown("---")
             
-            # 🚀 盤中微觀 Tick 與動態內外盤面板
-            st.markdown("### ⏱️ 盤中即時微觀 Tick 與多空主動追價力道")
-            tick_col1, tick_col2 = st.columns([2.2, 2.8])
-            
-            with tick_col1.container(border=True):
-                st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:8px;'>🔥 盤中最新五筆逐筆撮合明細 (Tick)</p>", unsafe_allow_html=True)
-                if tick_info["ticks"]:
-                    tick_df = pd.DataFrame(tick_info["ticks"])
-                    def color_tick_row(row):
-                        if "外盤" in row['屬性']: return ['color: #ff3333; font-weight: bold']*4
-                        elif "內盤" in row['屬性']: return ['color: #00cc00; font-weight: bold']*4
-                        return ['']*4
-                    st.dataframe(tick_df.style.apply(color_tick_row, axis=1), use_container_width=True, hide_index=True)
-                else:
-                    st.info("🕒 非盤中交易時間，或暫無即時 Tick 撮合數據流。")
-                    
-            with tick_col2.container(border=True):
-                st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:2px;'>📊 盤中動態內外盤佔比 (主動多空攻擊力道)</p>", unsafe_allow_html=True)
-                ask_r = tick_info["ask_ratio"]
-                bid_r = tick_info["bid_ratio"]
-                st.markdown(f"""
-                <div style='display: flex; font-size: 0.85rem; justify-content: space-between; margin-bottom: 4px; font-weight: bold;'>
-                    <span style='color: #ff3333;'>外盤 (主動買進): {ask_r}%</span>
-                    <span style='color: #00cc00;'>內盤 (主動賣出): {bid_r}%</span>
-                </div>
-                <div style='width: 100%; background-color: #00cc00; height: 18px; border-radius: 4px; overflow: hidden; display: flex;'>
-                    <div style='width: {ask_r}%; background-color: #ff3333; height: 100%; transition: width 0.3s;'></div>
-                </div>
-                """, unsafe_allow_html=True)
-                if ask_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#ff3333; font-weight:bold; margin-top:8px;'>🔥 多方點火：盤中由買方主動積極「往上追價」敲進，短線點火動能強勁！(系統已加分)</p>", unsafe_allow_html=True)
-                elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主動積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
-                else: st.markdown("<p style='font-size:0.85rem; color:#888; margin-top:8px;'>⚖️ 盤中多空勢均力敵，呈現平盤搓合狹幅震盪。</p>", unsafe_allow_html=True)
+            with st.expander("⏱️ 盤中即時微觀 Tick 與多空主動追價力道 (點擊展開)", expanded=False):
+                tick_col1, tick_col2 = st.columns([2.2, 2.8])
+                
+                with tick_col1.container(border=True):
+                    st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:8px;'>🔥 盤中最新五筆逐筆撮合明細 (Tick)</p>", unsafe_allow_html=True)
+                    if tick_info["ticks"]:
+                        tick_df = pd.DataFrame(tick_info["ticks"])
+                        def color_tick_row(row):
+                            if "外盤" in row['屬性']: return ['color: #ff3333; font-weight: bold']*4
+                            elif "內盤" in row['屬性']: return ['color: #00cc00; font-weight: bold']*4
+                            return ['']*4
+                        st.dataframe(tick_df.style.apply(color_tick_row, axis=1), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("🕒 非盤中交易時間，或暫無即時 Tick 撮合數據流。")
+                        
+                with tick_col2.container(border=True):
+                    st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:2px;'>📊 盤中動態內外盤佔比 (主動多空攻擊力道)</p>", unsafe_allow_html=True)
+                    ask_r = tick_info["ask_ratio"]
+                    bid_r = tick_info["bid_ratio"]
+                    st.markdown(f"""
+                    <div style='display: flex; font-size: 0.85rem; justify-content: space-between; margin-bottom: 4px; font-weight: bold;'>
+                        <span style='color: #ff3333;'>外盤 (主動買進): {ask_r}%</span>
+                        <span style='color: #00cc00;'>內盤 (主動賣出): {bid_r}%</span>
+                    </div>
+                    <div style='width: 100%; background-color: #00cc00; height: 18px; border-radius: 4px; overflow: hidden; display: flex;'>
+                        <div style='width: {ask_r}%; background-color: #ff3333; height: 100%; transition: width 0.3s;'></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    if ask_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#ff3333; font-weight:bold; margin-top:8px;'>🔥 多方點火：盤中由買方主動積極「往上追價」敲進，短線點火動能強勁！(系統已加分)</p>", unsafe_allow_html=True)
+                    elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主動積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
+                    else: st.markdown("<p style='font-size:0.85rem; color:#888; margin-top:8px;'>⚖️ 盤中多空勢均力敵，呈現平盤搓合狹幅震盪。</p>", unsafe_allow_html=True)
             
             st.markdown("---")
             
@@ -1435,4 +1439,3 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
-
