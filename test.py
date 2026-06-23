@@ -1105,7 +1105,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
 
     # 🎯 升級需求：統一藍色箭頭 +「買」字
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_text, buy_colors = [], [], [], []
+        buy_x, buy_y, buy_colors = [], [], [], []
         prev_score = 0
         
         # 定義統一的科技藍色 (支援深淺色模式)
