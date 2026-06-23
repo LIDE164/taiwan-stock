@@ -1,3 +1,4 @@
+```python
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -197,7 +198,9 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "23
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
-if 'view_days' not in st.session_state: st.session_state.view_days = 20
+
+# 🎯 修改需求 2：K線圖預設顯示 30 日
+if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 if 'url_parsed' not in st.session_state:
@@ -219,58 +222,82 @@ if 'fav_groups' not in st.session_state:
 def fetch_live_tick_data(ticker):
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     fallback = {"ticks": [], "ask_ratio": 50.0, "bid_ratio": 50.0, "total_volume": 0}
+    
+    # 🚀 嘗試 1：玩股網 API
     try:
-        # 🚀 升級：改用 yfinance 的 1 分鐘 K 線來模擬高頻 Tick 與內外盤動能
-        # 這能完美避開台灣網站的 Cloudflare 阻擋，保證在雲端伺服器上也能穩定抓取
-        df = yf.Ticker(f"{base_ticker}.TW").history(period="1d", interval="1m")
-        if df.empty:
-            df = yf.Ticker(f"{base_ticker}.TWO").history(period="1d", interval="1m")
-            
-        if df is None or df.empty: return fallback
-        
-        df = df.dropna(subset=['Close'])
-        if len(df) == 0: return fallback
-        
-        # 取最後 30 筆 1分鐘K線 來計算內外盤比
-        recent_df = df.tail(30).copy()
-        ask_vol, bid_vol = 0, 0
-        processed_ticks = []
-        
-        # 反轉陣列，讓最新的一分鐘排在最前面
-        recent_df_reversed = recent_df.iloc[::-1]
-        
-        for idx, row in recent_df_reversed.iterrows():
-            t_time = idx.strftime('%H:%M')
-            t_price = round(row['Close'], 2)
-            # 台股 yfinance 成交量為股數，除以 1000 轉為張數
-            t_vol = max(1, int(row['Volume'] / 1000)) if row['Volume'] > 0 else 0 
-            
-            # 動能判定邏輯：收紅K視為外盤(主動買)，收黑K視為內盤(主動賣)
-            if row['Close'] > row['Open']:
-                t_type = 'buy'
-                ask_vol += t_vol
-            elif row['Close'] < row['Open']:
-                t_type = 'sell'
-                bid_vol += t_vol
-            else:
-                t_type = 'mid'
-                ask_vol += t_vol / 2
-                bid_vol += t_vol / 2
-                
-            processed_ticks.append({
-                "時間": t_time, "價格": t_price, "現量(張)": t_vol, 
-                "屬性": "外盤(買進)" if t_type=='buy' else ("內盤(賣出)" if t_type=='sell' else "平盤")
-            })
-            
-        total_v = ask_vol + bid_vol
-        ask_r = round((ask_vol / total_v) * 100, 1) if total_v > 0 else 50.0
-        bid_r = round((bid_vol / total_v) * 100, 1) if total_v > 0 else 50.0
-        
-        return {
-            "ticks": processed_ticks[:5],
-            "ask_ratio": ask_r, "bid_ratio": bid_r, "total_volume": total_v
+        url = f"https://www.wantgoo.com/invest/get-realtime-ticks?stockNo={base_ticker}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': f'https://www.wantgoo.com/stock/{base_ticker}',
+            'Accept': 'application/json'
         }
+        res = requests.get(url, headers=headers, timeout=3)
+        if res.status_code == 200:
+            json_data = res.json()
+            raw_ticks = json_data.get('ticks', [])
+            if raw_ticks:
+                raw_ticks = raw_ticks[::-1]
+                processed_ticks = []
+                ask_vol, bid_vol = 0, 0
+                for t in raw_ticks[:30]: 
+                    t_time = t.get('time', '')
+                    t_price = float(t.get('price', 0))
+                    t_vol = int(t.get('volume', 0))
+                    t_type = t.get('type', 'mid') 
+                    
+                    if t_type == 'buy': ask_vol += t_vol
+                    elif t_type == 'sell': bid_vol += t_vol
+                    
+                    processed_ticks.append({
+                        "時間": t_time, "價格": t_price, "現量": t_vol, "屬性": "外盤(買進)" if t_type=='buy' else ("內盤(賣出)" if t_type=='sell' else "平盤")
+                    })
+                    
+                total_v = ask_vol + bid_vol
+                ask_r = round((ask_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+                bid_r = round((bid_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+                
+                return {
+                    "ticks": processed_ticks[:5],
+                    "ask_ratio": ask_r, "bid_ratio": bid_r, "total_volume": total_v
+                }
     except: pass
+
+    # 🚀 嘗試 2：Yahoo Finance 1分鐘 K線 (強力備援)
+    try:
+        yf_ticker = f"{base_ticker}.TW"
+        df = yf.Ticker(yf_ticker).history(period="1d", interval="1m")
+        if df.empty:
+            yf_ticker = f"{base_ticker}.TWO"
+            df = yf.Ticker(yf_ticker).history(period="1d", interval="1m")
+            
+        if not df.empty:
+            df = df.tail(5).iloc[::-1]
+            processed_ticks = []
+            ask_vol, bid_vol = 0, 0
+            for idx, row in df.iterrows():
+                t_time = idx.strftime('%H:%M:%S')
+                t_price = float(row['Close'])
+                t_vol = max(1, int(row['Volume'] / 1000))
+                
+                is_buy = row['Close'] >= row['Open']
+                t_type = 'buy' if is_buy else 'sell'
+                
+                if t_type == 'buy': ask_vol += t_vol
+                else: bid_vol += t_vol
+                
+                processed_ticks.append({
+                    "時間": t_time, "價格": round(t_price, 2), "現量": t_vol, "屬性": "外盤(買進)" if is_buy else "內盤(賣出)"
+                })
+            
+            total_v = ask_vol + bid_vol
+            ask_r = round((ask_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+            bid_r = round((bid_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+            return {
+                "ticks": processed_ticks,
+                "ask_ratio": ask_r, "bid_ratio": bid_r, "total_volume": total_v
+            }
+    except: pass
+
     return fallback
 
 @st.cache_data(ttl=1800)
@@ -548,7 +575,7 @@ def get_global_macro_data():
 
 
 # =========================================================================================
-# 🌟 核心引擎優化：加入「一票否決」防線與更嚴格的得分制 (Veto System) 🌟
+# 🌟 核心引擎：加入「一票否決」防線與更嚴格的得分制 (Veto System) 🌟
 # =========================================================================================
 def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     sc, rs = 0, []
@@ -589,20 +616,23 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     # ---------------- 🚨 一票否決 / 強制降級防護區 (極致限縮風險) ----------------
     
     fatal_risk = False
+
+    max_support = max(data['5MA'], data['10MA'], data['20MA'])
+    if data['收盤價'] > max_support * 1.03:
+        sc -= 5
+        rs.append("🚨 【Veto 價格防護】現價已遠超合理建倉成本區(均線上3%)，追高勝率低，強制取消買點！")
+        fatal_risk = True
     
-    # 1. 高檔過熱防護 (防追高套牢)
     if data['J值'] >= 85 or data['BIAS'] > 8 or data['收盤價'] >= data['BB_UP'] * 0.98:
-        sc -= 10  # 施加極大懲罰，強制降為非買點
+        sc -= 10
         rs.append("🚨 【Veto 一票否決】高檔過熱防護：J值過高或正乖離過大，追高極易套牢，強制降級！")
         fatal_risk = True
 
-    # 2. 空方出貨型態防護
     if data.get('黑吞') or data.get('反彈遇壓'):
         sc -= 10
         rs.append("🚨 【Veto 一票否決】空方型態防護：出現黑吞或帶量長上影線，主力出貨風險極高，強制降級！")
         fatal_risk = True
 
-    # 3. 破線接刀防護 (均線蓋頭)
     if data['收盤價'] < data['20MA'] and not data.get('紅吞') and data.get('成交量', 0) < data.get('5日均量', 0):
         sc -= 8
         rs.append("🚨 【Veto 一票否決】破線接刀防護：股價跌破月線且呈無量下跌，嚴防續跌，禁止做多！")
@@ -612,7 +642,6 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     if eps_f < 0: sc -= 1; rs.append("⚠️ 基本面虧損")
     if tick_data and tick_data.get('bid_ratio', 50) > 55.0: sc-=3; rs.append(f"🩸 盤中賣壓沉重 (內盤比高達 {tick_data.get('bid_ratio')}%)")
 
-    # 確保如果有致命風險，最高分數不能超過 2 (強制無法成為A級或S級)
     if fatal_risk and sc >= 3:
         sc = 2 
 
@@ -888,9 +917,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
     elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
 
-    if data['5MA'] >= data['10MA']: analysis_bullets.append(f"🔥 <span style='color:#ff3333;'>均線結構：5MA 位於 10MA 之上，短線多方動能佔優。</span>")
-    else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>均線結構：5MA 跌破 10MA，短均蓋頭，靜待打底。</span>")
-
     if data.get('紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
     elif data.get('近七日紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
     elif data.get('黑吞'): analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
@@ -1068,11 +1094,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None, tick_data=None) 
                 if t_data:
                     current_score = t_data['Score']
-                    # 🌟 視覺淨化：只在分數達到 S級(>=7)，或「剛由弱轉強的首日 (>=3 但昨天 <3)」時才畫買點
-                    if current_score >= 7 or (current_score >= 3 and prev_score < 3):
+                    if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("買")
+                        buy_text.append("S買")
                     prev_score = current_score
                     
         if buy_x:
@@ -1250,7 +1275,8 @@ elif st.session_state.page == "analysis":
                 
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
                 current_show_buy = st.session_state.get('toggle_buy_sig', True)
-                current_show_sup = st.session_state.get('toggle_sup_res', False)
+                # 🎯 修改需求 3：圖表預設開啟歷史高低點
+                current_show_sup = st.session_state.get('toggle_sup_res', True)
                 current_show_signals = st.session_state.get('toggle_signals', True)
                 pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
                 p_bar.progress(98)
@@ -1375,6 +1401,7 @@ elif st.session_state.page == "analysis":
             dc2.button("60日", on_click=set_view_days, args=(60,))
             dc3.button("90日", on_click=set_view_days, args=(90,))
             with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig')
+            # 🎯 這裡確保畫面按鈕預設也是打勾開啟的
             with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res')
             with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals')
                 
@@ -1454,3 +1481,4 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
