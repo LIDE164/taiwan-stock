@@ -689,7 +689,7 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
         "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
-        "近七日紅吞": recent_7_red,
+        "紅吞": recent_7_red,
         "回測有撐": is_support_pullback,
         "反彈遇壓": is_resistance_rejection,
         "5日線即將上彎": is_ma5_turning_up,
