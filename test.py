@@ -215,7 +215,6 @@ if 'fav_groups' not in st.session_state:
         default_groups["預設群組"] = old_favs
     st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
-# 初始化最近搜尋紀錄
 if 'recent_searches' not in st.session_state:
     st.session_state.recent_searches = []
 
@@ -374,7 +373,6 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
     
-    # 🎯 優先使用 yfinance 抓取準確的 TTM (近四季累計) EPS 與 P/E
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'sector' not in info:
@@ -392,7 +390,6 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
             pe_val = str(round(info['trailingPE'], 2))
     except: pass
 
-    # 備用：若抓不到改用 cnyes 抓
     if eps_val == "無":
         try:
             res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
@@ -593,16 +590,61 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     except: eps_f = 0.0
     if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
+    vol = data.get('成交量', 0)
+    vol_5ma = data.get('5日均量', 1)
+    is_red_k = data['收盤價'] > data.get('Open', data['收盤價'])
+    
+    # 🎯 AI 升級 A：底部爆量判定 (主力初動)
+    if vol > vol_5ma * 3 and is_red_k and data['BIAS'] < 5:
+        sc += 4
+        rs.append(f"🚀 底部異常爆量 (成交量達均量 {round(vol/vol_5ma, 1)} 倍，主力進場點火)")
+        data['主力初動'] = True
+    elif vol > vol_5ma * 1.5:
+        sc += 2
+        rs.append(f"✅ 量能明顯放大 (達均量 {round(vol/vol_5ma, 1)} 倍)")
+    elif vol < vol_5ma:
+        sc -= 1
+        rs.append("⚠️ 量能萎縮 (缺乏追價動能)")
         
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
-    if inst_data and len(inst_data) >= 3:
-        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+    # 🎯 AI 升級 B：籌碼集中度 (土洋合買佔比)
+    if inst_data and len(inst_data) >= 1:
+        t0 = inst_data[0]
+        f_t0 = int(str(t0['外資(張)']).replace(',', ''))
+        t_t0 = int(str(t0['投信(張)']).replace(',', ''))
+        if f_t0 > 0 and t_t0 > 0:
+            total_inst = f_t0 + t_t0
+            ratio = (total_inst / vol) * 100 if vol > 0 else 0
+            if ratio >= 10.0:
+                sc += 3
+                rs.append(f"🤝 土洋合買高度集中 (兩大法人齊買，佔總成交量 {ratio:.1f}%)")
+                data['土洋合買'] = True
+            else:
+                sc += 1
+                rs.append("✅ 土洋合買 (外資與投信同步站在買方)")
+        elif f_t0 < 0 and t_t0 < 0:
+            sc -= 2
+            rs.append("🩸 土洋雙殺 (外資與投信同步賣超，留意籌碼鬆動)")
+            
+    # 法人由賣轉買
+    if inst_data and len(inst_data) >= 2:
+        t0, t1 = inst_data[0], inst_data[1]
+        f_t0 = int(str(t0['外資(張)']).replace(',', ''))
+        f_t1 = int(str(t1['外資(張)']).replace(',', ''))
+        t_t0 = int(str(t0['投信(張)']).replace(',', ''))
+        t_t1 = int(str(t1['投信(張)']).replace(',', ''))
+        
+        if t_t0 > 0 and t_t1 <= 0:
+            sc += 3; rs.append("🔥 投信由賣轉買 (主力發動第一天，極具爆發潛力)")
+        elif t_t0 > 0:
+            sc += 1; rs.append(f"✅ 投信連續偏多 (今日買超 {t_t0} 張)")
+            
+        if f_t0 > 0 and f_t1 <= 0:
+            sc += 2; rs.append("🔥 外資由賣轉買 (大資金回補)")
+        elif f_t0 > 0:
+            sc += 1; rs.append(f"✅ 外資連續偏多 (今日買超 {f_t0} 張)")
 
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
@@ -692,6 +734,7 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
         "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
         "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
+        "Open": t_open, 
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
         "60MA": round(t['60MA'], 2),
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
@@ -712,6 +755,9 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     
     data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
+    if "主力初動" not in data:
+        data['主力初動'] = (data['成交量'] > max(500, data['5日均量'] * 3)) and (t_close > t_open) and (t_close > t['10MA']) and (data['漲跌幅'] > 2.0)
+    
     return data
 
 # =========================================================================================
@@ -731,6 +777,8 @@ def format_stock_label_from_data(r, is_current=False):
     
     if r_dict.get('回測有撐'): tags.append("📌撐")
     elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
+    
+    if r_dict.get('主力初動') or r_dict.get('土洋合買'): tags.append("🚀起漲")
     
     if '5日線即將上彎' in r_dict and r_dict['5日線即將上彎'] is not None:
         tags.append("↗️" if r_dict.get('5日線即將上彎') else "↘️")
@@ -1230,6 +1278,50 @@ def get_global_scan_results(pool_tuple):
             except: pass
     return scan_results
 
+# =========================================================================================
+# 🌟 統一按鈕文字格式化引擎 (支援 榜單、近期搜尋、同產業) 🌟
+# =========================================================================================
+def format_stock_label_from_data(r, is_current=False):
+    r_dict = dict(r) if hasattr(r, 'to_dict') else r
+    p_val = r_dict.get('漲跌', 0)
+    sign = "+" if p_val > 0 else ""
+    trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+    s_score = r_dict.get('Score', 0)
+    score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
+    
+    tags = []
+    if r_dict.get('紅吞') or r_dict.get('近七日紅吞'): tags.append("紅吞")
+    elif r_dict.get('黑吞'): tags.append("黑吞")
+    
+    if r_dict.get('回測有撐'): tags.append("📌撐")
+    elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
+    
+    if r_dict.get('主力初動') or r_dict.get('土洋合買'): tags.append("🚀起漲")
+    
+    if '5日線即將上彎' in r_dict and r_dict['5日線即將上彎'] is not None:
+        tags.append("↗️" if r_dict.get('5日線即將上彎') else "↘️")
+        
+    tag_display = " | ".join(tags)
+    if tag_display: tag_display = f" | {tag_display}"
+    
+    btn_prefix = "⭐ " if is_current else "▪️ "
+    return f"{btn_prefix}{r_dict.get('代號', '')} {r_dict.get('名稱', '')} {trend_icon}{r_dict.get('收盤價', '')}({sign}{r_dict.get('漲跌幅', '')}%) | {score_icon}{tag_display}"
+
+def get_dynamic_stock_label(ticker, nav_data_list, is_current=False):
+    for item in nav_data_list:
+        if item.get("ticker_raw") == ticker:
+            return format_stock_label_from_data(item, is_current)
+    
+    c_name = get_stock_name(ticker)
+    df_chart = get_stock_data(ticker)
+    if df_chart is not None and len(df_chart) >= 5:
+        t_data = analyze_today(df_chart, ticker, inst_data=None, tick_data=None)
+        if t_data:
+            return format_stock_label_from_data(t_data, is_current)
+            
+    btn_prefix = "⭐ " if is_current else "▪️ "
+    return f"{btn_prefix}{ticker} {c_name}"
+
 # ==========================================
 # 🚀 頁面路由控制中心
 # ==========================================
@@ -1241,7 +1333,7 @@ if st.session_state.page == "home":
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     if btn_col1.button("✅ 綜合買點榜", use_container_width=True): st.session_state.scan_mode = "buy"; st.rerun()
     if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True): st.session_state.scan_mode = "red_engulf"; st.rerun()
-    if btn_col3.button("📊 近五日成交量", use_container_width=True): st.session_state.scan_mode = "recent"; st.rerun()
+    if btn_col3.button("🕵️ 主力初動榜", use_container_width=True): st.session_state.scan_mode = "main_force"; st.rerun()
     
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
@@ -1258,9 +1350,12 @@ if st.session_state.page == "home":
                       (1 if r.get('回測有撐') else 0) + 
                       (1 if r.get('5日線即將上彎') else 0), axis=1)
 
-        if st.session_state.scan_mode == "recent":
-            st.markdown("##### 📊 近五日成交量排行榜")
-            df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
+        if st.session_state.scan_mode == "main_force":
+            st.markdown("##### 🕵️ 主力初動榜 (底部爆量起漲)")
+            df_disp = df_results[df_results['主力初動'] == True].sort_values(
+                by=['漲跌幅', '成交量'], ascending=[False, False]
+            ).head(20)
+            if df_disp.empty: st.info("💡 目前雷達池內暫無符合「底部爆出均量2倍以上」的主力初動標的。")
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
             df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 3)].sort_values(
@@ -1278,25 +1373,7 @@ if st.session_state.page == "home":
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
         for _, r in df_disp.iterrows():
-            p_val = r['漲跌']
-            sign = "+" if p_val > 0 else ""
-            trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-            s_score = r['Score']
-            score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
-            
-            tags = []
-            if r.get('紅吞') or r.get('近七日紅吞'): tags.append("紅吞")
-            elif r.get('黑吞'): tags.append("黑吞")
-            
-            if r.get('回測有撐'): tags.append("📌撐")
-            elif r.get('反彈遇壓'): tags.append("⚠️壓")
-            if '5日線即將上彎' in r:
-                tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
-                
-            tag_display = " | ".join(tags)
-            if tag_display: tag_display = f" | {tag_display}"
-            
-            button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
+            button_label = format_stock_label_from_data(r, is_current=False)
             if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                 st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                 st.rerun()
@@ -1353,7 +1430,7 @@ elif st.session_state.page == "analysis":
                 status.markdown("<div style='text-align:center; color:#888;'>🏦 追蹤三大法人籌碼流向...</div>", unsafe_allow_html=True)
                 inst_data = get_institutional_trading(target)
                 p_bar.progress(50)
-                status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組 (包含Tick熱度寫入)...</div>", unsafe_allow_html=True)
+                status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組...</div>", unsafe_allow_html=True)
                 data = analyze_today(df_slice, target, inst_data, tick_data=tick_info)
                 sc = data['Score']
                 p_bar.progress(65)
@@ -1422,7 +1499,7 @@ elif st.session_state.page == "analysis":
                     st.markdown(f"""
                     <div style='display: flex; font-size: 0.85rem; justify-content: space-between; margin-bottom: 4px; font-weight: bold;'>
                         <span style='color: #ff3333;'>外盤 (主動買進): {ask_r}%</span>
-                        <span style='color: #00cc00;'>內盤 (主動賣出): {bid_r}%</span>
+                        <span style='color: #00cc00;'>內盤 (主تدائي出): {bid_r}%</span>
                     </div>
                     <div style='width: 100%; background-color: #00cc00; height: 18px; border-radius: 4px; overflow: hidden; display: flex;'>
                         <div style='width: {ask_r}%; background-color: #ff3333; height: 100%; transition: width 0.3s;'></div>
@@ -1503,8 +1580,10 @@ elif st.session_state.page == "analysis":
             a1, a2 = st.columns(2)
             with a1.container(border=True): st.markdown(f"##### 📊 技術與動能指標<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br>**MACD 柱狀體:** `{data['MACD柱']}`<br><br>**5日均量:** `{data['5日均量']} 張`", unsafe_allow_html=True)
             with a2.container(border=True):
-                eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
-                st.markdown(f"##### 📑 基本面價值評估<br><br>**近四季累計 EPS (TTM):** `{eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
+                eps = f_data['EPS']
+                try: m_eps = round(float(eps)/12, 2) if eps != "無" else "無"
+                except: m_eps = "無"
+                st.markdown(f"##### 📑 基本面價值評估<br><br>**近四季累計 EPS (TTM):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
@@ -1564,7 +1643,8 @@ elif st.session_state.page == "analysis":
             mode_titles = {
                 "buy": "✅ 綜合買點榜", 
                 "red_engulf": "🔥 紅吞反轉榜", 
-                "recent": "📊 近五日成交量"
+                "recent": "📊 近五日成交量",
+                "main_force": "🕵️ 主力初動榜"
             }
             active_title = mode_titles.get(st.session_state.scan_mode, "📋 當前雷達清單")
             
