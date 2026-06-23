@@ -215,10 +215,6 @@ if 'fav_groups' not in st.session_state:
         default_groups["預設群組"] = old_favs
     st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
-# 初始化最近搜尋紀錄
-if 'recent_searches' not in st.session_state:
-    st.session_state.recent_searches = []
-
 @st.cache_data(ttl=15, show_spinner=False)
 def fetch_live_tick_data(ticker):
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -592,11 +588,6 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
-
-    if inst_data and len(inst_data) >= 3:
-        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
@@ -1112,9 +1103,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
+    # 🎯 升級需求：統一藍色箭頭 +「買」字
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_colors = [], [], []
+        buy_x, buy_y, buy_text, buy_colors = [], [], [], []
         prev_score = 0
+        
+        # 定義統一的科技藍色 (支援深淺色模式)
         unified_blue = '#0066cc' if is_light_mode else '#00ccff'
         
         for i in range(len(df_view)):
@@ -1125,21 +1119,27 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None, tick_data=None) 
                 if t_data:
                     current_score = t_data['Score']
+                    
+                    # 只要達標 S 級或初次達標 A 級，統一標示為藍色的「買」
                     if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
+                        buy_text.append("買")
                         buy_colors.append(unified_blue)
                     elif 3 <= current_score < 7 and prev_score < 3:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
+                        buy_text.append("買")
                         buy_colors.append(unified_blue)
                         
                     prev_score = current_score
                     
         if buy_x:
             fig.add_trace(go.Scatter(
-                x=buy_x, y=buy_y, mode='markers', 
+                x=buy_x, y=buy_y, mode='markers+text', 
                 marker=dict(symbol='triangle-up', size=14, color=buy_colors), 
+                text=buy_text, textposition="bottom center", 
+                textfont=dict(color=buy_colors, size=12, weight="bold"), 
                 name="買進訊號", hoverinfo='skip'
             ), row=1, col=1)
             
@@ -1258,12 +1258,6 @@ elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
     
-    # 🎯 記錄歷史搜尋軌跡 (最多5筆)
-    if target in st.session_state.recent_searches:
-        st.session_state.recent_searches.remove(target)
-    st.session_state.recent_searches.insert(0, target)
-    st.session_state.recent_searches = st.session_state.recent_searches[:5]
-    
     n_pool = st.session_state.get('nav_pool', [])
     p_stk, n_stk = None, None
     if target in n_pool and len(n_pool) > 1:
@@ -1307,7 +1301,7 @@ elif st.session_state.page == "analysis":
                 status.markdown("<div style='text-align:center; color:#888;'>🏦 追蹤三大法人籌碼流向...</div>", unsafe_allow_html=True)
                 inst_data = get_institutional_trading(target)
                 p_bar.progress(50)
-                status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組...</div>", unsafe_allow_html=True)
+                status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組 (包含Tick熱度寫入)...</div>", unsafe_allow_html=True)
                 data = analyze_today(df_slice, target, inst_data, tick_data=tick_info)
                 sc = data['Score']
                 p_bar.progress(65)
@@ -1472,47 +1466,6 @@ elif st.session_state.page == "analysis":
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
-
-            # 🎯 升級 1：顯示最近搜尋軌跡
-            st.divider()
-            st.subheader("🕒 最近搜尋")
-            if st.session_state.recent_searches:
-                r_cols = st.columns(len(st.session_state.recent_searches))
-                for i, r_tick in enumerate(st.session_state.recent_searches):
-                    if r_cols[i].button(f"{r_tick} {get_stock_name(r_tick)}", key=f"recent_btn_{r_tick}", use_container_width=True):
-                        st.session_state.current_stock = r_tick
-                        st.rerun()
-            else:
-                st.info("尚無搜尋紀錄")
-
-            # 🎯 升級 2：顯示同產業相關股票
-            st.divider()
-            st.subheader(f"🔗 同產業相關股票 ({f_data['Industry']})")
-            related_found = []
-            nav_data = st.session_state.get('nav_pool_data', [])
-            
-            # 從緩存的雷達池中尋找同產業標的
-            for item in nav_data:
-                if item.get('產業') == f_data['Industry'] and item.get('ticker_raw') != target:
-                    related_found.append(item)
-            
-            # 如果不夠 5 支，從 custom_pool 動態補足
-            if len(related_found) < 5:
-                for t in st.session_state.custom_pool:
-                    if t == target or any(r.get('ticker_raw') == t for r in related_found): continue
-                    t_fund = get_fundamental_and_industry_data(t)
-                    if t_fund['Industry'] == f_data['Industry']:
-                        related_found.append({"ticker_raw": t, "代號": t, "名稱": get_stock_name(t)})
-                    if len(related_found) >= 5: break
-            
-            if related_found:
-                rel_cols = st.columns(min(5, len(related_found)))
-                for i, rel_item in enumerate(related_found[:5]):
-                    if rel_cols[i].button(f"📊 {rel_item['代號']} {rel_item['名稱']}", key=f"rel_btn_{rel_item['ticker_raw']}", use_container_width=True):
-                        st.session_state.current_stock = rel_item['ticker_raw']
-                        st.rerun()
-            else:
-                st.info(f"雷達池中暫無其他【{f_data['Industry']}】的關聯標的。")
 
         with col_right_menu:
             mode_titles = {
