@@ -613,7 +613,7 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     ma5, ma10, ma20 = data['5MA'], data['10MA'], data['20MA']
     ma_max = max(ma5, ma10, ma20)
     ma_min = min(ma5, ma10, ma20)
-    ma_spread = (ma_max - ma_min) / ma_min * 100 if ma_min > 0 else 0
+    ma_spread = (ma_max - ma_min) / ma_min * 100
     if ma_spread < 2.5 and data['收盤價'] > ma_max and data.get('昨日收盤價', data['收盤價']) < ma_max:
         sc += 3
         rs.append("🔥 均線糾結突破 (5T/10T/20T收斂後表態上攻，強烈起漲訊號)")
@@ -655,7 +655,7 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         elif f_t0 > 0:
             sc += 1; rs.append(f"✅ 外資連續偏多 (今日買超 {f_t0} 張)")
             
-        if abs(data.get('漲跌幅', 0)) < 2.5 and vol <= vol_5ma * 1.2:
+        if abs(data['漲跌幅']) < 2.5 and vol <= vol_5ma * 1.2:
             if (t_t0 > 0 and t_t1 > 0) or (f_t0 > 0 and f_t1 > 0):
                 sc += 2
                 rs.append("🤝 法人價平量縮潛伏 (底部偷偷吃貨特徵)")
@@ -770,11 +770,12 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     
     data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
-    # 🎯 補回被遺漏的 Vol_Ratio，修復 KeyError 並支援排序
+    # 🎯 記錄 Vol_Ratio 供排序使用
     data['Vol_Ratio'] = round(data['成交量'] / max(1, data['5日均量']), 2)
     
+    # 若 AI 沒貼上主力標籤，這裡補強綜合判定
     if "主力初動" not in data:
-        data['主力初動'] = data.get('量能點火', False) and data.get('均線突破', False)
+        data['主力初動'] = data.get('量能點火') and data.get('均線突破')
     
     return data
 
@@ -1035,6 +1036,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
     elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
 
+    # 顯示主力大戶特徵
     if data.get('量能點火'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>主力初動特徵：量能點火！今日成交量異常放大達均量 2 倍以上，且收紅強勢表態。</span>")
     if data.get('均線突破'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>主力初動特徵：均線糾結突破！短中均線收斂後一舉貫穿，多頭發動經典型態。</span>")
 
@@ -1062,8 +1064,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來5日線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應防範回檔。</b></span>")
 
     vol_ratio = round(data['成交量'] / max(1, data['5日均量']), 2)
-    if data['成交量'] > data['5日均量'] * 1.1 and data.get('漲跌',0) > 0: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日成交量為5日均量的 {vol_ratio} 倍，主力進場點火信號明確。</span>")
-    elif data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：當前動能低迷（僅為均量 {vol_ratio} 倍），反彈需防範缺乏追價意願。</span>")
+    if data['成交量'] < data['5日均量']: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：當前動能低迷（僅為均量 {vol_ratio} 倍），反彈需防範缺乏追價意願。</span>")
         
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
@@ -1300,49 +1301,6 @@ def get_global_scan_results(pool_tuple):
             except: pass
     return scan_results
 
-# =========================================================================================
-# 🌟 統一按鈕文字格式化引擎 (支援 榜單、近期搜尋、同產業) 🌟
-# =========================================================================================
-def format_stock_label_from_data(r, is_current=False):
-    r_dict = dict(r) if hasattr(r, 'to_dict') else r
-    p_val = r_dict.get('漲跌', 0)
-    sign = "+" if p_val > 0 else ""
-    trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-    s_score = r_dict.get('Score', 0)
-    score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
-    
-    tags = []
-    if r_dict.get('紅吞') or r_dict.get('近七日紅吞'): tags.append("紅吞")
-    elif r_dict.get('黑吞'): tags.append("黑吞")
-    
-    if r_dict.get('回測有撐'): tags.append("📌撐")
-    elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
-    
-    if r_dict.get('主力初動') or r_dict.get('量能點火'): tags.append("🔥量增")
-    if r_dict.get('均線突破'): tags.append("🎯突破")
-    if r_dict.get('法人潛伏'): tags.append("🤝合買")
-    
-    tag_display = " | ".join(tags)
-    if tag_display: tag_display = f" | {tag_display}"
-    
-    btn_prefix = "⭐ " if is_current else "▪️ "
-    return f"{btn_prefix}{r_dict.get('代號', '')} {r_dict.get('名稱', '')} {trend_icon}{r_dict.get('收盤價', '')}({sign}{r_dict.get('漲跌幅', '')}%) | {score_icon}{tag_display}"
-
-def get_dynamic_stock_label(ticker, nav_data_list, is_current=False):
-    for item in nav_data_list:
-        if item.get("ticker_raw") == ticker:
-            return format_stock_label_from_data(item, is_current)
-    
-    c_name = get_stock_name(ticker)
-    df_chart = get_stock_data(ticker)
-    if df_chart is not None and len(df_chart) >= 5:
-        t_data = analyze_today(df_chart, ticker, inst_data=None, tick_data=None)
-        if t_data:
-            return format_stock_label_from_data(t_data, is_current)
-            
-    btn_prefix = "⭐ " if is_current else "▪️ "
-    return f"{btn_prefix}{ticker} {c_name}"
-
 # ==========================================
 # 🚀 頁面路由控制中心
 # ==========================================
@@ -1372,11 +1330,12 @@ if st.session_state.page == "home":
                       (1 if r.get('5日線即將上彎') else 0), axis=1)
 
         if st.session_state.scan_mode == "main_force":
-            st.markdown("##### 🕵️ 主力初動榜 (底部爆量起漲)")
+            st.markdown("##### 🕵️ 主力初動榜 (底部爆量與均線突破)")
+            # 🎯 升級：主力初動榜優先使用 Vol_Ratio 排序
             df_disp = df_results[df_results['主力初動'] == True].sort_values(
                 by=['Vol_Ratio', '漲跌幅'], ascending=[False, False]
             ).head(20)
-            if df_disp.empty: st.info("💡 目前雷達池內暫無符合「底部爆出均量2倍以上」的主力初動標的。")
+            if df_disp.empty: st.info("💡 目前雷達池內暫無符合「底部爆量或均線突破」的主力初動標的。")
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
             df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 3)].sort_values(
@@ -1384,7 +1343,8 @@ if st.session_state.page == "home":
             ).head(20)
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
+            st.markdown("##### 🎯 綜合買點榜單 (優先以點火量能排序)")
+            # 🎯 升級：綜合買點改用 Vol_Ratio 排序，抓出當天最異常點火的股票
             df_disp = df_results[df_results['Score'] >= 3].sort_values(
                 by=['Vol_Ratio', 'Score'], ascending=[False, False]
             ).head(20)
@@ -1578,7 +1538,7 @@ elif st.session_state.page == "analysis":
                     avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
                     profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
                     prof_color = "#ff3333" if profit_pct >= 0 else "#00cc00"
-                    prof_text = "獲利" if profit_pct >= 0 else "亏損"
+                    prof_text = "獲利" if profit_pct >= 0 else "虧損"
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
