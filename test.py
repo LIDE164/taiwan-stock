@@ -777,155 +777,6 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     
     return data
 
-# ==========================================
-# 🛡️ 核心修復：防禦性大盤儀表板邏輯 (避免 NoneType 報錯)
-# ==========================================
-def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
-    macro_data = get_global_macro_data()
-    # 🎯 修復 1：增加 twii_df 是否為空的安全檢查
-    if twii_df is None or len(twii_df) < 2 or 'Open' not in twii_df.columns: 
-        return "⚖️ 大盤整理中", "目前大盤數據連接稍有延遲，系統正以全球總經指標為您把關風險，建議依個股策略分批佈局。", "⚖️ 數據結算中", "國際變數多空震盪，開盤高低機率各半，建議維持紀律操作。", "", "", 50, macro_data
-        
-    try:
-        if twii_close > 0:
-            t_close = twii_close
-            p_close = twii_close - twii_change
-            t_open = twii_df['Open'].iloc[-1]
-        else:
-            t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
-    except:
-        t_open, t_close, p_close = 15000, 15000, 15000
-
-    tz_tpe = timezone(timedelta(hours=8))
-    if twii_time_str and "/" in twii_time_str:
-        last_dt_str = twii_time_str.split(" ")[0]
-        try: last_dt = datetime.strptime(last_dt_str, '%Y/%m/%d')
-        except: last_dt = datetime.now(tz_tpe)
-    else:
-        last_dt = datetime.now(tz_tpe)
-        last_dt_str = last_dt.strftime('%Y/%m/%d')
-        
-    next_dt = last_dt + timedelta(days=1)
-    TW_MARKET_HOLIDAYS = {"2026/01/01", "2026/02/16", "2026/02/17", "2026/02/18", "2026/02/19", "2026/02/20", "2026/02/23", "2026/02/27", "2026/04/02", "2026/04/03", "2026/05/01", "2026/06/19", "2026/09/25", "2026/10/09"}
-    while True:
-        if next_dt.weekday() >= 5: 
-            next_dt += timedelta(days=1)
-            continue
-        if next_dt.strftime('%Y/%m/%d') in TW_MARKET_HOLIDAYS: 
-            next_dt += timedelta(days=1)
-            continue
-        break
-    next_dt_str = next_dt.strftime('%Y/%m/%d')
-    
-    # 動態判定「盤中」或「今日」
-    now_dt = datetime.now(tz_tpe)
-    is_market_open = (9 <= now_dt.hour < 13) or (now_dt.hour == 13 and now_dt.minute <= 35)
-    t_prefix = "盤中即時" if is_market_open else "今日收盤"
-    
-    today_title, today_desc = f"⚖️ {t_prefix}平盤震盪", "大盤目前在平盤附近，法人現貨買賣超多空拉扯，量價關係呈現縮量，盤勢陷入震盪整理。"
-    if t_open > p_close * 1.003:
-        if t_close > t_open: today_title, today_desc = f"🔥 {t_prefix}開高走高", "大盤受買盤激勵跳空開高，配合量能放大，盤勢極度偏多。"
-        else: today_title, today_desc = f"⚠️ {t_prefix}開高走低", "大盤跳空開高後遭遇短線獲利了結賣壓，呈現高檔回落。"
-    elif t_open < p_close * 0.997:
-        if t_close > t_open: today_title, today_desc = f"💪 {t_prefix}開低走高", "大盤受國際盤影響開低，但低檔承接買盤強勁，出現開低走高。"
-        else: today_title, today_desc = f"🩸 {t_prefix}開低走低", "大盤弱勢開低，引發多殺多停損賣壓，盤勢極度偏空。"
-    else:
-        if t_close > p_close * 1.003: today_title, today_desc = f"📈 {t_prefix}平盤走高", "大盤開平盤附近，隨後受買盤帶動，均線乖離擴大，穩步墊高。"
-        elif t_close < p_close * 0.997: today_title, today_desc = f"📉 {t_prefix}平盤走低", "大盤開平盤附近，缺乏買盤支撐，資金動能不足震盪向下。"
-
-    risk_score = 50 
-    # 🎯 修復 2：增加均線計算的安全退路，避免因為沒有 5MA 崩潰
-    try:
-        ma5 = twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else twii_df['Close'].tail(5).mean()
-        if t_close < ma5: risk_score += 15
-        else: risk_score -= 10
-    except:
-        pass
-        
-    sox_data = macro_data.get('^SOX', {"price": 0, "pct": 0})
-    sox_pct = sox_data.get('pct', 0)
-    if sox_pct < -2.0: risk_score += 20
-    elif sox_pct < -0.5: risk_score += 10
-    elif sox_pct > 1.5: risk_score -= 15
-    vix_data = macro_data.get('^VIX', {"price": 0, "pct": 0})
-    vix_curr = vix_data.get('price', 0)
-    vix_pct = vix_data.get('pct', 0)
-    if vix_curr > 20 or vix_pct > 10.0: risk_score += 20
-    elif vix_pct < -5.0: risk_score -= 10
-    jpy_data = macro_data.get('JPY=X', {"price": 0, "pct": 0})
-    jpy_pct = jpy_data.get('pct', 0)
-    if jpy_pct < -0.8: risk_score += 15 
-    elif jpy_pct > 0.5: risk_score -= 5
-    
-    risk_score = max(5, min(95, int(risk_score))) 
-    if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經環境穩定，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。"
-    elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或台股跌破關鍵短均線，預防 ({next_dt_str}) 開平低盤回測下檔支撐。"
-    else: tmr_title, tmr_desc = "🚨 極度警戒", f"全球宏觀風險飆高，強烈建議減碼防範 ({next_dt_str}) 跳空重挫的系統性風險。"
-    
-    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
-
-
-def render_index_board():
-    # 🎯 修復 3：整併 try-except 包覆外部變數，避免 Yahoo 被 Block 時 render 報錯
-    try:
-        twii_close, twii_change, twii_time_str = get_twii_quote()
-        twii_color = '#ff3333' if twii_change >= 0 else '#00cc00'
-        twii_df_for_pred = get_stock_data("^TWII")
-        today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
-        
-        with st.container(border=True):
-            col1, col3 = st.columns([1, 1.5])
-            with col1:
-                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}</div>", unsafe_allow_html=True)
-            with col3:
-                st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢 analysis ({last_dt_str})</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; margin-bottom: 8px; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; color: #00ffcc; font-size: 1.05rem; font-weight: bold;'>🔮 次日開盤預測 ({next_dt_str})</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
-            
-            if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
-        
-        st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align:center; font-size:0.85rem; color:#888; margin-top:-10px; margin-bottom:10px;'>🕒 總經最後收盤時間: {macro.get('global_time', '無')}</div>", unsafe_allow_html=True)
-
-        bar_color = "#00cc00" if risk_score < 40 else ("#ffcc00" if risk_score < 70 else "#ff3333")
-        risk_label = "🟢 資金充沛，安心佈局" if risk_score < 40 else ("🟡 變數增加，控制倉位" if risk_score < 70 else "🔴 系統風險，嚴格減碼")
-        st.markdown(f"<div style='text-align:center; font-size:1.1rem; font-weight:bold;'>系統量化開低風險度：<span style='color:{bar_color};'>{risk_score}%</span></div>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="risk-bar-container">
-            <div class="risk-bar-fill" style="width: {risk_score}%; background-color: {bar_color};"></div>
-        </div>
-        <div style='text-align:center; font-size:0.9rem; color:{bar_color}; font-weight:bold; margin-bottom:15px;'>{risk_label}</div>
-        """, unsafe_allow_html=True)
-        
-        mc1, mc2, mc3 = st.columns(3)
-        sox_data = macro.get('^SOX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^SOX"})
-        sox_p = sox_data.get('pct', 0)
-        sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
-        with mc1.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data.get('price', 0):,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data.get('time', '無')}<br><a href='{sox_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
-        
-        vix_data = macro.get('^VIX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^VIX"})
-        vix_p = vix_data.get('pct', 0)
-        vix_c = "#00cc00" if vix_p <= 0 else "#ff3333"
-        with mc2.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
-        
-        jpy_data = macro.get('JPY=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/JPY=X"})
-        jpy_p = jpy_data.get('pct', 0)
-        jpy_c = "#ffcc00" 
-        jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
-        with mc3.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
-            
-    except Exception as e: 
-        st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
-
 # =========================================================================================
 # 🌟 統一按鈕文字格式化引擎 (支援 榜單、近期搜尋、同產業) 🌟
 # =========================================================================================
@@ -938,7 +789,7 @@ def format_stock_label_from_data(r, is_current=False):
     score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
     
     tags = []
-    # 🎯 僅留紅黑吞、回測撐壓 (連同級數共三樣)
+    # 🎯 修改需求 1：僅留紅黑吞、回測撐壓 (連同級數共三樣)
     if r_dict.get('紅吞') or r_dict.get('近七日紅吞'): 
         tags.append("紅吞")
     elif r_dict.get('黑吞'): 
@@ -952,7 +803,7 @@ def format_stock_label_from_data(r, is_current=False):
     tag_display = " | ".join(tags)
     if tag_display: tag_display = f" | {tag_display}"
     
-    btn_prefix = "⭐ " if is_current else "▪ "
+    btn_prefix = "⭐ " if is_current else "▪️ "
     return f"{btn_prefix}{r_dict.get('代號', '')} {r_dict.get('名稱', '')} {trend_icon}{r_dict.get('收盤價', '')}({sign}{r_dict.get('漲跌幅', '')}%) | {score_icon}{tag_display}"
 
 def get_dynamic_stock_label(ticker, nav_data_list, is_current=False):
@@ -967,7 +818,7 @@ def get_dynamic_stock_label(ticker, nav_data_list, is_current=False):
         if t_data:
             return format_stock_label_from_data(t_data, is_current)
             
-    btn_prefix = "⭐ " if is_current else "▪ "
+    btn_prefix = "⭐ " if is_current else "▪️ "
     return f"{btn_prefix}{ticker} {c_name}"
 
 # ==========================================
@@ -998,7 +849,7 @@ if st.session_state.page == "home":
                       (1 if r.get('回測有撐') else 0) + 
                       (1 if r.get('5日線即將上彎') else 0), axis=1)
 
-        # 主力初動榜不限制評級
+        # 🎯 修改需求 2：主力初動榜不限制評級(觀望級也顯示)，以量增比 (Vol_Ratio) 為主要排序依據
         if st.session_state.scan_mode == "main_force":
             st.markdown("##### 🕵️ 主力初動榜 (底部爆量與均線突破)")
             df_disp = df_results[df_results['主力初動'] == True].sort_values(
@@ -1211,12 +1062,8 @@ elif st.session_state.page == "analysis":
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
             bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
-            
-            # 🎯 修改需求 3：建議建倉的部分，明確標示「當前股價」與建議建倉防守位置的對比
-            v_a_upgraded = f"📌 <b>【當前股價：{data['收盤價']:.2f}】</b><br>{v_a}"
-            
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
-            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a_upgraded}</p></div></div>''', unsafe_allow_html=True)
+            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("30日", on_click=set_view_days, args=(30,))
@@ -1278,6 +1125,19 @@ elif st.session_state.page == "analysis":
                             st.rerun()
                 else:
                     st.info(f"雷達池中暫無其他【{f_data['Industry']}】的關聯標的。")
+
+            st.divider()
+            st.subheader("⭐ 自選群組管理")
+            all_groups = list(st.session_state.fav_groups.keys())
+            current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
+            selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
+            if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
+                for g in all_groups:
+                    if g in selected_groups and target not in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].append(target)
+                    elif g not in selected_groups and target in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].remove(target)
+                save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+                st.success("✅ 群組設定已更新！")
+                st.rerun()
 
         with col_right_menu:
             mode_titles = {
