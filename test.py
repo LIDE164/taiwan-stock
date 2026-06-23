@@ -1,4 +1,3 @@
-```python
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -1437,4 +1436,3 @@ elif st.session_state.page == "analysis":
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
 
-```
