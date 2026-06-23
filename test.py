@@ -907,6 +907,12 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         else: 
             analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：當前【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
 
+    t_short = data['收盤價'] > data['5MA']
+    t_mid = data['收盤價'] > data['20MA']
+    t_long = data['收盤價'] > data['60MA']
+    if t_short and t_mid and t_long: analysis_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
+    elif not t_short and not t_mid and not t_long: analysis_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
+
     if data.get('紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
     elif data.get('近七日紅吞'): analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
     elif data.get('黑吞'): analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
@@ -937,7 +943,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
-    # 🎯 升級需求 1：完美整合三大法人籌碼動向與逐日明細表格
     if inst_data and len(inst_data) >= 1:
         recent_days_summary = inst_data[:3]
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in recent_days_summary if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
@@ -952,7 +957,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         elif trust_net < 0: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         else: chip_status += f"⚪ 投信籌碼維持中立。"
         
-        # 建立精美的嵌入式表格顯示近 5 日明細
         chip_status += "<br>　 <b>⏳ 近五日三大法人逐日買賣超明細 (張)：</b>"
         chip_status += "<table style='width:100%; text-align:center; margin-top:8px; border-collapse: collapse; font-size: 0.95rem; background-color: rgba(0,0,0,0.03); border-radius: 6px; overflow: hidden;'>"
         chip_status += "<tr style='border-bottom: 1px solid #aaa; background-color: rgba(0,0,0,0.05);'><th style='padding:5px;'>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr>"
@@ -1099,10 +1103,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
-    # 🎯 升級需求 2：K線圖重新顯示 S買 與 A買，用顏色區分且過濾雜訊
+    # 🎯 升級需求：統一藍色箭頭 +「買」字
     if show_buy_signal and f_data:
         buy_x, buy_y, buy_text, buy_colors = [], [], [], []
         prev_score = 0
+        
+        # 定義統一的科技藍色 (支援深淺色模式)
+        unified_blue = '#0066cc' if is_light_mode else '#00ccff'
+        
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -1112,16 +1120,17 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 if t_data:
                     current_score = t_data['Score']
                     
+                    # 只要達標 S 級或初次達標 A 級，統一標示為藍色的「買」
                     if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("S買")
-                        buy_colors.append('#00cc00' if not is_light_mode else '#00aa00')
+                        buy_text.append("買")
+                        buy_colors.append(unified_blue)
                     elif 3 <= current_score < 7 and prev_score < 3:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("A買")
-                        buy_colors.append('#ffcc00' if not is_light_mode else '#cc9900')
+                        buy_text.append("買")
+                        buy_colors.append(unified_blue)
                         
                     prev_score = current_score
                     
@@ -1444,8 +1453,6 @@ elif st.session_state.page == "analysis":
             with a2.container(border=True):
                 eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
                 st.markdown(f"##### 📑 基本面價值評估<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
-            
-            # 🎯 移除原本獨立的「近期三大法人逐日買賣超」表格 (已完美合併至上方AI分析內)
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
