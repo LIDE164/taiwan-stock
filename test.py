@@ -215,6 +215,10 @@ if 'fav_groups' not in st.session_state:
         default_groups["預設群組"] = old_favs
     st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
+# 初始化最近搜尋紀錄
+if 'recent_searches' not in st.session_state:
+    st.session_state.recent_searches = []
+
 @st.cache_data(ttl=15, show_spinner=False)
 def fetch_live_tick_data(ticker):
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -369,38 +373,44 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
-    try:
-        url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            text = soup.get_text(separator='|')
-            match = re.search(r'當季EPS\|+([\-\d\.]+)', text)
-            if match: eps_val = match.group(1)
-            else:
-                res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
-                if res_api.status_code == 200:
-                    data = res_api.json()
-                    if 'data' in data and 'eps' in data['data']: eps_val = f"{float(data['data']['eps']):.2f}"
-    except: pass
+    
+    # 🎯 優先使用 yfinance 抓取準確的 TTM (近四季累計) EPS 與 P/E
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        if not info or 'sector' not in info:
+            info = yf.Ticker(f"{base_ticker}.TWO").info
+
         sec, ind_eng = info.get("sector", ""), info.get("industry", "")
         tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
         tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
         ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
-        if eps_val == "無" and 'trailingEps' in info and info['trailingEps'] is not None:
+
+        if 'trailingEps' in info and info['trailingEps'] is not None:
             eps_val = str(round(info['trailingEps'], 2))
+        if 'trailingPE' in info and info['trailingPE'] is not None:
+            pe_val = str(round(info['trailingPE'], 2))
     except: pass
-    try:
-        if eps_val != "無":
+
+    # 備用：若抓不到改用 cnyes 抓
+    if eps_val == "無":
+        try:
+            res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
+            if res_api.status_code == 200:
+                data = res_api.json()
+                if 'data' in data and 'eps' in data['data']:
+                    eps_val = f"{float(data['data']['eps']):.2f}"
+        except: pass
+
+    if pe_val == "無" and eps_val != "無":
+        try:
             eps_f = float(eps_val)
-            if eps_f > 0 and current_price > 0: pe_val = str(round(float(current_price) / eps_f, 2))
-            elif eps_f <= 0: pe_val = "無 (EPS ≦ 0)"
-    except: pass
+            if eps_f > 0 and current_price > 0:
+                pe_val = str(round(float(current_price) / eps_f, 2))
+            elif eps_f <= 0:
+                pe_val = "無 (EPS ≦ 0)"
+        except: pass
+
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
 @st.cache_data(ttl=15, show_spinner=False) 
@@ -575,7 +585,6 @@ def get_global_macro_data():
 def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     sc, rs = 0, []
     
-    # ---------------- 基礎加分區 ----------------
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
@@ -607,8 +616,6 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         ask_r = tick_data.get('ask_ratio', 50)
         if ask_r > 55.0: sc+=3; rs.append(f"🔥 盤中買氣極強 (外盤比高達 {ask_r}%)")
 
-    # ---------------- 🚨 一票否決 / 強制降級防護區 (極致限縮風險) ----------------
-    
     fatal_risk = False
 
     max_support = max(data['5MA'], data['10MA'], data['20MA'])
@@ -706,6 +713,48 @@ def analyze_today(df, ticker_number, inst_data=None, tick_data=None):
     data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
     return data
+
+# =========================================================================================
+# 🌟 統一按鈕文字格式化引擎 (支援 榜單、近期搜尋、同產業) 🌟
+# =========================================================================================
+def format_stock_label_from_data(r, is_current=False):
+    r_dict = dict(r) if hasattr(r, 'to_dict') else r
+    p_val = r_dict.get('漲跌', 0)
+    sign = "+" if p_val > 0 else ""
+    trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
+    s_score = r_dict.get('Score', 0)
+    score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
+    
+    tags = []
+    if r_dict.get('紅吞') or r_dict.get('近七日紅吞'): tags.append("紅吞")
+    elif r_dict.get('黑吞'): tags.append("黑吞")
+    
+    if r_dict.get('回測有撐'): tags.append("📌撐")
+    elif r_dict.get('反彈遇壓'): tags.append("⚠️壓")
+    
+    if '5日線即將上彎' in r_dict and r_dict['5日線即將上彎'] is not None:
+        tags.append("↗️" if r_dict.get('5日線即將上彎') else "↘️")
+        
+    tag_display = " | ".join(tags)
+    if tag_display: tag_display = f" | {tag_display}"
+    
+    btn_prefix = "⭐ " if is_current else "▪️ "
+    return f"{btn_prefix}{r_dict.get('代號', '')} {r_dict.get('名稱', '')} {trend_icon}{r_dict.get('收盤價', '')}({sign}{r_dict.get('漲跌幅', '')}%) | {score_icon}{tag_display}"
+
+def get_dynamic_stock_label(ticker, nav_data_list, is_current=False):
+    for item in nav_data_list:
+        if item.get("ticker_raw") == ticker:
+            return format_stock_label_from_data(item, is_current)
+    
+    c_name = get_stock_name(ticker)
+    df_chart = get_stock_data(ticker)
+    if df_chart is not None and len(df_chart) >= 5:
+        t_data = analyze_today(df_chart, ticker, inst_data=None, tick_data=None)
+        if t_data:
+            return format_stock_label_from_data(t_data, is_current)
+            
+    btn_prefix = "⭐ " if is_current else "▪️ "
+    return f"{btn_prefix}{ticker} {c_name}"
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_stock_rating_fast(ticker):
@@ -951,13 +1000,12 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
-    # 🎯 升級需求 3 & 完美合併：法人籌碼動向與逐日買賣超合併顯示成內嵌式 HTML 數據表
     if inst_data and len(inst_data) >= 1:
-        recent_days = inst_data[:3]
-        foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in recent_days if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
-        trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in recent_days if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+        recent_days_summary = inst_data[:3]
+        foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in recent_days_summary if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
+        trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in recent_days_summary if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         
-        chip_status = f"⚪ <b>法人籌碼動向 (近{len(recent_days)}日累計)</b>："
+        chip_status = f"⚪ <b>法人籌碼動向 (近3日累計)</b>："
         if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多 (買超 {foreign_net} 張)</span>；"
         elif foreign_net < 0: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節 (賣超 {abs(foreign_net)} 張)</span>；"
         else: chip_status += f"⚪ 外資平盤中立；"
@@ -966,31 +1014,27 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         elif trust_net < 0: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         else: chip_status += f"⚪ 投信籌碼維持中立。"
         
-        chip_status += "<br><br><b>📊 近期三大法人逐日買賣超明細：</b>"
-        chip_status += "<table style='width:100%; text-align:center; border-collapse: collapse; margin-top: 8px; font-size: 0.95rem; border: 1px solid rgba(128,128,128,0.3);'>"
-        chip_status += "<tr style='background-color: rgba(128,128,128,0.1); border-bottom: 1px solid rgba(128,128,128,0.3);'><th>日期</th><th>外資(張)</th><th>投信(張)</th><th>自營商(張)</th><th>合計(張)</th></tr>"
+        chip_status += "<br>　 <b>⏳ 近五日三大法人逐日買賣超明細 (張)：</b>"
+        chip_status += "<table style='width:100%; text-align:center; margin-top:8px; border-collapse: collapse; font-size: 0.95rem; background-color: rgba(0,0,0,0.03); border-radius: 6px; overflow: hidden;'>"
+        chip_status += "<tr style='border-bottom: 1px solid #aaa; background-color: rgba(0,0,0,0.05);'><th style='padding:5px;'>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr>"
         
-        # 抓取近 7 天顯示在表格內
-        for d in inst_data[:7]:
+        for d in inst_data[:5]: 
             f_val = int(str(d['外資(張)']).replace(',', ''))
             t_val = int(str(d['投信(張)']).replace(',', ''))
-            d_val = int(str(d['自營商(張)']).replace(',', ''))
-            tot_val = int(str(d['單日合計(張)']).replace(',', ''))
+            s_val = int(str(d['自營商(張)']).replace(',', ''))
+            total_val = int(str(d['單日合計(張)']).replace(',', ''))
             
-            f_color = "#ff3333" if f_val > 0 else ("#00cc00" if f_val < 0 else "inherit")
-            t_color = "#ff3333" if t_val > 0 else ("#00cc00" if t_val < 0 else "inherit")
-            d_color = "#ff3333" if d_val > 0 else ("#00cc00" if d_val < 0 else "inherit")
-            tot_color = "#ff3333" if tot_val > 0 else ("#00cc00" if tot_val < 0 else "inherit")
+            def get_c(v): return "#ff3333" if v>0 else ("#00cc00" if v<0 else "#888")
             
-            chip_status += f"<tr style='border-bottom: 1px solid rgba(128,128,128,0.2);'>"
-            chip_status += f"<td style='padding: 6px;'>{d['日期']}</td>"
-            chip_status += f"<td style='color:{f_color}; font-weight:bold; padding: 6px;'>{f_val}</td>"
-            chip_status += f"<td style='color:{t_color}; font-weight:bold; padding: 6px;'>{t_val}</td>"
-            chip_status += f"<td style='color:{d_color}; font-weight:bold; padding: 6px;'>{d_val}</td>"
-            chip_status += f"<td style='color:{tot_color}; font-weight:bold; padding: 6px; background-color: rgba(128,128,128,0.05);'>{tot_val}</td>"
+            chip_status += f"<tr style='border-bottom: 1px dashed #ccc;'>"
+            chip_status += f"<td style='padding:4px;'>{d['日期']}</td>"
+            chip_status += f"<td style='color:{get_c(f_val)}; font-weight:bold;'>{f_val}</td>"
+            chip_status += f"<td style='color:{get_c(t_val)}; font-weight:bold;'>{t_val}</td>"
+            chip_status += f"<td style='color:{get_c(s_val)}; font-weight:bold;'>{s_val}</td>"
+            chip_status += f"<td style='color:{get_c(total_val)}; font-weight:bold;'>{total_val}</td>"
             chip_status += "</tr>"
-        chip_status += "</table>"
             
+        chip_status += "</table>"
         analysis_bullets.append(chip_status)
 
     lower_bound = max(data['5MA'] * 0.99, data['BB_DN'])
@@ -1117,8 +1161,10 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_text = [], [], []
+        buy_x, buy_y, buy_colors = [], [], []
         prev_score = 0
+        unified_blue = '#0066cc' if is_light_mode else '#00ccff'
+        
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -1130,11 +1176,20 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                     if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("S買")
+                        buy_colors.append(unified_blue)
+                    elif 3 <= current_score < 7 and prev_score < 3:
+                        buy_x.append(current_date.strftime('%Y-%m-%d'))
+                        buy_y.append(df_view['Low'].iloc[i] * 0.90) 
+                        buy_colors.append(unified_blue)
+                        
                     prev_score = current_score
                     
         if buy_x:
-            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=buy_x, y=buy_y, mode='markers', 
+                marker=dict(symbol='triangle-up', size=14, color=buy_colors), 
+                name="買進訊號", hoverinfo='skip'
+            ), row=1, col=1)
             
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
@@ -1230,9 +1285,9 @@ if st.session_state.page == "home":
             score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
             
             tags = []
-            if r.get('紅吞'): tags.append("紅吞")
+            if r.get('紅吞') or r.get('近七日紅吞'): tags.append("紅吞")
             elif r.get('黑吞'): tags.append("黑吞")
-            elif r.get('近七日紅吞'): tags.append("近七日紅吞")
+            
             if r.get('回測有撐'): tags.append("📌撐")
             elif r.get('反彈遇壓'): tags.append("⚠️壓")
             if '5日線即將上彎' in r:
@@ -1249,6 +1304,11 @@ if st.session_state.page == "home":
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
+    
+    if target in st.session_state.recent_searches:
+        st.session_state.recent_searches.remove(target)
+    st.session_state.recent_searches.insert(0, target)
+    st.session_state.recent_searches = st.session_state.recent_searches[:5]
     
     n_pool = st.session_state.get('nav_pool', [])
     p_stk, n_stk = None, None
@@ -1369,7 +1429,7 @@ elif st.session_state.page == "analysis":
                     </div>
                     """, unsafe_allow_html=True)
                     if ask_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#ff3333; font-weight:bold; margin-top:8px;'>🔥 多方點火：盤中由買方主動積極「往上追價」敲進，短線點火動能強勁！(系統已加分)</p>", unsafe_allow_html=True)
-                    elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主ٹی積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
+                    elif bid_r > 55.0: st.markdown("<p style='font-size:0.85rem; color:#00cc00; font-weight:bold; margin-top:8px;'>⚠️ 空方倒貨：盤中賣方主動積極「往下倒貨」求售，防範浮額倒貨風險。(系統已扣分)</p>", unsafe_allow_html=True)
                     else: st.markdown("<p style='font-size:0.85rem; color:#888; margin-top:8px;'>⚖️ 盤中多空勢均力敵，呈現平盤搓合狹幅震盪。</p>", unsafe_allow_html=True)
             
             st.markdown("---")
@@ -1444,7 +1504,7 @@ elif st.session_state.page == "analysis":
             with a1.container(border=True): st.markdown(f"##### 📊 技術與動能指標<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br>**MACD 柱狀體:** `{data['MACD柱']}`<br><br>**5日均量:** `{data['5日均量']} 張`", unsafe_allow_html=True)
             with a2.container(border=True):
                 eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
-                st.markdown(f"##### 📑 基本面價值評估<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
+                st.markdown(f"##### 📑 基本面價值評估<br><br>**近四季累計 EPS (TTM):** `{eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
@@ -1459,6 +1519,47 @@ elif st.session_state.page == "analysis":
                 st.success("✅ 群組設定已更新！")
                 st.rerun()
 
+            st.divider()
+            nav_data = st.session_state.get('nav_pool_data', [])
+            
+            with st.expander("🕒 最近搜尋紀錄", expanded=False):
+                if st.session_state.recent_searches:
+                    for r_tick in st.session_state.recent_searches:
+                        btn_label = get_dynamic_stock_label(r_tick, nav_data, is_current=(r_tick==target))
+                        if st.button(btn_label, key=f"recent_btn_{r_tick}", use_container_width=True):
+                            st.session_state.current_stock = r_tick
+                            st.rerun()
+                else:
+                    st.info("尚無搜尋紀錄")
+
+            with st.expander(f"🔗 同產業相關股票 ({f_data['Industry']})", expanded=False):
+                related_found = []
+                
+                for item in nav_data:
+                    if item.get('產業') == f_data['Industry'] and item.get('ticker_raw') != target:
+                        related_found.append(item)
+                
+                if len(related_found) < 5:
+                    for t in st.session_state.custom_pool:
+                        if t == target or any(r.get('ticker_raw') == t for r in related_found): continue
+                        t_fund = get_fundamental_and_industry_data(t)
+                        if t_fund['Industry'] == f_data['Industry']:
+                            t_df = get_stock_data(t)
+                            if t_df is not None and len(t_df) >= 5:
+                                t_full_data = analyze_today(t_df, t, inst_data=None, tick_data=None)
+                                if t_full_data:
+                                    related_found.append(t_full_data)
+                        if len(related_found) >= 5: break
+                
+                if related_found:
+                    for rel_item in related_found[:5]:
+                        btn_label = format_stock_label_from_data(rel_item, is_current=False)
+                        if st.button(btn_label, key=f"rel_btn_{rel_item['ticker_raw']}", use_container_width=True):
+                            st.session_state.current_stock = rel_item['ticker_raw']
+                            st.rerun()
+                else:
+                    st.info(f"雷達池中暫無其他【{f_data['Industry']}】的關聯標的。")
+
         with col_right_menu:
             mode_titles = {
                 "buy": "✅ 綜合買點榜", 
@@ -1467,43 +1568,14 @@ elif st.session_state.page == "analysis":
             }
             active_title = mode_titles.get(st.session_state.scan_mode, "📋 當前雷達清單")
             
-            st.markdown(f'''<div style="text-align: center; font-size: 1.15rem; font-weight: bold; background-color: {bg_col}; border: 1px solid {border_col}; padding: 8px; border-radius: 6px; color: #ffcc00 !important; margin-bottom: 12px;">{active_title}</div>''', unsafe_allow_html=True)
-            
-            if n_pool:
-                nav_data = st.session_state.get('nav_pool_data', [])
-                
-                for stock_id in n_pool:
-                    is_current = (stock_id == target)
-                    stock_info = next((item for item in nav_data if item["ticker_raw"] == stock_id), None)
-                    
-                    if stock_info:
-                        p_val = stock_info['漲跌']
-                        sign = "+" if p_val > 0 else ""
-                        trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-                        s_score = stock_info['Score']
-                        score_icon = "🟢 S級" if s_score >= 7 else ("🟡 A級" if s_score >= 3 else "⚪ 觀望")
+            with st.expander(active_title, expanded=False):
+                if n_pool:
+                    for stock_id in n_pool:
+                        is_current = (stock_id == target)
+                        btn_label = get_dynamic_stock_label(stock_id, nav_data, is_current)
                         
-                        tags = []
-                        if stock_info.get('紅吞'): tags.append("紅吞")
-                        elif stock_info.get('黑吞'): tags.append("黑吞")
-                        elif stock_info.get('近七日紅吞'): tags.append("近七日紅吞")
-                        
-                        if stock_info.get('回測有撐'): tags.append("📌撐")
-                        elif stock_info.get('反彈遇壓'): tags.append("⚠️壓")
-                        
-                        if '5日線即將上彎' in stock_info:
-                            tags.append("↗️" if stock_info.get('5日線即將上彎') else "↘️")
-                            
-                        tag_display = " | ".join(tags)
-                        if tag_display: tag_display = f" | {tag_display}"
-                        
-                        btn_prefix = "⭐ " if is_current else "▪️ "
-                        btn_label = f"{btn_prefix}{stock_info['代號']} {stock_info['名稱']} {trend_icon}{stock_info['收盤價']}({sign}{stock_info['漲跌幅']}%) | {score_icon}{tag_display}"
-                    else:
-                        btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
-                    
-                    if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
-                        st.session_state.current_stock = stock_id
-                        st.rerun()
-            else:
-                st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+                        if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
+                            st.session_state.current_stock = stock_id
+                            st.rerun()
+                else:
+                    st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
