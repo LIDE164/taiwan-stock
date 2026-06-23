@@ -220,44 +220,56 @@ def fetch_live_tick_data(ticker):
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     fallback = {"ticks": [], "ask_ratio": 50.0, "bid_ratio": 50.0, "total_volume": 0}
     try:
-        url = f"https://www.wantgoo.com/invest/get-realtime-ticks?stockNo={base_ticker}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': f'https://www.wantgoo.com/stock/{base_ticker}'
+        # 🚀 升級：改用 yfinance 的 1 分鐘 K 線來模擬高頻 Tick 與內外盤動能
+        # 這能完美避開台灣網站的 Cloudflare 阻擋，保證在雲端伺服器上也能穩定抓取
+        df = yf.Ticker(f"{base_ticker}.TW").history(period="1d", interval="1m")
+        if df.empty:
+            df = yf.Ticker(f"{base_ticker}.TWO").history(period="1d", interval="1m")
+            
+        if df is None or df.empty: return fallback
+        
+        df = df.dropna(subset=['Close'])
+        if len(df) == 0: return fallback
+        
+        # 取最後 30 筆 1分鐘K線 來計算內外盤比
+        recent_df = df.tail(30).copy()
+        ask_vol, bid_vol = 0, 0
+        processed_ticks = []
+        
+        # 反轉陣列，讓最新的一分鐘排在最前面
+        recent_df_reversed = recent_df.iloc[::-1]
+        
+        for idx, row in recent_df_reversed.iterrows():
+            t_time = idx.strftime('%H:%M')
+            t_price = round(row['Close'], 2)
+            # 台股 yfinance 成交量為股數，除以 1000 轉為張數
+            t_vol = max(1, int(row['Volume'] / 1000)) if row['Volume'] > 0 else 0 
+            
+            # 動能判定邏輯：收紅K視為外盤(主動買)，收黑K視為內盤(主動賣)
+            if row['Close'] > row['Open']:
+                t_type = 'buy'
+                ask_vol += t_vol
+            elif row['Close'] < row['Open']:
+                t_type = 'sell'
+                bid_vol += t_vol
+            else:
+                t_type = 'mid'
+                ask_vol += t_vol / 2
+                bid_vol += t_vol / 2
+                
+            processed_ticks.append({
+                "時間": t_time, "價格": t_price, "現量(張)": t_vol, 
+                "屬性": "外盤(買進)" if t_type=='buy' else ("內盤(賣出)" if t_type=='sell' else "平盤")
+            })
+            
+        total_v = ask_vol + bid_vol
+        ask_r = round((ask_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+        bid_r = round((bid_vol / total_v) * 100, 1) if total_v > 0 else 50.0
+        
+        return {
+            "ticks": processed_ticks[:5],
+            "ask_ratio": ask_r, "bid_ratio": bid_r, "total_volume": total_v
         }
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            json_data = res.json()
-            raw_ticks = json_data.get('ticks', [])
-            if not raw_ticks: return fallback
-            
-            # 🚀 加入陣列反轉：確保抓到的是全日「最後收盤/最新」的逐筆明細
-            raw_ticks = raw_ticks[::-1]
-            
-            processed_ticks = []
-            ask_vol, bid_vol = 0, 0
-            
-            for t in raw_ticks[:30]: 
-                t_time = t.get('time', '')
-                t_price = float(t.get('price', 0))
-                t_vol = int(t.get('volume', 0))
-                t_type = t.get('type', 'mid') 
-                
-                if t_type == 'buy': ask_vol += t_vol
-                elif t_type == 'sell': bid_vol += t_vol
-                
-                processed_ticks.append({
-                    "時間": t_time, "價格": t_price, "現量": t_vol, "屬性": "外盤(買進)" if t_type=='buy' else ("內盤(賣出)" if t_type=='sell' else "平盤")
-                })
-                
-            total_v = ask_vol + bid_vol
-            ask_r = round((ask_vol / total_v) * 100, 1) if total_v > 0 else 50.0
-            bid_r = round((bid_vol / total_v) * 100, 1) if total_v > 0 else 50.0
-            
-            return {
-                "ticks": processed_ticks[:5],
-                "ask_ratio": ask_r, "bid_ratio": bid_r, "total_volume": total_v
-            }
     except: pass
     return fallback
 
