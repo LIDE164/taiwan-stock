@@ -231,6 +231,9 @@ def fetch_live_tick_data(ticker):
             raw_ticks = json_data.get('ticks', [])
             if not raw_ticks: return fallback
             
+            # 🚀 加入陣列反轉：確保抓到的是全日「最後收盤/最新」的逐筆明細
+            raw_ticks = raw_ticks[::-1]
+            
             processed_ticks = []
             ask_vol, bid_vol = 0, 0
             
@@ -1271,7 +1274,7 @@ elif st.session_state.page == "analysis":
                 tick_col1, tick_col2 = st.columns([2.2, 2.8])
                 
                 with tick_col1.container(border=True):
-                    st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:8px;'>🔥 盤中最新五筆逐筆撮合明細 (Tick)</p>", unsafe_allow_html=True)
+                    st.markdown("<p style='font-size:0.95rem; font-weight:bold; margin-bottom:8px;'>🔥 最新/收盤 5筆逐筆撮合 (Tick)</p>", unsafe_allow_html=True)
                     if tick_info["ticks"]:
                         tick_df = pd.DataFrame(tick_info["ticks"])
                         def color_tick_row(row):
