@@ -589,6 +589,11 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
     else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
+    if inst_data and len(inst_data) >= 3:
+        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
+        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+
     if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
     
@@ -1103,12 +1108,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
-    # 🎯 升級需求：統一藍色箭頭 +「買」字
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_colors = [], [], [], []
+        buy_x, buy_y, buy_text, buy_colors = [], [], [], []
         prev_score = 0
-        
-        # 定義統一的科技藍色 (支援深淺色模式)
         unified_blue = '#0066cc' if is_light_mode else '#00ccff'
         
         for i in range(len(df_view)):
@@ -1120,26 +1122,23 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 if t_data:
                     current_score = t_data['Score']
                     
-                    # 只要達標 S 級或初次達標 A 級，統一標示為藍色的「買」
                     if current_score >= 7 and prev_score < 7:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("買")
+                        buy_text.append("") # 🎯 移除文字
                         buy_colors.append(unified_blue)
                     elif 3 <= current_score < 7 and prev_score < 3:
                         buy_x.append(current_date.strftime('%Y-%m-%d'))
                         buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                        buy_text.append("買")
+                        buy_text.append("") # 🎯 移除文字
                         buy_colors.append(unified_blue)
                         
                     prev_score = current_score
                     
         if buy_x:
             fig.add_trace(go.Scatter(
-                x=buy_x, y=buy_y, mode='markers+text', 
+                x=buy_x, y=buy_y, mode='markers', # 🎯 只顯示標記
                 marker=dict(symbol='triangle-up', size=14, color=buy_colors), 
-                text=buy_text, textposition="bottom center", 
-                textfont=dict(color=buy_colors, size=12, weight="bold"), 
                 name="買進訊號", hoverinfo='skip'
             ), row=1, col=1)
             
