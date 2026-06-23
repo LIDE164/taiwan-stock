@@ -94,7 +94,7 @@ CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 st.sidebar.title("🔍 快速搜尋")
 
-with st.sidebar.form(key="search_form"):
+with st.sidebar.form(key="search_form", clear_on_submit=True):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
     submit_search = st.form_submit_button("送出搜尋", use_container_width=True)
     
@@ -197,8 +197,6 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "23
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
-
-# 🎯 修改需求 2：K線圖預設顯示 30 日
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
@@ -222,7 +220,6 @@ def fetch_live_tick_data(ticker):
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     fallback = {"ticks": [], "ask_ratio": 50.0, "bid_ratio": 50.0, "total_volume": 0}
     
-    # 🚀 嘗試 1：玩股網 API
     try:
         url = f"https://www.wantgoo.com/invest/get-realtime-ticks?stockNo={base_ticker}"
         headers = {
@@ -261,7 +258,6 @@ def fetch_live_tick_data(ticker):
                 }
     except: pass
 
-    # 🚀 嘗試 2：Yahoo Finance 1分鐘 K線 (強力備援)
     try:
         yf_ticker = f"{base_ticker}.TW"
         df = yf.Ticker(yf_ticker).history(period="1d", interval="1m")
@@ -604,12 +600,12 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
     
     if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
         sc+=2; rs.append("🔥 5日線扣低值 (短均線準備上彎發散)")
-    if data['5MA'] >= data['10MA']:
-        sc+=2; rs.append("🔥 短線多頭排列 (5MA > 10MA)")
+        
+    # 🎯 隱藏計分：5MA > 10MA 加分 (不印出文字)
+    if data['5MA'] >= data['10MA']: sc += 2
 
     if tick_data and tick_data.get('total_volume', 0) > 0:
         ask_r = tick_data.get('ask_ratio', 50)
-        bid_r = tick_data.get('bid_ratio', 50)
         if ask_r > 55.0: sc+=3; rs.append(f"🔥 盤中買氣極強 (外盤比高達 {ask_r}%)")
 
     # ---------------- 🚨 一票否決 / 強制降級防護區 (極致限縮風險) ----------------
@@ -637,7 +633,9 @@ def get_decision_score(data, fund_data, inst_data=None, tick_data=None):
         rs.append("🚨 【Veto 一票否決】破線接刀防護：股價跌破月線且呈無量下跌，嚴防續跌，禁止做多！")
         fatal_risk = True
         
-    if data['5MA'] < data['10MA']: sc -= 2; rs.append("⚠️ 短均線空頭蓋頂 (5MA < 10MA)")
+    # 🎯 隱藏扣分：5MA < 10MA 扣分 (不印出文字)
+    if data['5MA'] < data['10MA']: sc -= 2 
+    
     if eps_f < 0: sc -= 1; rs.append("⚠️ 基本面虧損")
     if tick_data and tick_data.get('bid_ratio', 50) > 55.0: sc-=3; rs.append(f"🩸 盤中賣壓沉重 (內盤比高達 {tick_data.get('bid_ratio')}%)")
 
@@ -1274,7 +1272,6 @@ elif st.session_state.page == "analysis":
                 
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
                 current_show_buy = st.session_state.get('toggle_buy_sig', True)
-                # 🎯 修改需求 3：圖表預設開啟歷史高低點
                 current_show_sup = st.session_state.get('toggle_sup_res', True)
                 current_show_signals = st.session_state.get('toggle_signals', True)
                 pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
@@ -1400,7 +1397,6 @@ elif st.session_state.page == "analysis":
             dc2.button("60日", on_click=set_view_days, args=(60,))
             dc3.button("90日", on_click=set_view_days, args=(90,))
             with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig')
-            # 🎯 這裡確保畫面按鈕預設也是打勾開啟的
             with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res')
             with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals')
                 
@@ -1480,4 +1476,4 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
-
+                
