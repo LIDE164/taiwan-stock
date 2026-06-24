@@ -936,7 +936,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     # 💡 移除縮排避免 HTML 跑版
     fund_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
-<h4 style="color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📑 基本面分析</h4>
+<h4 style="color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📑 基本面分析（參考）</h4>
 <ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
 {''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in fund_bullets])}
 </ul>
