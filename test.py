@@ -1,3 +1,4 @@
+# 最後修改時間: 2026-06-24 09:35 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -198,7 +199,7 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "23
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
-if 'view_days' not in st.session_state: st.session_state.view_days = 20
+if 'view_days' not in st.session_state: st.session_state.view_days = 30  # 預設改為 30 日
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 if 'url_parsed' not in st.session_state:
@@ -830,11 +831,44 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-        chip_status = "⚪ <b>法人籌碼動向 (近3日)</b>："
+        chip_status = "⚪ <b>法人籌碼動向 (近3日累計)</b>："
         if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多 (買超 {foreign_net} 張)</span>；"
         else: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節 (賣超 {abs(foreign_net)} 張)</span>；"
         if trust_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>投信力挺 (買超 {trust_net} 張)。</span>"
         else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
+        
+        # 動態表格顏色適配
+        th_color = "#555" if is_light_mode else "#aaa"
+        border_c = "#ddd" if is_light_mode else "#444"
+        
+        # 內嵌 HTML 籌碼表格 (近五日)
+        table_html = f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
+        table_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; margin-top: 5px; font-size: 0.95rem;'>"
+        table_html += f"<tr style='border-bottom: 1px solid {border_c}; color: {th_color};'>"
+        table_html += "<th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr>"
+        
+        for row in inst_data[:5]:
+            date_str = row['日期']
+            f_val = int(str(row['外資(張)']).replace(',', ''))
+            t_val = int(str(row['投信(張)']).replace(',', ''))
+            d_val = int(str(row['自營商(張)']).replace(',', ''))
+            s_val = int(str(row['單日合計(張)']).replace(',', ''))
+            
+            f_color = "#ff3333" if f_val > 0 else "#00cc00"
+            t_color = "#ff3333" if t_val > 0 else "#00cc00"
+            d_color = "#ff3333" if d_val > 0 else "#00cc00"
+            s_color = "#ff3333" if s_val > 0 else "#00cc00"
+            
+            table_html += f"<tr style='border-bottom: 1px solid {border_c};'>"
+            table_html += f"<td style='padding: 8px 0;'>{date_str}</td>"
+            table_html += f"<td style='padding: 8px 0; color: {f_color};'>{f_val}</td>"
+            table_html += f"<td style='padding: 8px 0; color: {t_color};'>{t_val}</td>"
+            table_html += f"<td style='padding: 8px 0; color: {d_color};'>{d_val}</td>"
+            table_html += f"<td style='padding: 8px 0; color: {s_color};'>{s_val}</td>"
+            table_html += "</tr>"
+        table_html += "</table>"
+        
+        chip_status += table_html
         analysis_bullets.append(chip_status)
 
     if sc >= 5: 
@@ -1140,7 +1174,7 @@ elif st.session_state.page == "analysis":
                 
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
                 current_show_buy = st.session_state.get('toggle_buy_sig', True)
-                current_show_sup = st.session_state.get('toggle_sup_res', False)
+                current_show_sup = st.session_state.get('toggle_sup_res', True)  # 預設歷史高低點設為開啟
                 current_show_signals = st.session_state.get('toggle_signals', True)
                 pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
                 p_bar.progress(95)
@@ -1243,11 +1277,8 @@ elif st.session_state.page == "analysis":
             with a2.container(border=True):
                 eps = f_data['EPS']; m_eps = round(float(eps)/3, 2) if eps != "無" else "無"
                 st.markdown(f"##### 📑 基本面價值評估<br><br>**當季每股盈餘 (EPS):** `{eps}`<br><br>**換算單月 EPS:** `{m_eps}`<br><br>**最新即時本益比 (P/E):** `{f_data['PE']}`", unsafe_allow_html=True)
-            st.divider()
-            st.subheader("🏦 近期三大法人逐日買賣超")
-            if inst_data: 
-                st.dataframe(pd.DataFrame(inst_data), use_container_width=True, hide_index=True)
-            else: st.info("目前無法自動抓取籌碼資料。")
+            
+            # 原本的「近期三大法人逐日買賣超」區塊已與上方的 AI 決策大腦整併，此處移除以免重複。
             
             st.divider()
             st.subheader("⭐ 自選群組管理")
