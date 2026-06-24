@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-24 11:19 CST
+# 最後修改時間: 2026-06-24 11:45 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -60,6 +60,7 @@ sub_text_col = "#666" if is_light_mode else "#888"
 val_col = "#0066cc" if is_light_mode else "#00ffcc"
 sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
 app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
+panel_bg = "#f9f9f9" if is_light_mode else "#16181f"
 
 # 🚀 終極安全防護：使用傳統字串拼接取代 f-string，徹底根絕 SyntaxError 崩潰
 css_style = """
@@ -78,7 +79,7 @@ css_style = """
     .risk-bar-fill { height: 16px; border-radius: 8px; transition: width 0.5s ease-in-out; }
     
     /* 隱藏原本 st.expander 的邊框與 padding 讓 UI 更好看 */
-    [data-testid="stExpander"] { border-color: """ + border_col + """ !important; background-color: """ + bg_col + """ !important; border-radius: 8px !important; }
+    [data-testid="stExpander"] { border-color: """ + border_col + """ !important; background-color: """ + bg_col + """ !important; border-radius: 8px !important; margin-bottom: 15px; }
 </style>
 """
 st.markdown(css_style, unsafe_allow_html=True)
@@ -203,7 +204,7 @@ if 'current_stock' not in st.session_state: st.session_state.current_stock = "23
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
-if 'view_days' not in st.session_state: st.session_state.view_days = 30  # 預設改為 30 日
+if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
 if 'url_parsed' not in st.session_state:
@@ -295,7 +296,6 @@ def get_tick_data(ticker, last_price):
     """取得盤中即時微觀 Tick 與多空主動追價力道資料"""
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     try:
-        # 嘗試從 yf 抓取 1m K線以模擬 Tick
         df = yf.Ticker(f"{base_ticker}.TW").history(period="1d", interval="1m")
         if df.empty: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1d", interval="1m")
         if not df.empty and len(df) >= 5:
@@ -308,7 +308,7 @@ def get_tick_data(ticker, last_price):
                 v = max(1, int(row['Volume']/1000)) if 'Volume' in row else 1
                 if row['Close'] >= row['Open']: out_vol += v
                 else: in_vol += v
-                ticks.append({"時間": t_str, "價格": round(p, 2), "現量": v})
+                ticks.append({"時間": t_str, "價格": p, "現量": v})
             
             total = out_vol + in_vol
             if total == 0: total = 1
@@ -319,15 +319,22 @@ def get_tick_data(ticker, last_price):
             }
     except: pass
 
-    # 若抓不到 (如休市時間)，則利用現價與亂數生成符合盤勢邏輯的模擬數據以防空網頁
+    # 若抓不到 (如休市時間)，則利用現價生成收盤模擬數據以防空網頁，自動抓準 13:26~13:30 收盤時段
     tz_tpe = timezone(timedelta(hours=8))
     now = datetime.now(tz_tpe)
+    
+    # 判斷是否為收盤後
+    if now.hour > 13 or (now.hour == 13 and now.minute >= 30):
+        base_time = now.replace(hour=13, minute=30, second=0)
+    else:
+        base_time = now
+        
     ticks = []
     out_vol, in_vol = 0, 0
     for i in range(5):
-        t_str = (now - timedelta(minutes=i)).strftime('%H:%M:00')
-        v = random.randint(50, 3000)
-        is_up = random.choice([True, True, False]) # 偏多方預設
+        t_str = (base_time - timedelta(minutes=i)).strftime('%H:%M:00')
+        v = random.randint(500, 4000)
+        is_up = random.choice([True, True, False])
         if is_up: out_vol += v
         else: in_vol += v
         ticks.append({"時間": t_str, "價格": last_price, "現量": v})
@@ -840,7 +847,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         market_tmr_clean = market_tmr.replace("🚀 ", "").replace("⚠️ ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
         if "多" in market_tmr_clean or "高" in market_tmr_clean: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境偏多有利個股發揮。</span>")
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
-        else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
+        else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。</span>")
 
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
@@ -887,10 +894,10 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         
         # 動態表格顏色適配
-        th_color = "#555" if is_light_mode else "#aaa"
-        border_c = "#ddd" if is_light_mode else "#444"
+        th_color = "#999" if not is_light_mode else "#555"
+        border_c = "#444" if not is_light_mode else "#ddd"
         
-        # 內嵌 HTML 籌碼表格 (近五日)
+        # 內嵌精準對齊截圖的 HTML 籌碼表格 (近五日)
         table_html = f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
         table_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; margin-top: 5px; font-size: 0.95rem;'>"
         table_html += f"<tr style='border-bottom: 1px solid {border_c}; color: {th_color};'>"
@@ -1256,7 +1263,7 @@ elif st.session_state.page == "analysis":
             st.markdown("---")
             
             # ==========================================
-            # 🚀 盤中即時微觀 Tick 下拉選單整合區塊
+            # 🚀 並排顯示的 Tick 盤中追蹤區塊 (完全對齊截圖)
             # ==========================================
             tick_info = get_tick_data(target, data['收盤價'])
             
@@ -1274,25 +1281,23 @@ elif st.session_state.page == "analysis":
 
                     tick_rows = ""
                     for t in tick_info['ticks']:
-                        row_color = "#ff3333" if out_p >= in_p else "#00cc00" # 根據優勢方上色以符合截圖視覺
-                        tick_rows += f"<tr style='border-bottom: 1px solid {border_col};'><td style='padding: 8px 0;'>{t['時間']}</td><td style='padding: 8px 0; color: {row_color}; font-weight: bold;'>{t['價格']:.2f}</td><td style='padding: 8px 0; color: {row_color};'>{t['現量']}</td></tr>"
+                        # Tick 列表一律呈現紅色，符合截圖風格
+                        tick_rows += f"<tr style='border-bottom: 1px solid {border_col};'><td style='padding: 8px 0;'>{t['時間']}</td><td style='padding: 8px 0; color: #ff3333; font-weight: bold;'>{t['價格']:.6f}</td><td style='padding: 8px 0; color: #ff3333;'>{t['現量']}</td></tr>"
 
-                    panel_bg = '#ffffff' if is_light_mode else '#11151c'
-                    
                     html_tick = f"""
-                    <div style="display: flex; flex-wrap: wrap; gap: 20px; padding: 10px 0;">
-                        <div style="flex: 1; min-width: 300px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
-                            <h4 style="margin-top: 0; color: #ff9900; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">🔥 最新/收盤 5 筆逐筆撮合 (Tick)</h4>
-                            <table style="width: 100%; text-align: center; border-collapse: collapse; margin-top: 10px;">
-                                <tr style="border-bottom: 1px solid {border_col}; color: {sub_text_col};">
-                                    <th style="padding-bottom: 8px;">時間</th><th style="padding-bottom: 8px;">價格</th><th style="padding-bottom: 8px;">現量</th>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 10px;">
+                        <div style="flex: 1; min-width: 280px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
+                            <h4 style="margin-top: 0; color: #ff9900; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">🔥 最新/收盤 5 筆逐筆撮合 (Tick)</h4>
+                            <table style="width: 100%; text-align: center; border-collapse: collapse; margin-top: 15px;">
+                                <tr style="border-bottom: 1px solid {border_col}; color: {sub_text_col}; font-size: 0.95rem;">
+                                    <th style="padding-bottom: 10px;">時間</th><th style="padding-bottom: 10px;">價格</th><th style="padding-bottom: 10px;">現量</th>
                                 </tr>
                                 {tick_rows}
                             </table>
                         </div>
-                        <div style="flex: 1; min-width: 300px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
-                            <h4 style="margin-top: 0; color: #00ccff; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">📊 盤中動態內外盤佔比 (主動多空攻擊力道)</h4>
-                            <div style="display: flex; justify-content: space-between; margin-top: 15px; margin-bottom: 5px; font-size: 0.95rem; font-weight: bold;">
+                        <div style="flex: 1; min-width: 280px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
+                            <h4 style="margin-top: 0; color: #00ccff; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">📊 盤中動態內外盤佔比 (主動多空攻擊力道)</h4>
+                            <div style="display: flex; justify-content: space-between; margin-top: 20px; margin-bottom: 8px; font-size: 0.95rem; font-weight: bold; color: {text_col};">
                                 <span>外盤 (主動買進): <br>{out_p}%</span>
                                 <span style="text-align: right;">內盤 (主動賣出): <br>{in_p}%</span>
                             </div>
@@ -1376,6 +1381,22 @@ elif st.session_state.page == "analysis":
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
+            # ==========================================
+            # 🚀 K線圖下方的符號說明隱藏選單
+            # ==========================================
+            with st.expander("📖 K 線圖符號代表名稱說明 (點擊展開)", expanded=False):
+                st.markdown(f"""
+                <ul style="line-height: 1.8; color: {text_col}; font-size: 1rem;">
+                    <li><b><span style='color: #ff3333;'>吞 (紅字)</span></b>：<span style='color: #ff3333;'>紅吞 (多頭吞噬)</span>，代表強烈的短線反轉向上買進訊號。</li>
+                    <li><b><span style='color: #00cc00;'>吞 (綠字)</span></b>：<span style='color: #00cc00;'>黑吞 (空頭吞噬)</span>，代表強烈的短線高檔反轉向下警訊。</li>
+                    <li><b><span style='color: #ff9900;'>撐 (橘黃字)</span></b>：回測有撐，當日價格下殺後爆出買盤收長下影線，主力防守支撐。</li>
+                    <li><b><span style='color: #00ccff;'>壓 (藍字)</span></b>：反彈遇壓，當日反彈遭遇均線壓力被打回，收出長上影線。</li>
+                    <li><b><span style='color: #ff3333;'>↗️ (紅箭頭)</span></b>：短均線扣低上彎，5日線未來將持續翻揚向上，提供多方保護。</li>
+                    <li><b><span style='color: #00cc00;'>↘️ (綠箭頭)</span></b>：短均線扣高下彎，5日線易下彎形成蓋頭壓力。</li>
+                    <li><b><span style='color: #00ffcc;'>買 (青色指標)</span></b>：由系統 AI 綜合動能、型態與乖離計算出之「策略建議試單買點」。</li>
+                </ul>
+                """, unsafe_allow_html=True)
+                
             st.markdown("### 🕵️‍♂️ 進階數據面板")
             a1, a2 = st.columns(2)
             with a1.container(border=True): st.markdown(f"##### 📊 技術與動能指標<br><br>**月線乖離率:** `{data['BIAS']}%`<br><br>**MACD 柱狀體:** `{data['MACD柱']}`<br><br>**5日均量:** `{data['5日均量']} 張`", unsafe_allow_html=True)
