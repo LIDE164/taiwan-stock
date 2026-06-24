@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-24 11:59 CST
+# 最後修改時間: 2026-06-24 12:12 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -884,28 +884,45 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
     if data['MACD柱'] > data['前日MACD柱']: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
     else: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
+    tables_html = ""
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-        chip_status = "⚪ <b>法人籌碼動向 (近3日累計)</b>："
-        if foreign_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>外資偏多 (買超 {foreign_net} 張)</span>；"
-        else: chip_status += f"⚠️ <span style='color:#00cc00;'>外資調節 (賣超 {abs(foreign_net)} 張)</span>；"
-        if trust_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>投信力挺 (買超 {trust_net} 張)。</span>"
-        else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
+        dealer_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:3] if str(x['自營商(張)']).replace(',', '').lstrip('-').isdigit()])
+        total_net = foreign_net + trust_net + dealer_net
         
-        # 精準對齊截圖的表格化籌碼樣式
+        # 籌碼表格配色與框線 (精準對齊截圖)
         th_color = "#ccc" if not is_light_mode else "#555"
         border_c = "#555" if not is_light_mode else "#ddd"
         t_text_c = "#ddd" if not is_light_mode else "#333"
         
-        table_html = f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
-        table_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; margin-top: 5px; font-size: 0.95rem; border: 1px solid {border_c};'>"
-        table_html += f"<tr style='background-color: rgba(255,255,255,0.05); color: {th_color};'>"
-        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>日期</th>"
-        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>外資</th>"
-        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>投信</th>"
-        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>自營商</th>"
-        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>合計</th></tr>"
+        def get_c(val):
+            return "#ff3333" if val > 0 else ("#00cc00" if val < 0 else t_text_c)
+        
+        # 1. 近三日三大法人累計籌碼動向 (表格化)
+        tables_html += f"<div style='margin-top: 20px; margin-bottom: 5px; font-weight: bold;'>⚪ 近三日三大法人累計籌碼動向 (張)：</div>"
+        tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.95rem; border: 1px solid {border_c};'>"
+        tables_html += f"<tr style='background-color: rgba(255,255,255,0.05); color: {th_color};'>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>外資累計</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>投信累計</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>自營商累計</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>三大法人合計</th></tr>"
+        tables_html += f"<tr>"
+        tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(foreign_net)}; font-weight: 500;'>{foreign_net}</td>"
+        tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(trust_net)}; font-weight: 500;'>{trust_net}</td>"
+        tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(dealer_net)}; font-weight: 500;'>{dealer_net}</td>"
+        tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(total_net)}; font-weight: 500;'>{total_net}</td>"
+        tables_html += "</tr></table>"
+        
+        # 2. 近五日三大法人逐日買賣超明細
+        tables_html += f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
+        tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.95rem; border: 1px solid {border_c};'>"
+        tables_html += f"<tr style='background-color: rgba(255,255,255,0.05); color: {th_color};'>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>日期</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>外資</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>投信</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>自營商</th>"
+        tables_html += f"<th style='border: 1px solid {border_c}; padding: 8px 4px;'>合計</th></tr>"
         
         for row in inst_data[:5]:
             date_str = row['日期']
@@ -914,30 +931,22 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
             d_val = int(str(row['自營商(張)']).replace(',', ''))
             s_val = int(str(row['單日合計(張)']).replace(',', ''))
             
-            f_color = "#ff3333" if f_val > 0 else ("#00cc00" if f_val < 0 else t_text_c)
-            t_color = "#ff3333" if t_val > 0 else ("#00cc00" if t_val < 0 else t_text_c)
-            d_color = "#ff3333" if d_val > 0 else ("#00cc00" if d_val < 0 else t_text_c)
-            s_color = "#ff3333" if s_val > 0 else ("#00cc00" if s_val < 0 else t_text_c)
-            
-            table_html += f"<tr>"
-            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px;'>{date_str}</td>"
-            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {f_color}; font-weight: 500;'>{f_val}</td>"
-            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {t_color}; font-weight: 500;'>{t_val}</td>"
-            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {d_color}; font-weight: 500;'>{d_val}</td>"
-            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {s_color}; font-weight: 500;'>{s_val}</td>"
-            table_html += "</tr>"
-        table_html += "</table>"
-        
-        chip_status += table_html
-        analysis_bullets.append(chip_status)
+            tables_html += f"<tr>"
+            tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px;'>{date_str}</td>"
+            tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(f_val)}; font-weight: 500;'>{f_val}</td>"
+            tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(t_val)}; font-weight: 500;'>{t_val}</td>"
+            tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(d_val)}; font-weight: 500;'>{d_val}</td>"
+            tables_html += f"<td style='border: 1px solid {border_c}; padding: 8px 4px; color: {get_c(s_val)}; font-weight: 500;'>{s_val}</td>"
+            tables_html += "</tr>"
+        tables_html += "</table>"
 
-    # 🚀 建倉區間邏輯修正：錨定現價，向下找支撐
+    # 🚀 建倉區間邏輯修正：錨定現價，向下找短均線支撐
     current_p = data['收盤價']
     lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
     range_min = min(current_p, lower_bound)
     range_max = max(current_p, lower_bound)
     if abs(range_max - range_min) < 0.05:
-        range_min = current_p * 0.98  # 至少給予 2% 逢低緩衝
+        range_min = current_p * 0.98  # 若無明顯差距，至少給予 2% 逢低緩衝
 
     if sc >= 5: 
         v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
@@ -952,7 +961,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
         v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。<br>📌 目前現價 ({current_p:.2f})，破底風險極高。"
         
-    return analysis_bullets, v_t, v_c, v_a
+    return analysis_bullets, tables_html, v_t, v_c, v_a
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True):
     df_view = df.tail(view_days)
@@ -1276,7 +1285,7 @@ elif st.session_state.page == "analysis":
             st.markdown("---")
             
             # ==========================================
-            # 🚀 並排顯示的 Tick 盤中追蹤區塊 (完全對齊截圖)
+            # 🚀 並排顯示的 Tick 盤中追蹤區塊 (強制不換行，支援橫向捲動)
             # ==========================================
             tick_info = get_tick_data(target, data['收盤價'])
             
@@ -1294,30 +1303,31 @@ elif st.session_state.page == "analysis":
 
                     tick_rows = ""
                     for t in tick_info['ticks']:
-                        # Tick 列表一律呈現紅色，符合截圖風格
-                        tick_rows += f"<tr style='border-bottom: 1px solid {border_col};'><td style='padding: 8px 0;'>{t['時間']}</td><td style='padding: 8px 0; color: #ff3333; font-weight: bold;'>{t['價格']:.6f}</td><td style='padding: 8px 0; color: #ff3333;'>{t['現量']}</td></tr>"
+                        # 修正小數點為 .2f
+                        tick_rows += f"<tr style='border-bottom: 1px solid {border_col};'><td style='padding: 6px 0;'>{t['時間']}</td><td style='padding: 6px 0; color: #ff3333; font-weight: bold;'>{t['價格']:.2f}</td><td style='padding: 6px 0; color: #ff3333;'>{t['現量']}</td></tr>"
 
+                    # 使用 flex-wrap: nowrap 強制並排，並允許溢出時水平滑動
                     html_tick = f"""
-                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 10px;">
-                        <div style="flex: 1; min-width: 280px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
-                            <h4 style="margin-top: 0; color: #ff9900; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">🔥 最新/收盤 5 筆逐筆撮合 (Tick)</h4>
-                            <table style="width: 100%; text-align: center; border-collapse: collapse; margin-top: 15px;">
-                                <tr style="border-bottom: 1px solid {border_col}; color: {sub_text_col}; font-size: 0.95rem;">
-                                    <th style="padding-bottom: 10px;">時間</th><th style="padding-bottom: 10px;">價格</th><th style="padding-bottom: 10px;">現量</th>
+                    <div style="display: flex; gap: 10px; flex-wrap: nowrap; overflow-x: auto; margin-bottom: 10px; width: 100%;">
+                        <div style="flex: 1; min-width: 160px; border: 1px solid {border_col}; border-radius: 8px; padding: 12px; background-color: {panel_bg};">
+                            <h4 style="margin-top: 0; color: #ff9900; font-size: 1rem; display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">🔥 5筆撮合(Tick)</h4>
+                            <table style="width: 100%; text-align: center; border-collapse: collapse;">
+                                <tr style="border-bottom: 1px solid {border_col}; color: {sub_text_col}; font-size: 0.9rem;">
+                                    <th style="padding-bottom: 6px;">時間</th><th style="padding-bottom: 6px;">價格</th><th style="padding-bottom: 6px;">現量</th>
                                 </tr>
                                 {tick_rows}
                             </table>
                         </div>
-                        <div style="flex: 1; min-width: 280px; border: 1px solid {border_col}; border-radius: 8px; padding: 15px; background-color: {panel_bg};">
-                            <h4 style="margin-top: 0; color: #00ccff; font-size: 1.05rem; display: flex; align-items: center; gap: 8px;">📊 盤中動態內外盤佔比 (主動多空攻擊力道)</h4>
-                            <div style="display: flex; justify-content: space-between; margin-top: 20px; margin-bottom: 8px; font-size: 0.95rem; font-weight: bold; color: {text_col};">
-                                <span>外盤 (主動買進): <br>{out_p}%</span>
-                                <span style="text-align: right;">內盤 (主動賣出): <br>{in_p}%</span>
+                        <div style="flex: 1; min-width: 160px; border: 1px solid {border_col}; border-radius: 8px; padding: 12px; background-color: {panel_bg};">
+                            <h4 style="margin-top: 0; color: #00ccff; font-size: 1rem; display: flex; align-items: center; gap: 6px; margin-bottom: 15px;">📊 內外盤佔比力道</h4>
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.85rem; font-weight: bold; color: {text_col};">
+                                <span>外盤買進:<br>{out_p}%</span>
+                                <span style="text-align: right;">內盤賣出:<br>{in_p}%</span>
                             </div>
-                            <div style="width: 100%; height: 14px; background-color: #00cc00; border-radius: 7px; overflow: hidden; margin-bottom: 20px; display: flex;">
+                            <div style="width: 100%; height: 12px; background-color: #00cc00; border-radius: 6px; overflow: hidden; margin-bottom: 15px; display: flex;">
                                 <div style="width: {out_p}%; height: 100%; background-color: #ff3333; transition: width 0.5s ease-in-out;"></div>
                             </div>
-                            <p style="font-size: 0.95rem; line-height: 1.6; color: {text_col};">
+                            <p style="font-size: 0.85rem; line-height: 1.5; color: {text_col}; margin: 0;">
                                 {m_text}
                             </p>
                         </div>
@@ -1379,9 +1389,20 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title, is_light_mode)
+            bullets, tables_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title, is_light_mode)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
-            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
+            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
+                <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
+                <hr style="border-color: {border_col}; margin: 15px 0;">
+                <div style="margin-bottom: 15px;">
+                    <h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4>
+                    <ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul>
+                    {tables_html}
+                </div>
+                <div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
+                    <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
+                </div>
+            </div>''', unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("30日", on_click=set_view_days, args=(30,))
