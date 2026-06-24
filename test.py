@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-24 11:45 CST
+# 最後修改時間: 2026-06-24 11:59 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -586,7 +586,7 @@ def get_decision_score(data, fund_data, inst_data=None):
 
     return sc, rs
 
-def analyze_today(df, ticker_number, inst_data=None):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
     fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
@@ -840,14 +840,14 @@ def render_index_board():
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
-def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr=""):
+def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market_tmr="", is_light_mode=False):
     analysis_bullets = []
     if market_today and market_tmr:
         market_today_clean = market_today.replace("🔥 ", "").replace("⚠️ ", "").replace("💪 ", "").replace("🩸 ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
         market_tmr_clean = market_tmr.replace("🚀 ", "").replace("⚠️ ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
         if "多" in market_tmr_clean or "高" in market_tmr_clean: analysis_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境偏多有利個股發揮。</span>")
         elif "空" in market_tmr_clean or "低" in market_tmr_clean: analysis_bullets.append(f"⚠️ <span style='color:#00cc00;'>大盤盤勢導航：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境不佳需防範系統性風險。</span>")
-        else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。</span>")
+        else: analysis_bullets.append(f"⚪ <b>大盤盤勢導航</b>：今日【{market_today_clean}】，預測次一交易日【{market_tmr_clean}】，大環境震盪，個股表現分歧。")
 
     t_short = data['收盤價'] > data['5MA']
     t_mid = data['收盤價'] > data['20MA']
@@ -893,15 +893,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
         if trust_net > 0: chip_status += f"🔥 <span style='color:#ff3333; font-weight:bold;'>投信力挺 (買超 {trust_net} 張)。</span>"
         else: chip_status += f"⚠️ <span style='color:#00cc00;'>投信減碼 (賣超 {abs(trust_net)} 張)。</span>"
         
-        # 動態表格顏色適配
-        th_color = "#999" if not is_light_mode else "#555"
-        border_c = "#444" if not is_light_mode else "#ddd"
+        # 精準對齊截圖的表格化籌碼樣式
+        th_color = "#ccc" if not is_light_mode else "#555"
+        border_c = "#555" if not is_light_mode else "#ddd"
+        t_text_c = "#ddd" if not is_light_mode else "#333"
         
-        # 內嵌精準對齊截圖的 HTML 籌碼表格 (近五日)
         table_html = f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
-        table_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; margin-top: 5px; font-size: 0.95rem;'>"
-        table_html += f"<tr style='border-bottom: 1px solid {border_c}; color: {th_color};'>"
-        table_html += "<th>日期</th><th>外資</th><th>投信</th><th>自營商</th><th>合計</th></tr>"
+        table_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; margin-top: 5px; font-size: 0.95rem; border: 1px solid {border_c};'>"
+        table_html += f"<tr style='background-color: rgba(255,255,255,0.05); color: {th_color};'>"
+        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>日期</th>"
+        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>外資</th>"
+        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>投信</th>"
+        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>自營商</th>"
+        table_html += f"<th style='border: 1px solid {border_c}; padding: 10px 5px;'>合計</th></tr>"
         
         for row in inst_data[:5]:
             date_str = row['日期']
@@ -910,35 +914,44 @@ def generate_comprehensive_analysis(data, inst_data, sc, market_today="", market
             d_val = int(str(row['自營商(張)']).replace(',', ''))
             s_val = int(str(row['單日合計(張)']).replace(',', ''))
             
-            f_color = "#ff3333" if f_val > 0 else "#00cc00"
-            t_color = "#ff3333" if t_val > 0 else "#00cc00"
-            d_color = "#ff3333" if d_val > 0 else "#00cc00"
-            s_color = "#ff3333" if s_val > 0 else "#00cc00"
+            f_color = "#ff3333" if f_val > 0 else ("#00cc00" if f_val < 0 else t_text_c)
+            t_color = "#ff3333" if t_val > 0 else ("#00cc00" if t_val < 0 else t_text_c)
+            d_color = "#ff3333" if d_val > 0 else ("#00cc00" if d_val < 0 else t_text_c)
+            s_color = "#ff3333" if s_val > 0 else ("#00cc00" if s_val < 0 else t_text_c)
             
-            table_html += f"<tr style='border-bottom: 1px solid {border_c};'>"
-            table_html += f"<td style='padding: 8px 0;'>{date_str}</td>"
-            table_html += f"<td style='padding: 8px 0; color: {f_color};'>{f_val}</td>"
-            table_html += f"<td style='padding: 8px 0; color: {t_color};'>{t_val}</td>"
-            table_html += f"<td style='padding: 8px 0; color: {d_color};'>{d_val}</td>"
-            table_html += f"<td style='padding: 8px 0; color: {s_color};'>{s_val}</td>"
+            table_html += f"<tr>"
+            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px;'>{date_str}</td>"
+            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {f_color}; font-weight: 500;'>{f_val}</td>"
+            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {t_color}; font-weight: 500;'>{t_val}</td>"
+            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {d_color}; font-weight: 500;'>{d_val}</td>"
+            table_html += f"<td style='border: 1px solid {border_c}; padding: 10px 5px; color: {s_color}; font-weight: 500;'>{s_val}</td>"
             table_html += "</tr>"
         table_html += "</table>"
         
         chip_status += table_html
         analysis_bullets.append(chip_status)
 
+    # 🚀 建倉區間邏輯修正：錨定現價，向下找支撐
+    current_p = data['收盤價']
+    lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
+    range_min = min(current_p, lower_bound)
+    range_max = max(current_p, lower_bound)
+    if abs(range_max - range_min) < 0.05:
+        range_min = current_p * 0.98  # 至少給予 2% 逢低緩衝
+
     if sc >= 5: 
         v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
-        v_a = f"✅ <b>進場判斷：強烈買進</b><br>動能、量能、型態三道關卡全數確認過關！<br>📌 建議建倉區間：{data['BB_DN']:.2f} ~ {data['20MA']:.2f} 之間分批加碼。"
+        v_a = f"✅ <b>進場判斷：強烈買進</b><br>動能、量能、型態三道關卡全數確認過關！<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低 {range_min:.2f} 之間分批加碼。"
     elif sc >= 2: 
         v_t, v_c = "🟡 A級機會：偏多試單", "#ffcc00"
-        v_a = f"✅ <b>進場判斷：分批試單</b><br>滿足跌深超賣條件，動能防護及格。<br>📌 建議短線建倉點：{data['收盤價']:.2f} 附近，跌破 {data['BB_DN']:.2f} 嚴格停損。"
+        v_a = f"✅ <b>進場判斷：分批試單</b><br>滿足跌深超賣條件，動能防護及格。<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低 {range_min:.2f} 之間佈局，跌破前波低點嚴格停損。"
     elif sc >= -1: 
         v_t, v_c = "⚪ 中性觀望：多空不明", "#888888"
-        v_a = f"⏳ <b>進場判斷：暫緩進場</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。"
+        v_a = f"⏳ <b>進場判斷：暫緩進場</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。<br>📌 目前現價 ({current_p:.2f})，支撐參考 {range_min:.2f}。"
     else: 
         v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
-        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。"
+        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。<br>📌 目前現價 ({current_p:.2f})，破底風險極高。"
+        
     return analysis_bullets, v_t, v_c, v_a
 
 def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True):
@@ -1216,7 +1229,7 @@ elif st.session_state.page == "analysis":
                 inst_data = get_institutional_trading(target)
                 p_bar.progress(40)
                 status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組...</div>", unsafe_allow_html=True)
-                data = analyze_today(df_slice, target, inst_data)
+                data = analyze_today(df_slice, target, inst_data, is_light_mode)
                 sc = data['Score']
                 p_bar.progress(60)
                 status.markdown("<div style='text-align:center; color:#888;'>📑 獲取基本面與產業定位...</div>", unsafe_allow_html=True)
@@ -1366,7 +1379,7 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title)
+            bullets, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, t_title, tmr_title, is_light_mode)
             bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{b}</li>" for b in bullets])
             st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};"><h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3><hr style="border-color: {border_col}; margin: 15px 0;"><div style="margin-bottom: 15px;"><h4 style="color: {text_col}; margin-bottom: 10px;">🔍 綜合技術、型態與籌碼防護診斷：</h4><ul style="font-size: 1rem; color: {text_col}; line-height: 1.6;">{bullets_html}</ul></div><div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};"><p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p></div></div>''', unsafe_allow_html=True)
             
