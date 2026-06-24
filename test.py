@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-24 16:40 CST
+#2026-06-24 16:50 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -62,6 +62,7 @@ sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
 app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
 panel_bg = "#f9f9f9" if is_light_mode else "#16181f"
 
+# 🚀 終極安全防護：使用傳統字串拼接取代 f-string，徹底根絕 SyntaxError 崩潰
 css_style = """
 <style>
     .stApp { background-color: """ + app_bg + """; }
@@ -612,8 +613,8 @@ current_group_count = len(st.session_state.fav_groups)
 
 if current_group_count < MAX_GROUPS:
     with st.sidebar.expander("➕ 新增個人化群組", expanded=False):
-        new_g_name = st.text_input("群組名稱", placeholder="輸入群組名稱...", label_visibility="collapsed", key="sidebar_new_group_name")
-        if st.button("建立", use_container_width=True, key="btn_create_new_group") and new_g_name:
+        new_g_name = st.text_input("群組名稱", placeholder="輸入群組名稱...", label_visibility="collapsed", key="add_new_fav_group_input_999")
+        if st.button("建立", use_container_width=True, key="btn_create_new_group_999") and new_g_name:
             if new_g_name not in st.session_state.fav_groups:
                 st.session_state.fav_groups[new_g_name] = []
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
@@ -624,9 +625,9 @@ else:
 for g_name, g_stocks in list(st.session_state.fav_groups.items()):
     with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)})", expanded=True):
         col_rn, col_sv, col_del = st.columns([5, 2, 2])
-        new_g_name_input = col_rn.text_input("重命名", value=g_name, key=f"rn_{g_name}", label_visibility="collapsed")
+        new_g_name_input = col_rn.text_input("重命名", value=g_name, key=f"rn_group_{g_name}", label_visibility="collapsed")
         
-        if col_sv.button("💾", key=f"sv_{g_name}", help="儲存新群組名稱"):
+        if col_sv.button("💾", key=f"sv_group_{g_name}", help="儲存新群組名稱"):
             if new_g_name_input and new_g_name_input != g_name and new_g_name_input not in st.session_state.fav_groups:
                 new_dict = {}
                 for k, v in st.session_state.fav_groups.items():
@@ -636,7 +637,7 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
                 st.rerun()
                 
-        if col_del.button("🗑️", key=f"del_{g_name}", help="刪除此群組"):
+        if col_del.button("🗑️", key=f"del_group_{g_name}", help="刪除此群組"):
             if len(st.session_state.fav_groups) > 1:
                 del st.session_state.fav_groups[g_name]
                 save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
@@ -646,13 +647,13 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 
         for fav in g_stocks:
             fav_rating = get_stock_rating_fast(fav)
-            if st.button(f"📊 {fav} {get_stock_name(fav)} | {fav_rating}", key=f"go_{g_name}_{fav}", use_container_width=True):
+            if st.button(f"📊 {fav} {get_stock_name(fav)} | {fav_rating}", key=f"go_stock_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
 
 st.sidebar.divider()
 st.sidebar.title("⚙️ 雷達池設定")
-if st.sidebar.button("🔄 更新熱門雷達池 (Top 100)", use_container_width=True, key="btn_update_top100"):
+if st.sidebar.button("🔄 更新熱門雷達池 (Top 100)", use_container_width=True, key="btn_update_top_100_radar"):
     st.session_state.custom_pool = fetch_twse_top_100()
     save_json(POOL_FILE, st.session_state.custom_pool)
     st.sidebar.success("✅ 雷達池已擴大更新為全台前 100 檔！")
@@ -747,7 +748,7 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 0.85rem; margin-top: 2px; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
             
-            if st.button("🔄 手動更新即時大盤報價", use_container_width=True, key="btn_refresh_twii"): st.cache_data.clear(); st.rerun()
+            if st.button("🔄 手動更新即時大盤報價", use_container_width=True, key="btn_refresh_market_dash"): st.cache_data.clear(); st.rerun()
         
         st.markdown("<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日開盤風險評估</h4>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align:center; font-size:0.85rem; color:#888; margin-top:-10px; margin-bottom:10px;'>🕒 總經最後收盤時間: {macro.get('global_time', '無')}</div>", unsafe_allow_html=True)
@@ -786,7 +787,7 @@ def render_index_board():
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
 # ==========================================
-# 🚀 升級版 AI 大腦核心：整合三面向(技術/籌碼/基本)
+# 🚀 升級版 AI 大腦核心：整合三大面向 (技術/籌碼/基本)
 # ==========================================
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today="", market_tmr="", is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#ddd"
@@ -837,19 +838,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     else: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
 
     tech_res = "偏多" if sc >= 2 else ("偏空" if sc < 0 else "震盪")
-    tech_html = f"""
-    <div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
-        <h4 style="color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📈 技術面分析</h4>
-        <ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
-            {''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in tech_bullets])}
-        </ul>
-        <div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #00ccff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
-            <b>【檢查項目】</b> 均線排列、K線型態、KDJ/MACD動能、乖離率與布林通道。<br>
-            <b>【判斷重點】</b> 判斷股價是否具備上漲動能、支撐壓力位置及反轉訊號。<br>
-            <b>【結　　果】</b> 目前技術面呈現 <span style="color:#00ccff; font-weight:bold;">【{tech_res}】</span> 格局。
-        </div>
-    </div>
-    """
+    
+    # 💡 移除縮排，避免 Streamlit 誤認為 markdown 程式碼區塊
+    tech_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📈 技術面分析</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in tech_bullets])}
+</ul>
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #00ccff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
+<b>【檢查項目】</b>均線排列、K線型態、KDJ/MACD動能、乖離率與布林通道。<br>
+<b>【判斷重點】</b>判斷股價是否具備上漲動能、支撐壓力位置及反轉訊號。<br>
+<b>【結　　果】</b>目前技術面呈現 <span style="color:#00ccff; font-weight:bold;">【{tech_res}】</span> 格局。
+</div>
+</div>"""
 
     # --- 2. 籌碼面解析 ---
     chip_bullets = []
@@ -858,8 +859,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-        dealer_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:3] if str(x['自營商(張)']).replace(',', '').lstrip('-').isdigit()])
-        total_net = foreign_net + trust_net + dealer_net
         
         chip_bullets.append("⚪ <b>三大法人逐日買賣超</b>：請參考下方表格。")
         chip_bullets.append("⚪ <b>法人持股比例</b>：(系統將依據盤後數據自動運算趨勢)。")
@@ -902,20 +901,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         chip_bullets.append("⚪ <b>分點券商進出</b>：(無資料)。")
         chip_bullets.append("⚪ <b>大戶持股集中度</b>：(無資料)。")
 
-    chip_html = f"""
-    <div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
-        <h4 style="color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">🏦 籌碼面分析</h4>
-        <ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 10px; color: {t_text_c};">
-            {''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in chip_bullets])}
-        </ul>
-        {tables_html}
-        <div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ffcc00; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6; margin-top: 15px;">
-            <b>【檢查項目】</b> 三大法人逐日買賣超、法人持股比例、分點券商進出、大戶持股集中度。<br>
-            <b>【判斷重點】</b> 觀察主力資金是否持續流入，籌碼是否由散戶流向大戶與法人。<br>
-            <b>【結　　果】</b> 判斷為 <span style="color:#ffcc00; font-weight:bold;">【{chip_res_text}】</span>。
-        </div>
-    </div>
-    """
+    # 💡 移除縮排避免 HTML 跑版
+    chip_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">🏦 籌碼面分析</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 10px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in chip_bullets])}
+</ul>
+{tables_html}
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ffcc00; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6; margin-top: 15px;">
+<b>【檢查項目】</b>三大法人逐日買賣超、法人持股比例、分點券商進出、大戶持股集中度。<br>
+<b>【判斷重點】</b>觀察主力資金是否持續流入，籌碼是否由散戶流向大戶與法人。<br>
+<b>【結　　果】</b>判斷為 <span style="color:#ffcc00; font-weight:bold;">【{chip_res_text}】</span>。
+</div>
+</div>"""
 
     # --- 3. 基本面解析 ---
     fund_bullets = []
@@ -936,21 +934,20 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     fund_res = "具備實質獲利支撐，公司營運穩健" if has_profit else "暫無明顯獲利支撐，需留意營運虧損風險"
 
-    fund_html = f"""
-    <div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
-        <h4 style="color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📑 基本面分析</h4>
-        <ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
-            {''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in fund_bullets])}
-        </ul>
-        <div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ff99ff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
-            <b>【檢查項目】</b> EPS、單月EPS、本益比、產業趨勢/題材、財報/展望。<br>
-            <b>【判斷重點】</b> 公司獲利是否支撐股價、本益比是否合理、產業是否具備成長性。<br>
-            <b>【結　　果】</b> <span style="color:#ff99ff; font-weight:bold;">{fund_res}</span>。
-        </div>
-    </div>
-    """
+    # 💡 移除縮排避免 HTML 跑版
+    fund_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📑 基本面分析</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in fund_bullets])}
+</ul>
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ff99ff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
+<b>【檢查項目】</b>EPS、單月EPS、本益比、產業趨勢/題材、財報/展望。<br>
+<b>【判斷重點】</b>公司獲利是否支撐股價、本益比是否合理、產業是否具備成長性。<br>
+<b>【結　　果】</b><span style="color:#ff99ff; font-weight:bold;">{fund_res}</span>。
+</div>
+</div>"""
 
-    # 🚀 建倉區間與最終總結邏輯修正：錨定現價，向下找短均線支撐
+    # 🚀 建倉區間與最終總結邏輯：錨定現價，向下找短均線支撐
     current_p = data['收盤價']
     lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
     range_min = min(current_p, lower_bound)
@@ -1086,7 +1083,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             pos = df.index.get_loc(current_date)
             sub_df = df.iloc[:pos+1]
             if len(sub_df) >= 5:
-                t_data = analyze_today(sub_df, ticker_name, inst_data=None) 
+                t_data = analyze_today(sub_df, ticker_name, inst_data=None, is_light_mode=is_light_mode) 
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
                     buy_y.append(df_view['Low'].iloc[i] * 0.90) 
@@ -1202,7 +1199,7 @@ if st.session_state.page == "home":
             if tag_display: tag_display = f" | {tag_display}"
             
             button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
-            if st.button(button_label, key=f"btn_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
+            if st.button(button_label, key=f"btn_scan_list_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
                 st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
                 st.rerun()
                 
@@ -1219,11 +1216,11 @@ elif st.session_state.page == "analysis":
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True, key="btn_prev_stock"): st.session_state.update({"current_stock": p_stk}); st.rerun()
+        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True, key="btn_prev_stock_nav"): st.session_state.update({"current_stock": p_stk}); st.rerun()
     with c2:
-        if st.button("🏠 回雷達總機", use_container_width=True, key="btn_go_home"): st.session_state.page = "home"; st.rerun()
+        if st.button("🏠 回雷達總機", use_container_width=True, key="btn_go_home_nav"): st.session_state.page = "home"; st.rerun()
     with c3:
-        if n_stk and st.button(f"下一檔 ➡", use_container_width=True, key="btn_next_stock"): st.session_state.update({"current_stock": n_stk}); st.rerun()
+        if n_stk and st.button(f"下一檔 ➡", use_container_width=True, key="btn_next_stock_nav"): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
     def set_view_days(days):
         st.session_state.view_days = days
@@ -1262,9 +1259,9 @@ elif st.session_state.page == "analysis":
                 p_bar.progress(85)
                 
                 status.markdown("<div style='text-align:center; color:#888;'>🎨 繪製高畫質技術線圖中...</div>", unsafe_allow_html=True)
-                current_show_buy = st.session_state.get('toggle_buy_sig', True)
-                current_show_sup = st.session_state.get('toggle_sup_res', True)
-                current_show_signals = st.session_state.get('toggle_signals', True)
+                current_show_buy = st.session_state.get('toggle_buy_sig_ch', True)
+                current_show_sup = st.session_state.get('toggle_sup_res_ch', True)
+                current_show_signals = st.session_state.get('toggle_signals_ch', True)
                 pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
                 p_bar.progress(95)
 
@@ -1292,7 +1289,7 @@ elif st.session_state.page == "analysis":
             st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 盤勢分析日期: {analysis_date} | 抓取時間: {display_time}</div>", unsafe_allow_html=True)
             
             _, up_c, _ = st.columns([1, 2, 1])
-            if up_c.button("🔄 更新個股即時數值", use_container_width=True, key="btn_refresh_stock"): st.cache_data.clear(); st.rerun()
+            if up_c.button("🔄 更新個股即時數值", use_container_width=True, key="btn_refresh_stock_data"): st.cache_data.clear(); st.rerun()
             st.markdown("---")
             
             stop_loss_html = ""
@@ -1345,26 +1342,25 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
+            # 💡 在這裡去除了縮排，完全避免 Markdown 被判定為 Code Block
             ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode)
             
-            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
-                <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
-                <!-- 三大分析區塊整合 (由後端 HTML 動態產生) -->
-                {ai_brain_html}
-                
-                <hr style="border-color: {border_col}; margin: 20px 0;">
-                <div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
-                    <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
-                </div>
-            </div>''', unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
+<h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
+{ai_brain_html}
+<hr style="border-color: {border_col}; margin: 20px 0;">
+<div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
+<p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
+</div>
+</div>""", unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
-            dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_30d")
-            dc2.button("60日", on_click=set_view_days, args=(60,), key="btn_60d")
-            dc3.button("90日", on_click=set_view_days, args=(90,), key="btn_90d")
-            with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig')
-            with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res')
-            with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals')
+            dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_view_30d")
+            dc2.button("60日", on_click=set_view_days, args=(60,), key="btn_view_60d")
+            dc3.button("90日", on_click=set_view_days, args=(90,), key="btn_view_90d")
+            with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig_ch')
+            with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res_ch')
+            with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals_ch')
                 
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
@@ -1389,8 +1385,8 @@ elif st.session_state.page == "analysis":
             st.subheader("⭐ 自選群組管理")
             all_groups = list(st.session_state.fav_groups.keys())
             current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
-            selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups, key="multiselect_groups")
-            if st.button("💾 儲存自選設定", use_container_width=True, type="primary", key="btn_save_fav_group_multi"):
+            selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups, key="multiselect_fav_groups")
+            if st.button("💾 儲存自選設定", use_container_width=True, type="primary", key="btn_save_fav_groups"):
                 for g in all_groups:
                     if g in selected_groups and target not in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].append(target)
                     elif g not in selected_groups and target in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].remove(target)
@@ -1441,8 +1437,9 @@ elif st.session_state.page == "analysis":
                     else:
                         btn_label = f"⭐ {stock_id} {get_stock_name(stock_id)}" if is_current else f"▪️ {stock_id} {get_stock_name(stock_id)}"
                     
-                    if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}", use_container_width=True):
+                    if st.button(btn_label, key=f"right_nav_{stock_id}_{st.session_state.scan_mode}_panel", use_container_width=True):
                         st.session_state.current_stock = stock_id
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
