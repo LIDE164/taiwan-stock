@@ -1240,7 +1240,7 @@ if st.session_state.page == "home":
             tags = []
             if r.get('紅吞'): tags.append("🔺紅吞")
             elif r.get('黑吞'): tags.append("🔻黑吞")
-            elif r.get('近七日紅吞'): tags.append("🔸紅吞")
+            elif r.get('近七日紅吞'): tags.append("紅吞")
             if r.get('回測有撐'): tags.append("📌撐")
             elif r.get('反彈遇壓'): tags.append("⚠️壓")
             if '5日線即將上彎' in r:
@@ -1472,7 +1472,7 @@ elif st.session_state.page == "analysis":
                         tags = []
                         if stock_info.get('紅吞'): tags.append("🔺紅吞")
                         elif stock_info.get('黑吞'): tags.append("🔻黑吞")
-                        elif stock_info.get('近七日紅吞'): tags.append("🔸紅吞")
+                        elif stock_info.get('近七日紅吞'): tags.append("紅吞")
                         
                         if stock_info.get('回測有撐'): tags.append("📌撐")
                         elif stock_info.get('反彈遇壓'): tags.append("⚠️壓")
