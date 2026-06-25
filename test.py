@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-25 17:15 CST
+# 最後修改時間: 2026-06-25 17:45 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -49,7 +49,7 @@ components.html(
 )
 
 # ==========================================
-# 🧠 側邊欄：全局策略模式切換 (新加入)
+# 🧠 側邊欄：全局策略模式切換
 # ==========================================
 if 'strategy_mode' not in st.session_state: st.session_state.strategy_mode = "short_term"
 
@@ -517,7 +517,7 @@ def get_global_macro_data():
     return data
 
 # ==========================================
-# 🧠 決策分數雙引擎 (切換長短線邏輯)
+# 🧠 決策分數雙引擎 (切換長短線邏輯與動態觸發)
 # ==========================================
 def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
     sc, rs = 0, []
@@ -577,7 +577,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
         if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
         
     # -------------------------------
-   # 🌊 中長期佈局模式 (大幅收緊)
+    # 🌊 中長期佈局模式 (大幅收緊，加入動態觸發)
     # -------------------------------
     elif mode == 'long_term':
         # [硬門檻 1]：基本面必須獲利，否則直接剔除
@@ -590,31 +590,36 @@ def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
         if data['收盤價'] < data['60MA']: return -20, ["🩸 跌破季線 (空頭結構，排除)"]
 
         # [加分項]：開始評分
-        if pe_f < 15: sc += 5; rs.append("✅ 嚴重低估 (PE < 15)")
-        elif pe_f < 20: sc += 3; rs.append("✅ 估值合理 (PE < 20)")
+        if pe_f < 15: sc += 3; rs.append("✅ 嚴重低估 (PE < 15)")
+        elif pe_f < 20: sc += 1; rs.append("✅ 估值合理 (PE < 20)")
         
-        if data['20MA'] > data['60MA']: sc += 3; rs.append("✅ 均線黃金交叉")
+        if data['20MA'] > data['60MA']: sc += 2; rs.append("✅ 均線黃金交叉")
         
         # [關鍵修正]：籌碼過濾 (沒有法人籌碼不計分)
         if inst_data:
             trust_buy = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:5] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-            if trust_buy > 800: sc += 5; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
-            elif trust_buy > 0: sc += 2; rs.append("✅ 投信小買")
-            else: sc -= 5; rs.append("⚠️ 投信賣超 (籌碼鬆動)")
+            if trust_buy > 800: sc += 4; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
+            elif trust_buy > 0: sc += 1; rs.append("✅ 投信小買")
+            else: sc -= 3; rs.append("⚠️ 投信賣超 (籌碼鬆動)")
         else:
-            sc -= 5; rs.append("⚠️ 缺乏法人籌碼數據")
+            sc -= 3; rs.append("⚠️ 缺乏法人籌碼數據")
             
-        # [進場點要求]：股價不能漲太多
-        if data['收盤價'] > data['60MA'] * 1.15: 
-            sc -= 10; rs.append("⚠️ 距離季線乖離過大 (追高風險)")
-        elif data['收盤價'] <= data['60MA'] * 1.05:
-            sc += 5; rs.append("🔥 完美支撐區 (季線附近)")
+        # [進場點要求 - 改為動態觸發]：判斷剛突破，或剛回測
+        is_breakout = (data['收盤價'] > data['60MA']) and (data.get('昨日收盤價', 0) <= data.get('昨日60MA', 0))
+        is_support_rebound = data.get('回測有撐', False) and (data['收盤價'] <= data['60MA'] * 1.05)
+        
+        if is_breakout:
+            sc += 8; rs.append("🚀 強勢突破季線 (精準起漲買點)")
+        elif is_support_rebound:
+            sc += 5; rs.append("🔥 季線完美回測有撐 (防守反擊買點)")
+        else:
+            # 只是靜態站穩不給高分，避免每天洗版
+            if data['收盤價'] > data['60MA'] * 1.10: 
+                sc -= 10; rs.append("⚠️ 距離季線乖離過大 (追高風險)")
+            else:
+                sc += 1; rs.append("📈 持續站穩季線 (持股續抱)")
 
-    # 調整分級門檻：因為現在標準變嚴格，S級和A級的門檻要提高，確保跳出來的都是菁英
     return sc, rs
-
-# 在 analyze_today 函式中，記得同步調高分級標準
-# 建議長線模式的 S 級門檻至少要 8 分以上，A 級要 5 分以上
 
 def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, mode='short_term'):
     if df is None or len(df) < 5: return None
@@ -660,7 +665,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, mode='
         "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
-        "60MA": round(t['60MA'], 2),
+        "60MA": round(t['60MA'], 2), "昨日60MA": round(p['60MA'], 2) if '60MA' in p else 0,
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
@@ -677,7 +682,13 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, mode='
     sc, rs = get_decision_score(data, fund, inst_data, mode)
     data['Score'] = sc
     data['Reasons'] = rs
-    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
+    
+    if mode == 'long_term':
+        # 中長期因為標準極其嚴苛，S級門檻設高至 8，A級門檻設為 5
+        data['評級'] = "🟢 S級" if sc >= 8 else ("🟡 A級" if sc >= 5 else "⚪ 觀望")
+    else:
+        # 短線維持原本靈敏度
+        data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
     
     return data
 
@@ -1214,7 +1225,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if len(sub_df) >= 5:
                 # 圖表渲染也要帶入 mode 才能顯示出長短線專屬買點
                 t_data = analyze_today(sub_df, ticker_name, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode) 
-                if t_data and t_data['Score'] >= 2:
+                if t_data and t_data['Score'] >= 5:  # 只有達到高分買點才顯示在圖表上
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
                     buy_y.append(df_view['Low'].iloc[i] * 0.90) 
                     buy_text.append("買")
@@ -1296,13 +1307,17 @@ if st.session_state.page == "home":
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
-            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 2)].sort_values(
+            # 依據不同模式調整最低門檻
+            min_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= min_score)].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
             if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (根據當前策略模式篩選)")
-            df_disp = df_results[df_results['Score'] >= 2].sort_values(
+            # 依據不同模式調整最低門檻
+            min_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+            df_disp = df_results[df_results['Score'] >= min_score].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
             if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
@@ -1315,7 +1330,7 @@ if st.session_state.page == "home":
             sign = "+" if p_val > 0 else ""
             trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
             s_score = r['Score']
-            score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+            score_icon = r['評級']
             
             tags = []
             if r.get('紅吞'): tags.append("🔺紅吞")
@@ -1429,7 +1444,7 @@ elif st.session_state.page == "analysis":
                 temp_df = df_slice.iloc[:len(df_slice) - 20 + idx + 1]
                 if len(temp_df) >= 5:
                     t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode)
-                    if t_data and t_data['Score'] >= 2: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
+                    if t_data and t_data['Score'] >= 5: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
             
             if recent_signals:
                 last_sig_date, last_sig_price = recent_signals[-1]
@@ -1454,8 +1469,11 @@ elif st.session_state.page == "analysis":
                 if len(temp_df) >= 5:
                     t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode)
                     if t_data:
-                        if t_data['Score'] >= 5: s_count += 1; buy_points_prices.append(t_data['收盤價'])
-                        elif t_data['Score'] >= 2: a_count += 1; buy_points_prices.append(t_data['收盤價'])
+                        # 依據不同模式調整最低門檻
+                        min_s_score = 8 if st.session_state.strategy_mode == 'long_term' else 5
+                        min_a_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+                        if t_data['Score'] >= min_s_score: s_count += 1; buy_points_prices.append(t_data['收盤價'])
+                        elif t_data['Score'] >= min_a_score: a_count += 1; buy_points_prices.append(t_data['收盤價'])
             
             with st.container(border=True):
                 col_sum1, col_sum2, col_sum3 = st.columns(3)
@@ -1545,8 +1563,7 @@ elif st.session_state.page == "analysis":
                         p_val = stock_info['漲跌']
                         sign = "+" if p_val > 0 else ""
                         trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-                        s_score = stock_info['Score']
-                        score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+                        score_icon = stock_info['評級']
                         
                         tags = []
                         if stock_info.get('紅吞'): tags.append("🔺紅吞")
