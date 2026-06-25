@@ -1374,7 +1374,7 @@ elif st.session_state.page == "analysis":
                 {ai_brain_html}
                 
                 <hr style="border-color: {border_col}; margin: 20px 0;">
-                <div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
+                <style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
                     <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
                 </div>
             </div>''', unsafe_allow_html=True)
