@@ -580,33 +580,32 @@ def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
     # 🌊 中長期波段策略
     # -------------------------------
     elif mode == 'long_term':
-        # 估值濾網
-        if pe_f < 15: sc += 3; rs.append("✅ 價值低估 (PE < 15)")
-        elif pe_f > 25: sc -= 2; rs.append("⚠️ 估值偏高 (PE > 25)")
+        # 1. 價值與基本面 (加權重)
+        if pe_f < 20: sc += 3; rs.append("✅ 估值合理 (PE < 20)")
         
-        # 趨勢濾網 (季線)
-        if data['收盤價'] >= data['60MA']: sc += 3; rs.append("🔥 站穩季線 (中長線多頭保護)")
-        else: sc -= 3; rs.append("🩸 跌破季線 (中長線趨勢走弱)")
+        # 2. 強制性趨勢濾網：必須站在季線(60MA)之上，否則不計分
+        if data['收盤價'] >= data['60MA']: 
+            sc += 2; rs.append("✅ 長線趨勢向上 (站穩季線)")
+            
+            # 觸發條件：只有在「回測季線」或「剛突破盤整」時才加分
+            # 關鍵修正：判斷股價是否在 60MA 的 0%~5% 區間內 (視為回測支撐)
+            if data['60MA'] * 1.00 <= data['收盤價'] <= data['60MA'] * 1.05:
+                sc += 4; rs.append("🔥 回測季線支撐 (關鍵買點)")
+            
+            # 量能濾網：買在量縮時，而非量大時
+            if data['成交量'] < data['5日均量'] * 0.8:
+                sc += 2; rs.append("✅ 量縮整理 (底部支撐確認)")
+        else:
+            sc -= 5; rs.append("⚠️ 跌破季線 (長線空頭，不宜佈局)")
         
-        # 均線多頭排列
-        if data['20MA'] > data['60MA']: sc += 2; rs.append("✅ 月線大於季線 (均線多頭排列)")
-        
-        # 長線動能
-        if data['MACD'] > 0: sc += 2; rs.append("✅ MACD 大於零軸 (長線動能偏多)")
-        
-        # 投信波段籌碼
+        # 3. 投信籌碼 (波段參考)
         if inst_data and len(inst_data) >= 5:
             trust_buy = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:5] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-            if trust_buy > 0: sc += 3; rs.append(f"🔥 投信波段佈局 (近五日買超 {trust_buy} 張)")
-            elif trust_buy < -1000: sc -= 2; rs.append(f"⚠️ 投信波段棄守 (近五日大賣)")
+            if trust_buy > 500: sc += 3; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
             
-        # 佈局安全邊際
-        if data['收盤價'] <= data['BB_DN'] * 1.05: sc += 2; rs.append("✅ 長線逢低佈局區間 (接近布林下軌)")
-        if data['BIAS'] > 15: sc -= 4; rs.append("⚠️ 長線乖離過大 (高風險，不宜追高)")
-        
-        if data.get('近七日紅吞'): rs.append("✅ 近期曾出現築底表態訊號")
-        
-        if data['收盤價'] >= data['BB_UP']: sc -= 2; rs.append("⚠️ 觸及布林上軌壓力")
+        # 4. 避免追高 (長線乖離)
+        if data['收盤價'] > data['60MA'] * 1.2:
+            sc -= 5; rs.append("⚠️ 乖離過大，已脫離長線成本區")
 
     return sc, rs
 
