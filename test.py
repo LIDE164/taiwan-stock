@@ -577,37 +577,44 @@ def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
         if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
         
     # -------------------------------
-    # 🌊 中長期波段策略
+   # 🌊 中長期佈局模式 (大幅收緊)
     # -------------------------------
     elif mode == 'long_term':
-        # 1. 價值與基本面 (加權重)
-        if pe_f < 20: sc += 3; rs.append("✅ 估值合理 (PE < 20)")
+        # [硬門檻 1]：基本面必須獲利，否則直接剔除
+        if eps_f <= 0: return -20, ["🩸 基本面虧損 (排除)"]
         
-        # 2. 強制性趨勢濾網：必須站在季線(60MA)之上，否則不計分
-        if data['收盤價'] >= data['60MA']: 
-            sc += 2; rs.append("✅ 長線趨勢向上 (站穩季線)")
-            
-            # 觸發條件：只有在「回測季線」或「剛突破盤整」時才加分
-            # 關鍵修正：判斷股價是否在 60MA 的 0%~5% 區間內 (視為回測支撐)
-            if data['60MA'] * 1.00 <= data['收盤價'] <= data['60MA'] * 1.05:
-                sc += 4; rs.append("🔥 回測季線支撐 (關鍵買點)")
-            
-            # 量能濾網：買在量縮時，而非量大時
-            if data['成交量'] < data['5日均量'] * 0.8:
-                sc += 2; rs.append("✅ 量縮整理 (底部支撐確認)")
-        else:
-            sc -= 5; rs.append("⚠️ 跌破季線 (長線空頭，不宜佈局)")
-        
-        # 3. 投信籌碼 (波段參考)
-        if inst_data and len(inst_data) >= 5:
-            trust_buy = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:5] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
-            if trust_buy > 500: sc += 3; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
-            
-        # 4. 避免追高 (長線乖離)
-        if data['收盤價'] > data['60MA'] * 1.2:
-            sc -= 5; rs.append("⚠️ 乖離過大，已脫離長線成本區")
+        # [硬門檻 2]：估值過高直接剔除 (PE > 30)
+        if pe_f > 30: return -20, ["⚠️ 估值過高 (排除)"]
 
+        # [硬門檻 3]：必須在季線之上，否則不予計分
+        if data['收盤價'] < data['60MA']: return -20, ["🩸 跌破季線 (空頭結構，排除)"]
+
+        # [加分項]：開始評分
+        if pe_f < 15: sc += 5; rs.append("✅ 嚴重低估 (PE < 15)")
+        elif pe_f < 20: sc += 3; rs.append("✅ 估值合理 (PE < 20)")
+        
+        if data['20MA'] > data['60MA']: sc += 3; rs.append("✅ 均線黃金交叉")
+        
+        # [關鍵修正]：籌碼過濾 (沒有法人籌碼不計分)
+        if inst_data:
+            trust_buy = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:5] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+            if trust_buy > 800: sc += 5; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
+            elif trust_buy > 0: sc += 2; rs.append("✅ 投信小買")
+            else: sc -= 5; rs.append("⚠️ 投信賣超 (籌碼鬆動)")
+        else:
+            sc -= 5; rs.append("⚠️ 缺乏法人籌碼數據")
+            
+        # [進場點要求]：股價不能漲太多
+        if data['收盤價'] > data['60MA'] * 1.15: 
+            sc -= 10; rs.append("⚠️ 距離季線乖離過大 (追高風險)")
+        elif data['收盤價'] <= data['60MA'] * 1.05:
+            sc += 5; rs.append("🔥 完美支撐區 (季線附近)")
+
+    # 調整分級門檻：因為現在標準變嚴格，S級和A級的門檻要提高，確保跳出來的都是菁英
     return sc, rs
+
+# 在 analyze_today 函式中，記得同步調高分級標準
+# 建議長線模式的 S 級門檻至少要 8 分以上，A 級要 5 分以上
 
 def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, mode='short_term'):
     if df is None or len(df) < 5: return None
