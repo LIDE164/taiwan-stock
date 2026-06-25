@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-25 08:35 CST
+# 最後修改時間: 2026-06-25 12:28 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -18,6 +18,9 @@ import concurrent.futures
 import random
 
 from streamlit_autorefresh import st_autorefresh
+
+# === 使用者專屬 FinMind API Token ===
+FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -384,7 +387,8 @@ def fetch_twse_index_history():
 def get_institutional_trading(ticker):
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}"
+        # 加上您的專屬 Token，大幅提升籌碼抓取穩定度
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
         res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
@@ -809,9 +813,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     if t_short and t_mid and t_long: tech_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
     elif not t_short and not t_mid and not t_long: tech_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
 
-    if data.get('紅吞'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞（多頭吞噬）」K線型態，強烈見底買進訊號。</span>")
+    if data.get('紅吞'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞」K線型態，強烈見底買進訊號。</span>")
     elif data.get('近七日紅吞'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
-    elif data.get('黑吞'): tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞（空頭吞噬）」K線型態，強烈高檔反轉警訊。</b></span>")
+    elif data.get('黑吞'): tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>型態反轉：出現「黑吞」K線型態，強烈高檔反轉警訊。</b></span>")
     
     if data.get('回測有撐'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>支撐確認：今日價格下殺後爆出買盤，收出長下影線，主力防守支撐強勁。</span>")
     if data.get('反彈遇壓'): tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>均線壓力：今日反彈遭遇均線壓力被打回，收長上影線，空方壓制強烈。</b></span>")
@@ -1040,11 +1044,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             if is_red:
                 re_x.append(date.strftime('%Y-%m-%d'))
                 re_y.append(t_low * 0.98) 
-                re_text.append("<b>吞</b>")
+                re_text.append("<b>紅吞</b>")
             if is_black:
                 be_x.append(date.strftime('%Y-%m-%d'))
                 be_y.append(t_high * 1.02) 
-                be_text.append("<b>吞</b>")
+                be_text.append("<b>黑吞</b>")
             
             total_range = t_high - t_low
             if total_range == 0: total_range = 0.001
@@ -1392,8 +1396,8 @@ elif st.session_state.page == "analysis":
             with st.expander("📖 K 線圖符號代表名稱說明 (點擊展開)", expanded=False):
                 st.markdown(f"""
                 <ul style="line-height: 1.8; color: {text_col}; font-size: 1rem;">
-                    <li><b><span style='color: #ff3333;'>吞 (紅字)</span></b>：<span style='color: #ff3333;'>紅吞 (多頭吞噬)</span>，代表強烈的短線反轉向上買進訊號。</li>
-                    <li><b><span style='color: #00cc00;'>吞 (綠字)</span></b>：<span style='color: #00cc00;'>黑吞 (空頭吞噬)</span>，代表強烈的短線高檔反轉向下警訊。</li>
+                    <li><b><span style='color: #ff3333;'>紅吞</span></b>：代表強烈的短線反轉向上買進訊號。</li>
+                    <li><b><span style='color: #00cc00;'>黑吞</span></b>：代表強烈的短線高檔反轉向下警訊。</li>
                     <li><b><span style='color: #ff9900;'>撐 (橘黃字)</span></b>：回測有撐，當日價格下殺後爆出買盤收長下影線，主力防守支撐。</li>
                     <li><b><span style='color: #00ccff;'>壓 (藍字)</span></b>：反彈遇壓，當日反彈遭遇均線壓力被打回，收出長上影線。</li>
                     <li><b><span style='color: #ff3333;'>↗️ (紅箭頭)</span></b>：短均線扣低上彎，5日線未來將持續翻揚向上，提供多方保護。</li>
