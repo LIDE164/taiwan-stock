@@ -1376,8 +1376,8 @@ elif st.session_state.page == "analysis":
                 <hr style="border-color: {border_col}; margin: 20px 0;">
                 <style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
                     <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
-                </div>
-            </div>''', unsafe_allow_html=True)
+                
+           unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_view_30d")
