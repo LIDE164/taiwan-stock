@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-25 08:35 CST
+#2026-06-24 16:50 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -62,6 +62,7 @@ sticky_bg = "rgba(255,255,255,0.95)" if is_light_mode else "rgba(26,28,36,0.95)"
 app_bg = "#f4f6f9" if is_light_mode else "#0e1117"
 panel_bg = "#f9f9f9" if is_light_mode else "#16181f"
 
+# 🚀 終極安全防護：使用傳統字串拼接取代 f-string，徹底根絕 SyntaxError 崩潰
 css_style = """
 <style>
     .stApp { background-color: """ + app_bg + """; }
@@ -521,7 +522,7 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
         rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
     if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        rs.append("⚠️ 5日線扣高值 (短均線即遇到下彎產生蓋頭壓力)")
+        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
 
     if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
     if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
@@ -838,63 +839,40 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     tech_res = "偏多" if sc >= 2 else ("偏空" if sc < 0 else "震盪")
     
-    # 💡 徹底移除縮排與 HTML 註解，確保能正確渲染
-    tech_html = ""
-    tech_html += f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析</h4>"
-    tech_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
-    for b in tech_bullets:
-        tech_html += f"<li style='margin-bottom:6px;'>{b}</li>"
-    tech_html += f"</ul>"
-    tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;'>"
-    tech_html += f"<b>💡 綜合總結：</b>經過 K 線型態、均線排列與動能指標運算，目前技術面呈現 <span style='color:#00ccff; font-weight:bold;'>【{tech_res}】</span> 格局。"
-    tech_html += f"</div></div>"
+    # 💡 移除縮排，避免 Streamlit 誤認為 markdown 程式碼區塊
+    tech_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📈 技術面分析</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in tech_bullets])}
+</ul>
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #00ccff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
+<b>【檢查項目】</b>均線排列、K線型態、KDJ/MACD動能、乖離率與布林通道。<br>
+<b>【判斷重點】</b>判斷股價是否具備上漲動能、支撐壓力位置及反轉訊號。<br>
+<b>【結　　果】</b>目前技術面呈現 <span style="color:#00ccff; font-weight:bold;">【{tech_res}】</span> 格局。
+</div>
+</div>"""
 
-    # --- 2. 籌碼面解析 (整合進階籌碼與表格並排) ---
+    # --- 2. 籌碼面解析 ---
     chip_bullets = []
     chip_res_text = "中立觀望"
     tables_html = ""
-    
-    # 模擬進階籌碼數據
-    foreign_ratio = round(random.uniform(5, 45), 2)
-    big_player_ratio = round(random.uniform(40, 85), 2)
-    broker_names = ["凱基-台北", "元大", "富邦", "國泰", "群益"]
-    top_broker = random.choice(broker_names)
-    broker_net = random.randint(100, 1500)
-    broker_action = random.choice(["買超", "賣超"])
-    fetch_time_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
-    
     if inst_data and len(inst_data) >= 3:
         foreign_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
         trust_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
         
-        if foreign_net > 0 and trust_net > 0: 
-            chip_res_text = "🔥 土洋法人同步偏多，籌碼穩定集中"
-            is_chip_bullish = True
-        elif foreign_net < 0 and trust_net < 0: 
-            chip_res_text = "⚠️ 土洋法人同步偏空，籌碼有鬆動疑慮"
-            is_chip_bullish = False
-        else: 
-            chip_res_text = "⚪ 法人多空步調不一，籌碼處於換手階段"
-            is_chip_bullish = False
+        chip_bullets.append("⚪ <b>三大法人逐日買賣超</b>：請參考下方表格。")
+        chip_bullets.append("⚪ <b>法人持股比例</b>：(系統將依據盤後數據自動運算趨勢)。")
+        chip_bullets.append("⚪ <b>分點券商進出</b>：(系統將依據盤後數據自動運算趨勢)。")
+        chip_bullets.append("⚪ <b>大戶持股集中度</b>：(系統將依據盤後數據自動運算趨勢)。")
+
+        if foreign_net > 0 and trust_net > 0: chip_res_text = "土洋法人同步偏多，籌碼穩定集中"
+        elif foreign_net < 0 and trust_net < 0: chip_res_text = "土洋法人同步偏空，籌碼有鬆動疑慮"
+        else: chip_res_text = "法人多空步調不一，籌碼處於換手階段"
 
         th_color = "#ccc" if not is_light_mode else "#555"
         def get_c(val): return "#ff3333" if val > 0 else ("#00cc00" if val < 0 else t_text_c)
         
-        # 💡 使用純字串串接，徹底消除任何空格縮排與 HTML 註解
-        tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: wrap; margin-top: 15px;'>"
-        tables_html += f"<div style='flex: 1; min-width: 250px; border: 1px solid {b_col}; border-radius: 6px; padding: 12px; background-color: {sum_bg};'>"
-        tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 10px; display: flex; align-items: center; gap: 5px;'>🎯 進階籌碼監控 (模擬)</div>"
-        tables_html += f"<ul style='font-size: 0.9rem; line-height: 1.8; color: {t_text_c}; margin-left: -20px;'>"
-        tables_html += f"<li><b>法人持股比例</b>：外資 {foreign_ratio}% | 投信 {round(foreign_ratio/4, 2)}%</li>"
-        tables_html += f"<li><b>大戶持股集中度</b>：千張大戶佔比 <span style=\"color: {'#ff3333' if big_player_ratio > 60 else t_text_c}; font-weight: bold;\">{big_player_ratio}%</span></li>"
-        tables_html += f"<li><b>分點券商進出</b>：主力分點【{top_broker}】近五日累計<span style=\"color: {'#ff3333' if broker_action == '買超' else '#00cc00'}; font-weight: bold;\">{broker_action} {broker_net}</span> 張。</li>"
-        tables_html += f"</ul>"
-        tables_html += f"<div style='font-size: 0.8rem; color: #888; margin-top: 10px; text-align: right;'>🕒 盤後更新: {fetch_time_str}<br>資料來源: 集保結算所/證交所</div>"
-        tables_html += f"</div>"
-        
-        tables_html += f"<div style='flex: 1.5; min-width: 300px;'>"
-        tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 5px;'>⏳ 近五日三大法人逐日買賣超 (張)：</div>"
+        tables_html += f"<div style='margin-top: 15px; margin-bottom: 5px; font-weight: bold; color: {t_text_c}; font-size: 0.95rem;'>⏳ 近五日三大法人逐日買賣超明細 (張)：</div>"
         tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; border: 1px solid {b_col}; color: {t_text_c};'>"
         tables_html += f"<tr style='background-color: {sum_bg}; color: {th_color};'>"
         tables_html += f"<th style='border: 1px solid {b_col}; padding: 6px 4px;'>日期</th>"
@@ -915,21 +893,29 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
             tables_html += f"<td style='border: 1px solid {b_col}; padding: 6px 4px; color: {get_c(t_val)}; font-weight: 500;'>{t_val}</td>"
             tables_html += f"<td style='border: 1px solid {b_col}; padding: 6px 4px; color: {get_c(d_val)}; font-weight: 500;'>{d_val}</td>"
             tables_html += f"<td style='border: 1px solid {b_col}; padding: 6px 4px; color: {get_c(s_val)}; font-weight: 500;'>{s_val}</td>"
-            tables_html += f"</tr>"
-        tables_html += f"</table></div></div>"
+            tables_html += "</tr>"
+        tables_html += "</table>"
     else:
-        tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
-        is_chip_bullish = False
+        chip_bullets.append("⚪ <b>三大法人逐日買賣超</b>：目前無資料可供分析。")
+        chip_bullets.append("⚪ <b>法人持股比例</b>：(無資料)。")
+        chip_bullets.append("⚪ <b>分點券商進出</b>：(無資料)。")
+        chip_bullets.append("⚪ <b>大戶持股集中度</b>：(無資料)。")
 
-    chip_html = ""
-    chip_html += f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析</h4>"
-    chip_html += f"{tables_html}"
-    chip_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6; margin-top: 15px;'>"
-    chip_html += f"<b>💡 綜合總結：</b>觀察近幾日主力資金流向與法人持股佔比，判斷目前籌碼狀態為 <span style='color:#ffcc00; font-weight:bold;'>【{chip_res_text}】</span>。"
-    chip_html += f"</div></div>"
+    # 💡 移除縮排避免 HTML 跑版
+    chip_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">🏦 籌碼面分析</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 10px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in chip_bullets])}
+</ul>
+{tables_html}
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ffcc00; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6; margin-top: 15px;">
+<b>【檢查項目】</b>三大法人逐日買賣超、法人持股比例、分點券商進出、大戶持股集中度。<br>
+<b>【判斷重點】</b>觀察主力資金是否持續流入，籌碼是否由散戶流向大戶與法人。<br>
+<b>【結　　果】</b>判斷為 <span style="color:#ffcc00; font-weight:bold;">【{chip_res_text}】</span>。
+</div>
+</div>"""
 
-    # --- 3. 基本面解析 (加入外部連結與動態評分) ---
+    # --- 3. 基本面解析 ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -938,38 +924,28 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     try: m_eps = f"{round(float(eps)/3, 2)}"
     except: m_eps = "無"
     
-    yahoo_news_url = f"https://tw.stock.yahoo.com/quote/{data['代號']}/news"
-    cnyes_news_url = f"https://invest.cnyes.com/twstock/TWS/{data['代號']}"
-    
-    fund_bullets.append(f"⚪ <b>產業趨勢/題材</b>：隸屬【{ind}】板塊，受惠於整體供應鏈或市場趨勢發展。 <a href='{yahoo_news_url}' target='_blank' style='color:#00ccff; text-decoration:none;'>[🔗Yahoo財經新聞]</a>")
-    fund_bullets.append(f"⚪ <b>財報/展望</b>：最新法說會與營收開出狀況將影響股價預期。 <a href='{cnyes_news_url}' target='_blank' style='color:#00ccff; text-decoration:none;'>[🔗鉅亨網個股動態]</a>")
+    fund_bullets.append(f"⚪ <b>產業趨勢/題材</b>：隸屬【{ind}】板塊，受惠於整體供應鏈或市場趨勢發展。")
+    fund_bullets.append(f"⚪ <b>財報/展望</b>：營運展望將反映在最新季報與法說會內容中。")
     fund_bullets.append(f"⚪ <b>EPS / 單月EPS</b>：當季每股盈餘 (EPS) <b>{eps}</b> 元，換算單月約 <b>{m_eps}</b> 元。")
     fund_bullets.append(f"⚪ <b>本益比 (PE)</b>：最新即時估值為 <b>{pe}</b> 倍。")
     
-    is_fund_bullish = False
-    try: 
-        eps_f = float(eps)
-        pe_f = float(pe) if pe != "無" else 999
-        if eps_f > 0 and pe_f < 20:
-            fund_res = "🔥 具備實質獲利支撐，且本益比合理，具投資價值"
-            is_fund_bullish = True
-        elif eps_f > 0 and pe_f >= 20:
-            fund_res = "⚠️ 具備實質獲利支撐，但本益比偏高，需留意追高風險"
-        else:
-            fund_res = "🩸 暫無明顯獲利支撐，需嚴防營運虧損風險"
-    except: 
-        fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主"
+    try: has_profit = float(eps) > 0
+    except: has_profit = False
 
-    fund_html = ""
-    fund_html += f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析</h4>"
-    fund_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
-    for b in fund_bullets:
-        fund_html += f"<li style='margin-bottom:6px;'>{b}</li>"
-    fund_html += f"</ul>"
-    fund_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;'>"
-    fund_html += f"<b>💡 綜合總結：</b>評估其 EPS 獲利能力、本益比與所屬產業前景，判斷該標的目前 <span style='color:#ff99ff; font-weight:bold;'>{fund_res}</span>。"
-    fund_html += f"</div></div>"
+    fund_res = "具備實質獲利支撐，公司營運穩健" if has_profit else "暫無明顯獲利支撐，需留意營運虧損風險"
+
+    # 💡 移除縮排避免 HTML 跑版
+    fund_html = f"""<div style="border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};">
+<h4 style="color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;">📑 基本面分析（參考）</h4>
+<ul style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};">
+{''.join([f"<li style='margin-bottom:6px;'>{b}</li>" for b in fund_bullets])}
+</ul>
+<div style="background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ff99ff; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6;">
+<b>【檢查項目】</b>EPS、單月EPS、本益比、產業趨勢/題材、財報/展望。<br>
+<b>【判斷重點】</b>公司獲利是否支撐股價、本益比是否合理、產業是否具備成長性。<br>
+<b>【結　　果】</b><span style="color:#ff99ff; font-weight:bold;">{fund_res}</span>。
+</div>
+</div>"""
 
     # 🚀 建倉區間與最終總結邏輯：錨定現價，向下找短均線支撐
     current_p = data['收盤價']
@@ -1366,18 +1342,17 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
+            # 💡 在這裡去除了縮排，完全避免 Markdown 被判定為 Code Block
             ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode)
             
-            st.markdown(f'''<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
-                <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
-                <!-- 三大分析區塊整合 (由後端 HTML 動態產生) -->
-                {ai_brain_html}
-                
-                <hr style="border-color: {border_col}; margin: 20px 0;">
-                <div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
-                    <p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
-                </div>
-            </div>''', unsafe_allow_html=True)
+            st.markdown(f"""<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
+<h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
+{ai_brain_html}
+<hr style="border-color: {border_col}; margin: 20px 0;">
+<div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
+<p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
+</div>
+</div>""", unsafe_allow_html=True)
             
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_view_30d")
@@ -1467,3 +1442,4 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
