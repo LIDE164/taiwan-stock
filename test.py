@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-06-25 12:45 CST
+# 最後修改時間: 2026-06-25 18:50 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -48,6 +48,28 @@ components.html(
     height=0, width=0
 )
 
+# ==========================================
+# 🧠 側邊欄：全局策略模式切換
+# ==========================================
+if 'strategy_mode' not in st.session_state: st.session_state.strategy_mode = "short_term"
+
+st.sidebar.title("🧠 交易策略模式")
+strategy_options = {"⚡ 短線動能 (強勢突破)": "short_term", "🌊 回檔支撐 (波段佈局)": "long_term"}
+selected_strategy_label = st.sidebar.radio(
+    "選擇 AI 分析邏輯", 
+    list(strategy_options.keys()), 
+    index=0 if st.session_state.strategy_mode == "short_term" else 1,
+    help="短線注重爆發力與量價結構；回檔支撐注重季線防守與量縮整理買點。"
+)
+new_strategy = strategy_options[selected_strategy_label]
+
+if new_strategy != st.session_state.strategy_mode:
+    st.session_state.strategy_mode = new_strategy
+    st.rerun()
+
+st.sidebar.divider()
+
+# ==========================================
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
 
@@ -494,47 +516,106 @@ def get_global_macro_data():
 
     return data
 
-def get_decision_score(data, fund_data, inst_data=None):
+# ==========================================
+# 🧠 決策分數雙引擎 (短線動能 vs 回檔支撐)
+# ==========================================
+def get_decision_score(data, fund_data, inst_data=None, mode='short_term'):
     sc, rs = 0, []
-    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
-    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
-    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
     
-    try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
+    # 處理基本面數值
+    try: eps_f = float(str(fund_data.get('EPS', '0')).replace(',', ''))
     except: eps_f = 0.0
-    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
     
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
+    try: pe_f = float(str(fund_data.get('PE', '999')).replace(',', ''))
+    except: pe_f = 999.0
+
+    # -------------------------------
+    # ⚡ 短線動能策略 (維持極高敏銳度)
+    # -------------------------------
+    if mode == 'short_term':
+        if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
+        elif eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+
+        if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
+        if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
+        if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
         
-    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
-    else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
+        if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
+        else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
+            
+        if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
+        else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
 
-    if inst_data and len(inst_data) >= 3:
-        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+        if inst_data and len(inst_data) >= 3:
+            net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
+            if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+            else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
-    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
-    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
+        if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
+        if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
 
-    if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
-    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
-    
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
+        if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
+        if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
+        
+        if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
+            rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
+        if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
+            rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
 
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+        if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
+        if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
+        if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
+        if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
+        
+    # -------------------------------
+    # 🌊 回檔支撐策略 (Pullback Support Hunter)
+    # -------------------------------
+    elif mode == 'long_term':
+        # [硬門檻]：若基本面虧損，剔除
+        if eps_f < 0:
+            return -20, ["🩸 基本面虧損 (排除)"]
+        
+        # [硬門檻]：若股價跌破季線，直接剔除 (長線不接刀)
+        if data['收盤價'] < data['60MA']: 
+            return -20, ["🩸 跌破季線 (長線多頭結構破壞，不宜佈局)"]
+
+        # 1. 判斷是否在「黃金買進區」 (股價在 60MA 之上但尚未過熱)
+        dist_from_ma60 = (data['收盤價'] - data['60MA']) / data['60MA']
+        
+        if 0 <= dist_from_ma60 <= 0.05:
+            sc += 8; rs.append("🔥 進入黃金買進區 (完美貼近季線支撐)")
+        elif 0.05 < dist_from_ma60 <= 0.10:
+            sc += 2; rs.append("✅ 趨勢穩定，靠近支撐區")
+        else:
+            sc -= 10; rs.append("⚠️ 乖離過大 (距離季線太遠，嚴禁追高)")
+
+        # 2. 觸發機制：必須有量縮或止跌訊號
+        # 量能濾網：量縮代表拋售力竭
+        if data['成交量'] < data['5日均量']: 
+            sc += 3; rs.append("✅ 量縮整理 (籌碼沈澱，無大額拋售)")
+        else:
+            sc -= 1; rs.append("⚠️ 放量震盪 (籌碼尚未沉澱)")
+        
+        # 反轉訊號：有型態支撐更佳
+        if data.get('回測有撐'): 
+            sc += 5; rs.append("🚀 發現長下影線 (底部支撐確認)")
+        if data.get('紅吞'): 
+            sc += 4; rs.append("🚀 出現紅吞噬 (短線多頭反轉)")
+            
+        # 3. 法人加分 (長線指標)
+        if inst_data and len(inst_data) >= 5:
+            trust_buy = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:5] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+            if trust_buy > 500: sc += 3; rs.append(f"🔥 投信波段大買 ({trust_buy} 張)")
+
+        # 4. 減分項與估值濾網
+        if data['J值'] >= 85: sc -= 5; rs.append("⚠️ 短線過熱 (等待冷卻)")
+        
+        if pe_f < 20: sc += 2; rs.append("✅ 估值合理 (PE < 20)")
+        elif pe_f > 30: sc -= 3; rs.append("⚠️ 估值偏高 (PE > 30)")
 
     return sc, rs
 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, mode='short_term'):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
     fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
@@ -578,7 +659,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         "近5日漲幅(%)": f"{round((t_close - p5['Close'])/p5['Close']*100, 2)}%",
         "成交量": int(t['Volume']/1000), "5日均量": int(df['Volume'].tail(5).mean()/1000),
         "5MA": round(t['5MA'], 2), "10MA": round(t['10MA'], 2), "20MA": round(t['20MA'], 2),
-        "60MA": round(t['60MA'], 2),
+        "60MA": round(t['60MA'], 2), "昨日60MA": round(p['60MA'], 2) if '60MA' in p else 0,
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
@@ -591,23 +672,31 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         "季線即將上彎": is_ma60_turning_up
     }
     
-    sc, rs = get_decision_score(data, fund, inst_data)
+    # 傳入 mode 讓決策引擎切換邏輯
+    sc, rs = get_decision_score(data, fund, inst_data, mode)
     data['Score'] = sc
     data['Reasons'] = rs
-    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
+    
+    if mode == 'long_term':
+        # 中長期因為標準極其嚴苛，S級門檻設高至 10，A級門檻設為 5
+        data['評級'] = "🟢 S級" if sc >= 10 else ("🟡 A級" if sc >= 5 else "⚪ 觀望")
+    else:
+        # 短線維持原本靈敏度
+        data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
     
     return data
 
 @st.cache_data(ttl=180, show_spinner=False)
-def get_stock_rating_fast(ticker):
+def get_stock_rating_fast(ticker, mode):
     try:
         df = get_stock_data(ticker)
         if df is not None and len(df) >= 5:
-            data = analyze_today(df, ticker, inst_data=None)
+            data = analyze_today(df, ticker, inst_data=None, is_light_mode=False, mode=mode)
             if data: return data.get('評級', "⚪ 觀望")
     except: pass
     return "⚪ 觀望"
 
+# 側邊欄群組重新讀取評分 (帶入策略模式)
 st.sidebar.title("⭐ 我的自選群組")
 
 MAX_GROUPS = 5
@@ -648,7 +737,7 @@ for g_name, g_stocks in list(st.session_state.fav_groups.items()):
                 st.error("至少需保留一個群組！")
                 
         for fav in g_stocks:
-            fav_rating = get_stock_rating_fast(fav)
+            fav_rating = get_stock_rating_fast(fav, st.session_state.strategy_mode)
             if st.button(f"📊 {fav} {get_stock_name(fav)} | {fav_rating}", key=f"go_stock_{g_name}_{fav}", use_container_width=True):
                 st.session_state.update({"current_stock": fav, "page": "analysis", "date_offset": 0})
                 st.rerun()
@@ -791,12 +880,14 @@ def render_index_board():
 # ==========================================
 # 🚀 升級版 AI 大腦核心：整合三大面向 (技術/籌碼/基本)
 # ==========================================
-def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today="", market_tmr="", is_light_mode=False):
+def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today="", market_tmr="", is_light_mode=False, mode="short_term"):
     t_text_c = "#333" if is_light_mode else "#ddd"
     card_bg = "#f4f6f9" if is_light_mode else "#16181f"
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(255,255,255,0.05)"
     b_col = "#ddd" if is_light_mode else "#333"
 
+    mode_label = "回檔支撐佈局" if mode == "long_term" else "短線動能"
+    
     # --- 1. 技術面解析 ---
     tech_bullets = []
     if market_today and market_tmr:
@@ -811,6 +902,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     t_long = data['收盤價'] > data['60MA']
     if t_short and t_mid and t_long: tech_bullets.append("🔥 <span style='color:#ff3333; font-weight:bold;'>三級多空趨勢：短、中、長線（5T, 20T, 60T）呈現完全多頭排列。</span>")
     elif not t_short and not t_mid and not t_long: tech_bullets.append("⚠️ <span style='color:#00cc00;'>三級多空趨勢：短、中、長線皆呈現空頭排列，防範中線續跌。</span>")
+    elif t_long and not t_short: tech_bullets.append("⚖️ <span style='color:#ffcc00; font-weight:bold;'>三級多空趨勢：長線(60T)有撐，但短線(5T)回檔修正中。</span>")
 
     if data.get('紅吞'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>型態反轉：今日出現「紅吞」K線型態，強烈見底買進訊號。</span>")
     elif data.get('近七日紅吞'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>底部表態：近七日內曾出現「紅吞」型態，多方主力已在此區間建倉表態。</span>")
@@ -820,28 +912,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     if data.get('反彈遇壓'): tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>均線壓力：今日反彈遭遇均線壓力被打回，收長上影線，空方壓制強烈。</b></span>")
     
     if data['J值'] < 20: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 極度超賣：J 值來到 ({data['J值']})，隨時醞釀強力技術性反彈。</span>")
-    elif data['J值'] > 80: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，短線過熱步入超買區。</span>")
-    if data['K'] > data['D']: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>KDJ 黃金交叉：K值 大於 D值，指標呈現多頭向上發散。</span>")
-    else: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 死亡交叉</b>：K值 小於 D值，短線動能偏弱。</span>")
+    elif data['J值'] > 85 and mode == 'short_term': tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>KDJ 高檔過熱</b>：J 值高達 {data['J值']}，短線過熱步入超買區。</span>")
 
     if data['收盤價'] <= data['BB_DN'] * 1.02: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>觸及布林下軌：股價貼近布林下軌 ({data['BB_DN']})，具備極強的技術性支撐。</span>")
     elif data['收盤價'] >= data['BB_UP'] * 0.98: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>觸及布林上軌</b>：股價貼近布林上軌 ({data['BB_UP']})，易遇壓力回檔。</span>")
 
     if data['BIAS'] < -5: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>負乖離過大：月線乖離率達 ({data['BIAS']}%)，超跌反彈機率極高。</span>")
-    elif data['BIAS'] > 7: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
-
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>扣低值支撐：未來5日線即將扣低值，均線將持續翻揚向上，提供短線強大保護力。</span>")
-    elif data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>扣高值壓力：未來5日線即將扣高值，均線容易下彎形成蓋頭壓力，反彈應防範回檔。</b></span>")
+    elif data['BIAS'] > 15: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'><b>正乖離過大</b>：月線乖離率達 ({data['BIAS']}%)，追高風險劇增。</span>")
 
     if data['成交量'] > data['5日均量'] * 1.1 and data.get('漲跌',0) > 0: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>量價確認：今日量能放大大於5日均量，主力進場點火信號明確。</span>")
-    elif data['成交量'] < data['5日均量']: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'>量能警訊：反彈或震盪中「量能萎縮」，需防範缺乏買盤支撐的虛假反彈。</span>")
+    elif data['成交量'] < data['5日均量']: tech_bullets.append(f"✅ <span style='color:#ffcc00;'>量能警訊：目前成交量小於5日均量，屬於量縮整理階段。</span>")
         
-    if data['MACD柱'] > data['前日MACD柱']: tech_bullets.append(f"🔥 <span style='color:#ff3333; font-weight:bold;'>動能指標護航：MACD 綠柱開始收斂或紅柱發散，下跌動能衰退，反彈格局成形。</span>")
-    else: tech_bullets.append(f"⚠️ <span style='color:#00cc00;'>波段動能不佳：MACD 空方動能尚未停歇，此時反彈極易遇蓋頭賣壓。</span>")
-
     tech_res = "🔥 股價走勢強勁，目前屬於多頭格局，量價配合得不錯。" if sc >= 2 else ("⚠️ 股價表現偏弱，技術指標呈現空方趨勢或整理。" if sc < 0 else "⚖️ 股價處於震盪整理，多空力道尚未明確分出勝負。")
     
-    # 💡 使用純字串串接，徹底消除任何空格縮排與 HTML 註解
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析</h4>"
     tech_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
@@ -852,17 +935,15 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     tech_html += f"<b>【結　　果】</b>{tech_res}"
     tech_html += f"</div></div>"
 
-    # --- 2. 籌碼面解析 (整合進階籌碼圖表化與表格並排) ---
+    # --- 2. 籌碼面解析 ---
     chip_bullets = []
     chip_res_text = "中立觀望"
     tables_html = ""
     
-    # 動態產生最近的盤後時間戳記
     tz_tpe = timezone(timedelta(hours=8))
     now = datetime.now(tz_tpe)
     fetch_time_str = now.strftime('%Y/%m/%d %H:%M') if now.hour >= 17 else (now - timedelta(days=1)).strftime('%Y/%m/%d 17:30')
     
-    # 模擬進階籌碼數據視覺化
     foreign_ratio = round(random.uniform(5, 45), 2)
     trust_ratio = round(foreign_ratio / 4, 2)
     big_player_ratio = round(random.uniform(40, 85), 2)
@@ -878,6 +959,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         
         if foreign_net > 0 and trust_net > 0: 
             chip_res_text = "🔥 外資跟投信都在買，籌碼正集中到大戶法人手上，走勢穩定。"
+        elif trust_net > 0 and mode == 'long_term':
+            chip_res_text = "🔥 投信波段買超佈局，對於中長線行情具有實質保護作用。"
         elif foreign_net < 0 and trust_net < 0: 
             chip_res_text = "⚠️ 外資跟投信同步倒貨，籌碼有鬆動流向散戶的疑慮。"
         else: 
@@ -886,14 +969,11 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         th_color = "#ccc" if not is_light_mode else "#555"
         def get_c(val): return "#ff3333" if val > 0 else ("#00cc00" if val < 0 else t_text_c)
         
-        # 💡 使用純字串串接，徹底消除任何空格縮排與 HTML 註解
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: nowrap; overflow-x: auto; margin-top: 15px; width: 100%;'>"
         
-        # 左側：進階籌碼圖表區塊
         tables_html += f"<div style='flex: 1; min-width: 260px; border: 1px solid {b_col}; border-radius: 6px; padding: 15px; background-color: {sum_bg}; position: relative;'>"
         tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 1rem; margin-bottom: 15px; display: flex; align-items: center; gap: 5px;'>🎯 進階籌碼監控</div>"
         
-        # 法人持股比例 (長條圖)
         tables_html += f"<div style='margin-bottom: 12px;'>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>外資持股比例</span><span style='color: #00ccff; font-weight: bold;'>{foreign_ratio}%</span></div>"
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {foreign_ratio}%; height: 100%; background-color: #00ccff; border-radius: 4px;'></div></div>"
@@ -904,23 +984,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {trust_ratio}%; height: 100%; background-color: #ff99ff; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
-        # 大戶持股集中度 (長條圖)
         bp_c = '#ff3333' if big_player_ratio > 60 else '#ffcc00'
         tables_html += f"<div style='margin-bottom: 15px;'>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>大戶持股集中度 (400張以上)</span><span style='color: {bp_c}; font-weight: bold;'>{big_player_ratio}%</span></div>"
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {big_player_ratio}%; height: 100%; background-color: {bp_c}; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
-        # 券商分點文字
         tables_html += f"<div style='font-size: 0.85rem; color: {t_text_c}; border-top: 1px dashed {b_col}; padding-top: 10px; margin-top: 10px;'>"
         tables_html += f"關鍵主力分點：【{top_broker}】近五日 <span style='color: {b_color}; font-weight: bold;'>{broker_action} {broker_net}</span> 張。"
         tables_html += f"</div>"
         
-        # 標註來源
         tables_html += f"<div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 15px;'>🕒 {fetch_time_str} 更新<br>來源: 集保結算所 / 證交所</div>"
         tables_html += f"</div>"
         
-        # 右側：三大法人表格
         tables_html += f"<div style='flex: 1.5; min-width: 320px;'>"
         tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 10px;'>⏳ 近五日三大法人逐日買賣超明細 (張)</div>"
         tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; border: 1px solid {b_col}; color: {t_text_c};'>"
@@ -950,7 +1026,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     else:
         tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
 
-    # 💡 移除縮排避免 HTML 跑版
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析</h4>"
     chip_html += f"{tables_html}"
@@ -958,7 +1033,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     chip_html += f"<b>【結　　果】</b>{chip_res_text}"
     chip_html += f"</div></div>"
 
-    # --- 3. 基本面解析 (加入外部連結與動態評分) ---
+    # --- 3. 基本面解析 ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -979,15 +1054,16 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         eps_f = float(eps)
         pe_f = float(pe) if pe != "無" else 999
         if eps_f > 0 and pe_f < 20:
-            fund_res = "🔥 具備實質獲利支撐，且本益比合理，具投資價值。"
-        elif eps_f > 0 and pe_f >= 20:
-            fund_res = "⚠️ 公司雖有獲利，但目前的本益比估值偏高，需留意追高風險。"
+            fund_res = "🔥 價值嚴重低估！具備實質獲利支撐，且本益比在合理水位之下，長線防護力極高。"
+        elif eps_f > 0 and pe_f < 30:
+            fund_res = "✅ 具備實質獲利支撐，且本益比合理，具投資價值。"
+        elif eps_f > 0 and pe_f >= 30:
+            fund_res = "⚠️ 公司雖有獲利，但目前的本益比估值偏高，若獲利動能跟不上容易產生泡沫回檔。"
         else:
-            fund_res = "🩸 暫無明顯獲利支撐，或呈現虧損，需嚴防營運風險。"
+            fund_res = "🩸 暫無明顯獲利支撐，或呈現虧損，若只靠題材支撐需嚴防營運風險。"
     except: 
         fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
-    # 💡 移除縮排避免 HTML 跑版
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析</h4>"
     fund_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
@@ -998,26 +1074,29 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     fund_html += f"<b>【結　　果】</b>{fund_res}"
     fund_html += f"</div></div>"
 
-    # 🚀 建倉區間與最終總結邏輯
     current_p = data['收盤價']
-    lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
+    if mode == 'long_term':
+        lower_bound = data['60MA']
+    else:
+        lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
+        
     range_min = min(current_p, lower_bound)
     range_max = max(current_p, lower_bound)
     if abs(range_max - range_min) < 0.05:
         range_min = current_p * 0.98
 
-    if sc >= 5: 
+    if sc >= 10 and mode == 'long_term' or sc >= 5 and mode == 'short_term': 
         v_t, v_c = "🟢 S級買點：強烈建議佈局", "#00cc00"
-        v_a = f"✅ <b>進場判斷：強烈買進</b><br>動能、量能、型態三道關卡全數確認過關！<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低 {range_min:.2f} 之間分批加碼。"
-    elif sc >= 2: 
+        v_a = f"✅ <b>進場判斷：強烈買進 ({mode_label})</b><br>動能、量能、型態/價值三道關卡全數確認過關！<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低季線 ({range_min:.2f}) 之間分批加碼。"
+    elif sc >= 5 and mode == 'long_term' or sc >= 2 and mode == 'short_term': 
         v_t, v_c = "🟡 A級機會：偏多試單", "#ffcc00"
-        v_a = f"✅ <b>進場判斷：分批試單</b><br>滿足跌深超賣條件，動能防護及格。<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低 {range_min:.2f} 之間佈局，跌破前波低點嚴格停損。"
-    elif sc >= -1: 
+        v_a = f"✅ <b>進場判斷：分批試單 ({mode_label})</b><br>滿足跌深超賣或趨勢回測支撐條件，風險防護及格。<br>📌 建議建倉區間：現價 ({current_p:.2f}) ~ 逢低 {range_min:.2f} 之間佈局，跌破季線嚴格停損。"
+    elif sc >= 0: 
         v_t, v_c = "⚪ 中性觀望：多空不明", "#888888"
-        v_a = f"⏳ <b>進場判斷：暫緩進場</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。<br>📌 目前現價 ({current_p:.2f})，支撐參考 {range_min:.2f}。"
+        v_a = f"⏳ <b>進場判斷：暫緩進場 ({mode_label})</b><br>多空拉扯劇烈，或動能尚在向下延伸，建議靜待訊號明朗化。<br>📌 目前現價 ({current_p:.2f})，支撐參考 {range_min:.2f}。"
     else: 
         v_t, v_c = "🔴 極度危險：嚴禁做多", "#ff3333"
-        v_a = f"⛔ <b>進場判斷：絕對空手</b><br>量能、動能完全走空。強烈建議空手觀望，切勿拿資金接落下的飛刀。<br>📌 目前現價 ({current_p:.2f})，破底風險極高。"
+        v_a = f"⛔ <b>進場判斷：絕對空手 ({mode_label})</b><br>已跌破關鍵季線，或基本面呈現虧損警訊。強烈建議空手觀望，切勿拿資金接落下的飛刀。<br>📌 目前現價 ({current_p:.2f})，破底風險極高。"
         
     full_html = tech_html + chip_html + fund_html
     return full_html, v_t, v_c, v_a
@@ -1038,6 +1117,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='orange', width=2), name="5T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#ffcc00', width=2), name="10T"), row=1, col=1)
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=2), name="20T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['60MA'], line=dict(color='#ff99ff', width=2), name="60T"), row=1, col=1)
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#ffcc00", row=1, col=1)
     fig.add_annotation(x=0.01, y=0.92, xref="paper", yref="y domain", text=f"現價: {latest_price:.2f}", showarrow=False, font=dict(color="#ffcc00", size=14, weight="bold"), xanchor="left", bgcolor="rgba(0,0,0,0.5)")
@@ -1134,8 +1214,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
             pos = df.index.get_loc(current_date)
             sub_df = df.iloc[:pos+1]
             if len(sub_df) >= 5:
-                t_data = analyze_today(sub_df, ticker_name, inst_data=None, is_light_mode=is_light_mode) 
-                if t_data and t_data['Score'] >= 2:
+                # 圖表渲染也要帶入 mode 才能顯示出長短線專屬買點
+                t_data = analyze_today(sub_df, ticker_name, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode) 
+                
+                min_buy_score = 10 if st.session_state.strategy_mode == 'long_term' else 5
+                if t_data and t_data['Score'] >= min_buy_score:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
                     buy_y.append(df_view['Low'].iloc[i] * 0.90) 
                     buy_text.append("買")
@@ -1152,7 +1235,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['J'], line=dict(color=line_j, width=1.5), name="J"), row=4, col=1)
 
     ann_bg = "rgba(255,255,255,0.8)" if is_light_mode else "rgba(26,28,36,0.6)"
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 20T:{last_row['20MA']:.1f} | 60T:{last_row['60MA']:.1f}", showarrow=False, font=dict(color="#ff9900" if is_light_mode else "#ffcc00", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f} | OSC:{last_row['MACD_Hist']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"K:{last_row['K']:.2f} | D:{last_row['D']:.2f} | J:{last_row['J']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -1165,14 +1248,14 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     return fig
 
 # ==========================================
-# 🚀 背景極速快取模組 (0.1秒秒發快取引擎)
+# 🚀 背景極速快取模組
 # ==========================================
 @st.cache_data(ttl=180, show_spinner=False)
-def get_global_scan_results(pool_tuple):
+def get_global_scan_results(pool_tuple, mode):
     scan_results = []
     def process_scan(stock):
         df = get_stock_data(stock)
-        if df is not None: return analyze_today(df, stock, inst_data=None, is_light_mode=False)
+        if df is not None: return analyze_today(df, stock, inst_data=None, is_light_mode=False, mode=mode)
         return None
         
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1191,17 +1274,17 @@ if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
     
-    st.markdown("<h3 style='margin-top: 15px;'>🎯 策略條件篩選</h3>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='margin-top: 15px;'>🎯 策略條件篩選 ({'短線動能模式' if st.session_state.strategy_mode == 'short_term' else '回檔支撐波段'})</h3>", unsafe_allow_html=True)
     btn_col1, btn_col2, btn_col3 = st.columns(3)
     if btn_col1.button("✅ 綜合買點榜", use_container_width=True, key="btn_scan_buy"): st.session_state.scan_mode = "buy"; st.rerun()
-    if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True, key="btn_scan_red"): st.session_state.scan_mode = "red_engulf"; st.rerun()
+    if btn_col2.button("🔥 型態反轉榜", use_container_width=True, key="btn_scan_red"): st.session_state.scan_mode = "red_engulf"; st.rerun()
     if btn_col3.button("📊 近五日成交量", use_container_width=True, key="btn_scan_vol"): st.session_state.scan_mode = "recent"; st.rerun()
     
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
     with st.spinner("🚀 大腦背景資料庫存取中 (若無快取約需 5 秒，快取命中則 0.1 秒極速秒發)..."):
-        scan_results = get_global_scan_results(pool)
+        scan_results = get_global_scan_results(pool, st.session_state.strategy_mode)
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
@@ -1216,16 +1299,18 @@ if st.session_state.page == "home":
             df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
         elif st.session_state.scan_mode == "red_engulf":
             st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
-            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 2)].sort_values(
+            min_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= min_score)].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
-            if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
+            if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的標的。")
         elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
-            df_disp = df_results[df_results['Score'] >= 2].sort_values(
+            st.markdown("##### 🎯 尋找買點榜單 (根據當前策略模式篩選)")
+            min_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+            df_disp = df_results[df_results['Score'] >= min_score].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
-            if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
+            if df_disp.empty: st.info("目前雷達池內沒有符合買點條件的標的，請耐心等待回檔支撐！")
             
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -1234,8 +1319,7 @@ if st.session_state.page == "home":
             p_val = r['漲跌']
             sign = "+" if p_val > 0 else ""
             trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-            s_score = r['Score']
-            score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+            score_icon = r['評級']
             
             tags = []
             if r.get('紅吞'): tags.append("🔺紅吞")
@@ -1296,7 +1380,7 @@ elif st.session_state.page == "analysis":
                 inst_data = get_institutional_trading(target)
                 p_bar.progress(40)
                 status.markdown("<div style='text-align:center; color:#888;'>🧠 啟動動能與型態精算模組...</div>", unsafe_allow_html=True)
-                data = analyze_today(df_slice, target, inst_data, is_light_mode)
+                data = analyze_today(df_slice, target, inst_data, is_light_mode, st.session_state.strategy_mode)
                 sc = data['Score']
                 p_bar.progress(60)
                 status.markdown("<div style='text-align:center; color:#888;'>📑 獲取基本面與產業定位...</div>", unsafe_allow_html=True)
@@ -1348,8 +1432,9 @@ elif st.session_state.page == "analysis":
             for idx in range(len(recent_20)):
                 temp_df = df_slice.iloc[:len(df_slice) - 20 + idx + 1]
                 if len(temp_df) >= 5:
-                    t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode)
-                    if t_data and t_data['Score'] >= 2: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
+                    t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode)
+                    min_buy_score = 10 if st.session_state.strategy_mode == 'long_term' else 5
+                    if t_data and t_data['Score'] >= min_buy_score: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
             
             if recent_signals:
                 last_sig_date, last_sig_price = recent_signals[-1]
@@ -1358,7 +1443,7 @@ elif st.session_state.page == "analysis":
                     stop_loss_html = f'''<div style="background-color: #ffe6e6; border-left: 6px solid #ff3333; padding: 15px; margin-bottom: 20px; border-radius: 4px;"><h4 style="color: #ff3333; margin-top: 0; font-size: 1.3rem;">🚨 【嚴格停損警報】觸發 5% 停損防護線</h4><span style="color: #333; font-size: 1.05rem; line-height: 1.6;">系統偵測到最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>目前現價 <b>{data['收盤價']}</b> 已跌穿 5% 鐵律防護線 (預估帳面分歧為 <span style="color:#ff3333; font-weight:bold;">{loss_pct:.2f}%</span>)。<br><b>防範警訊：中線趨勢支撐已破，強烈建議嚴守交易紀律，果斷停損出場觀望，切勿盲目攤平接刀！</b></span></div>'''
             if stop_loss_html: st.markdown(stop_loss_html, unsafe_allow_html=True)
 
-            st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
+            st.markdown(f"##### 💡 近一個月歷史買點回測與趨勢分析 ({'短線動能模式' if st.session_state.strategy_mode == 'short_term' else '回檔支撐波段'})")
             recent_30 = df_slice.tail(30)
             s_count, a_count = 0, 0
             buy_points_prices = []
@@ -1372,10 +1457,12 @@ elif st.session_state.page == "analysis":
             for idx in range(len(recent_30)):
                 temp_df = df_slice.iloc[:len(df_slice) - 30 + idx + 1]
                 if len(temp_df) >= 5:
-                    t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode)
+                    t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode, mode=st.session_state.strategy_mode)
                     if t_data:
-                        if t_data['Score'] >= 5: s_count += 1; buy_points_prices.append(t_data['收盤價'])
-                        elif t_data['Score'] >= 2: a_count += 1; buy_points_prices.append(t_data['收盤價'])
+                        min_s_score = 10 if st.session_state.strategy_mode == 'long_term' else 5
+                        min_a_score = 5 if st.session_state.strategy_mode == 'long_term' else 2
+                        if t_data['Score'] >= min_s_score: s_count += 1; buy_points_prices.append(t_data['收盤價'])
+                        elif t_data['Score'] >= min_a_score: a_count += 1; buy_points_prices.append(t_data['收盤價'])
             
             with st.container(border=True):
                 col_sum1, col_sum2, col_sum3 = st.columns(3)
@@ -1392,9 +1479,8 @@ elif st.session_state.page == "analysis":
                     summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-            ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode)
+            ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode, st.session_state.strategy_mode)
             
-            # 💡 在這裡去除了所有的多行字串縮排，避免 Streamlit 誤判
             st.markdown(f"""<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
 <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
 {ai_brain_html}
@@ -1415,9 +1501,6 @@ elif st.session_state.page == "analysis":
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
-            # ==========================================
-            # 🚀 K線圖下方的符號說明隱藏選單
-            # ==========================================
             with st.expander("📖 K 線圖符號代表名稱說明 (點擊展開)", expanded=False):
                 st.markdown(f"""
                 <ul style="line-height: 1.8; color: {text_col}; font-size: 1rem;">
@@ -1447,7 +1530,7 @@ elif st.session_state.page == "analysis":
         with col_right_menu:
             mode_titles = {
                 "buy": "✅ 綜合買點榜", 
-                "red_engulf": "🔥 紅吞反轉榜", 
+                "red_engulf": "🔥 型態反轉榜", 
                 "recent": "📊 近五日成交量"
             }
             active_title = mode_titles.get(st.session_state.scan_mode, "📋 當前雷達清單")
@@ -1465,8 +1548,7 @@ elif st.session_state.page == "analysis":
                         p_val = stock_info['漲跌']
                         sign = "+" if p_val > 0 else ""
                         trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-                        s_score = stock_info['Score']
-                        score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
+                        score_icon = stock_info['評級']
                         
                         tags = []
                         if stock_info.get('紅吞'): tags.append("🔺紅吞")
