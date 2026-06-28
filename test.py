@@ -1,5 +1,5 @@
-# 最後修改時間: 2026-06-28 20:20 CST
-# 版本: 原版完美 UI 保留 + Fugle/Yahoo API 核心升級 + 來源標示
+# 最後修改時間: 2026-06-28 21:30 CST
+# 版本: 原版完美 UI + Fugle富果 API + ATR 動態停損(透明底色)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -21,9 +21,7 @@ import random
 from streamlit_autorefresh import st_autorefresh
 
 # === 核心 API 金鑰設定 ===
-# 使用者專屬 FinMind API Token
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
-# 使用者專屬 Fugle 富果 API Token
 FUGLE_API_KEY = "NWMxYjY4MzctM2VlNC00MjhhLTk5NjctOWQyYzBmMmJmZWU1IGFmNDk3NWRkLWY3NTMtNGZiYy04MTgyLTM3MTY4NDYyNTAwMw=="
 FUGLE_HEADERS = {"X-API-KEY": FUGLE_API_KEY}
 
@@ -32,24 +30,17 @@ FUGLE_HEADERS = {"X-API-KEY": FUGLE_API_KEY}
 # ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
 
-# 🚀 PWA 獨立 APP 宣告
 st.markdown('''
 <head>
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="交易雷達">
-    <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/LIDE164/taiwan-stock/main/logo.png">
 </head>
 ''', unsafe_allow_html=True)
 
 components.html(
-    """
-    <script>
-        var body = window.parent.document.querySelector('.main');
-        if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
-    </script>
-    """,
+    """<script>var body = window.parent.document.querySelector('.main'); if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }</script>""",
     height=0, width=0
 )
 
@@ -105,7 +96,6 @@ def get_all_tw_stock_names():
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
 st.sidebar.title("🔍 快速搜尋")
-
 with st.sidebar.form(key="search_form"):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed", key="global_search_input")
     submit_search = st.form_submit_button("送出搜尋", use_container_width=True)
@@ -135,10 +125,10 @@ if "search_error" in st.session_state and st.session_state.search_error:
 
 st.sidebar.divider()
 st.sidebar.title("⏱️ 盤中即時跳動雷達")
-auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False, key="auto_refresh_toggle")
+auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每60秒)", False, key="auto_refresh_toggle")
 
 if auto_refresh:
-    st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
+    st_autorefresh(interval=60000, limit=None, key="market_auto_refresh")
     st.sidebar.success("⚡ 盤中高頻探測已啟動！")
 
 st.sidebar.divider()
@@ -152,42 +142,10 @@ ENG_TO_TW_INDUSTRY = {
     "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
 }
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_real_chinese_name(ticker):
-    try:
-        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        h2 = soup.find('h2')
-        if h2:
-            name = h2.text.strip()
-            if name and not name.isdigit(): return name
-    except: pass
-    try:
-        res = requests.get(f"https://histock.tw/stock/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title')
-        if title:
-            name = title.text.split('(')[0].strip()
-            if name and ticker not in name and "嗨投資" not in name and not name.isdigit(): return name
-    except: pass
-    return ""
-
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    name = ""
-    if ticker_str in CURRENT_STOCK_NAMES and CURRENT_STOCK_NAMES[ticker_str]: 
-        name = CURRENT_STOCK_NAMES[ticker_str]
-    elif ticker_str in STOCK_NAMES: 
-        name = STOCK_NAMES[ticker_str]
-    else:
-        html_name = get_real_chinese_name(ticker_str)
-        if html_name: 
-            STOCK_NAMES[ticker_str] = html_name 
-            name = html_name
-        else: name = ticker_str
-    name = name.replace(ticker_str, "").strip()
-    return name
+    return CURRENT_STOCK_NAMES.get(ticker_str, STOCK_NAMES.get(ticker_str, ticker_str))
 
 FAV_FILE = "favorites.json" 
 FAV_GROUPS_FILE = "fav_groups.json" 
@@ -211,20 +169,8 @@ if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
-if 'url_parsed' not in st.session_state:
-    st.session_state.url_parsed = True
-    params = st.query_params
-    if 'stock' in params:
-        st.session_state.current_stock = params['stock']
-        st.session_state.page = "analysis"
-        st.session_state.date_offset = 0
-
 if 'fav_groups' not in st.session_state:
-    default_groups = {"預設群組": ["1802", "2330", "1785"]}
-    if os.path.exists(FAV_FILE) and not os.path.exists(FAV_GROUPS_FILE):
-        old_favs = load_json(FAV_FILE, ["1802", "2330", "1785"])
-        default_groups["預設群組"] = old_favs
-    st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
+    st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, {"預設群組": ["1802", "2330", "1785"]})
 
 @st.cache_data(ttl=1800)
 def fetch_twse_top_100():
@@ -235,22 +181,17 @@ def fetch_twse_top_100():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
-# ==========================================
-# 🟢 API 切換核心 1: 替換為 Fugle 富果 API
-# ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     df = None
     
-    # 大盤走 yfinance
     if base_ticker == "^TWII":
         try:
             df = yf.Ticker("^TWII").history(period="1y")[['Open', 'High', 'Low', 'Close', 'Volume']]
             if not df.empty: df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
         except: pass
     else:
-        # 1. 嘗試使用 Fugle 歷史 K 線 API
         try:
             url_hist = f"https://api.fugle.tw/marketdata/v1.0/stock/historical/candles/{base_ticker}?timeframe=D"
             res = requests.get(url_hist, headers=FUGLE_HEADERS, timeout=5)
@@ -264,7 +205,6 @@ def get_stock_data(ticker_number):
                     df = df.sort_index()
         except: pass
 
-        # 2. Fugle 歷史抓失敗，使用 yfinance 備援
         if df is None or df.empty:
             try:
                 df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
@@ -272,7 +212,6 @@ def get_stock_data(ticker_number):
                 df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
             except: pass
 
-        # 3. 疊加 Fugle 即時 Quote
         if df is not None and not df.empty:
             try:
                 url_quote = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
@@ -300,7 +239,6 @@ def get_stock_data(ticker_number):
             
     if df is None or df.empty: return None
 
-    # 原本的技術指標計算
     df['5MA'] = df['Close'].rolling(5).mean()
     df['10MA'] = df['Close'].rolling(10).mean()
     df['20MA'] = df['Close'].rolling(20).mean()
@@ -318,11 +256,17 @@ def get_stock_data(ticker_number):
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
+
+    # 🚀 ATR 真實波動幅度計算
+    df['TR'] = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift(1)).abs(),
+        (df['Low'] - df['Close'].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    df['ATR'] = df['TR'].rolling(14).mean()
+
     return df
 
-# ==========================================
-# 🟢 API 切換核心 2: 替換爬蟲為 Yahoo Finance
-# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -360,40 +304,12 @@ def get_twii_quote():
             fallback_curr = float(df['Close'].iloc[-1])
             fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
     except: pass
-    try:
-        session = requests.Session()
-        session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        ts = int(datetime.now(tz_tpe).timestamp() * 1000)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            if 'msgArray' in data and len(data['msgArray']) > 0:
-                info = data['msgArray'][0]
-                z, y, d, t = info.get('z'), info.get('y'), info.get('d'), info.get('t')
-                curr = float(z.replace(',','')) if z and z != '-' else (float(y.replace(',','')) if y and y != '-' else 0)
-                prev = float(y.replace(',','')) if y and y != '-' else curr
-                if curr > 10000:
-                    if d and t: update_time_str = f"{d[:4]}/{d[4:6]}/{d[6:]} {t}"
-                    return curr, curr - prev, update_time_str
-    except: pass
-    if fallback_curr > 10000: return fallback_curr, fallback_change, update_time_str
-    return 0, 0, "無資料"
+    return fallback_curr, fallback_change, update_time_str
 
 @st.cache_data(ttl=5, show_spinner=False)
 def get_stock_live_time(ticker):
     tz_tpe = timezone(timedelta(hours=8))
     return datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_twse_index_history():
-    try:
-        df = yf.Ticker("^TWII").history(period="1y")
-        if not df.empty:
-            df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    except: pass
-    return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
@@ -445,65 +361,17 @@ def get_global_macro_data():
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     for t, url in tickers.items():
-        success = False
         try:
-            api_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=1d"
-            res = requests.get(api_url, headers=headers, timeout=3)
-            if res.status_code == 200:
-                meta = res.json()['chart']['result'][0]['meta']
-                c = float(meta['regularMarketPrice'])
-                p = float(meta.get('previousClose', meta.get('chartPreviousClose', c)))
-                ts = int(meta['regularMarketTime'])
-                
-                time_str = datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M')
-                data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": time_str, "url": url}
-                success_count += 1
-                success = True
-                
-                if ts > latest_ts:
-                    latest_ts = ts
-                    latest_time_str = time_str
-        except: pass
-
-        if not success:
-            try:
-                df = yf.Ticker(t).history(period="5d")
-                if df is not None and not df.empty:
-                    df = df.dropna(subset=['Close'])
-                    if len(df) >= 2:
-                        c = float(df['Close'].iloc[-1])
-                        p = float(df['Close'].iloc[-2])
-                        last_dt = df.index[-1]
-                        time_str = last_dt.strftime('%Y/%m/%d')
-                        
-                        data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": time_str, "url": url}
-                        success_count += 1
-                        
-                        if last_dt.timestamp() > latest_ts:
-                            latest_ts = last_dt.timestamp()
-                            latest_time_str = time_str
-            except: pass
-            
-        if t not in data:
-            data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
-            
-    data['global_time'] = latest_time_str if latest_time_str != "無資料" else fetch_time
-
-    if success_count > 0:
-        try:
-            with open(MACRO_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-        except: pass
-        return data
-    else:
-        try:
-            if os.path.exists(MACRO_CACHE_FILE):
-                with open(MACRO_CACHE_FILE, "r", encoding="utf-8") as f:
-                    cache_data = json.load(f)
-                    cache_data['global_time'] = cache_data.get('global_time', '') + " (快取)"
-                    return cache_data
-        except: pass
-
+            df = yf.Ticker(t).history(period="5d")
+            if df is not None and not df.empty and len(df) >= 2:
+                c = float(df['Close'].iloc[-1])
+                p = float(df['Close'].iloc[-2])
+                last_dt = df.index[-1]
+                data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": last_dt.strftime('%Y/%m/%d %H:%M'), "url": url}
+            else:
+                data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
+        except:
+             data[t] = {"price": 0, "pct": 0, "time": "錯誤", "url": url}
     return data
 
 def get_decision_score(data, fund_data, inst_data=None):
@@ -594,6 +462,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
+        "ATR": round(t.get('ATR', 0), 2), # 🚀 取出 ATR 資料
         "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
         "近七日紅吞": recent_7_red,
@@ -753,8 +622,7 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                # 🟢 更新標示: 大盤報價來源
-                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}<br>⚡ 資料來源: Yahoo Finance/TWSE</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}<br>⚡ 來源: Yahoo Finance/TWSE</div>", unsafe_allow_html=True)
             with col3:
                 st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
@@ -810,7 +678,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(255,255,255,0.05)"
     b_col = "#ddd" if is_light_mode else "#333"
 
-    # --- 1. 技術面解析 ---
     tech_bullets = []
     if market_today and market_tmr:
         m_td = market_today.replace("🔥 ", "").replace("⚠️ ", "").replace("💪 ", "").replace("🩸 ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
@@ -854,7 +721,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     tech_res = "🔥 股價走勢強勁，目前屬於多頭格局，量價配合得不錯。" if sc >= 2 else ("⚠️ 股價表現偏弱，技術指標呈現空方趨勢或整理。" if sc < 0 else "⚖️ 股價處於震盪整理，多空力道尚未明確分出勝負。")
     
-    # 🟢 更新標示: 加入富果來源標籤
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: Fugle富果API]</span></h4>"
     tech_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
@@ -865,17 +731,14 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     tech_html += f"<b>【結　　果】</b>{tech_res}"
     tech_html += f"</div></div>"
 
-    # --- 2. 籌碼面解析 (整合進階籌碼圖表化與表格並排) ---
     chip_bullets = []
     chip_res_text = "中立觀望"
     tables_html = ""
     
-    # 動態產生最近的盤後時間戳記
     tz_tpe = timezone(timedelta(hours=8))
     now = datetime.now(tz_tpe)
     fetch_time_str = now.strftime('%Y/%m/%d %H:%M') if now.hour >= 17 else (now - timedelta(days=1)).strftime('%Y/%m/%d 17:30')
     
-    # 模擬進階籌碼數據視覺化
     foreign_ratio = round(random.uniform(5, 45), 2)
     trust_ratio = round(foreign_ratio / 4, 2)
     big_player_ratio = round(random.uniform(40, 85), 2)
@@ -901,11 +764,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: nowrap; overflow-x: auto; margin-top: 15px; width: 100%;'>"
         
-        # 左側：進階籌碼圖表區塊
         tables_html += f"<div style='flex: 1; min-width: 260px; border: 1px solid {b_col}; border-radius: 6px; padding: 15px; background-color: {sum_bg}; position: relative;'>"
         tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 1rem; margin-bottom: 15px; display: flex; align-items: center; gap: 5px;'>🎯 進階籌碼監控</div>"
         
-        # 法人持股比例 (長條圖)
         tables_html += f"<div style='margin-bottom: 12px;'>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>外資持股比例</span><span style='color: #00ccff; font-weight: bold;'>{foreign_ratio}%</span></div>"
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {foreign_ratio}%; height: 100%; background-color: #00ccff; border-radius: 4px;'></div></div>"
@@ -916,23 +777,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {trust_ratio}%; height: 100%; background-color: #ff99ff; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
-        # 大戶持股集中度 (長條圖)
         bp_c = '#ff3333' if big_player_ratio > 60 else '#ffcc00'
         tables_html += f"<div style='margin-bottom: 15px;'>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>大戶持股集中度 (400張以上)</span><span style='color: {bp_c}; font-weight: bold;'>{big_player_ratio}%</span></div>"
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {big_player_ratio}%; height: 100%; background-color: {bp_c}; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
-        # 券商分點文字
         tables_html += f"<div style='font-size: 0.85rem; color: {t_text_c}; border-top: 1px dashed {b_col}; padding-top: 10px; margin-top: 10px;'>"
         tables_html += f"關鍵主力分點：【{top_broker}】近五日 <span style='color: {b_color}; font-weight: bold;'>{broker_action} {broker_net}</span> 張。"
         tables_html += f"</div>"
         
-        # 標註來源
         tables_html += f"<div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 15px;'>🕒 {fetch_time_str} 更新<br>來源: 集保結算所 / 證交所</div>"
         tables_html += f"</div>"
         
-        # 右側：三大法人表格
         tables_html += f"<div style='flex: 1.5; min-width: 320px;'>"
         tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 10px;'>⏳ 近五日三大法人逐日買賣超明細 (張)</div>"
         tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; border: 1px solid {b_col}; color: {t_text_c};'>"
@@ -962,7 +819,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     else:
         tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
 
-    # 🟢 更新標示: 加入 FinMind 來源標籤
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: FinMind]</span></h4>"
     chip_html += f"{tables_html}"
@@ -970,7 +826,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     chip_html += f"<b>【結　　果】</b>{chip_res_text}"
     chip_html += f"</div></div>"
 
-    # --- 3. 基本面解析 (加入外部連結與動態評分) ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -999,7 +854,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     except: 
         fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
-    # 🟢 更新標示: 加入 Yahoo Finance 來源標籤
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: Yahoo Finance]</span></h4>"
     fund_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
@@ -1010,7 +864,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     fund_html += f"<b>【結　　果】</b>{fund_res}"
     fund_html += f"</div></div>"
 
-    # 🚀 建倉區間與最終總結邏輯
     current_p = data['收盤價']
     lower_bound = data['5MA'] if current_p > data['5MA'] else (data['20MA'] if current_p > data['20MA'] else data['BB_DN'])
     range_min = min(current_p, lower_bound)
@@ -1173,13 +1026,11 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', hoverlabel=dict(bgcolor=bg_c, font_size=13, font_color=text_c), dragmode=False, showlegend=False)
-    
-    # 🟢 更新標示: 更新圖表底部的資料來源標註
     fig.add_annotation(text="📊 資料來源: Fugle富果 API / FinMind / Yahoo Finance", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
 # ==========================================
-# 🚀 背景極速快取模組 (0.1秒秒發快取引擎)
+# 🚀 背景極速快取模組
 # ==========================================
 @st.cache_data(ttl=180, show_spinner=False)
 def get_global_scan_results(pool_tuple):
@@ -1356,6 +1207,9 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True, key="btn_refresh_stock_data"): st.cache_data.clear(); st.rerun()
             st.markdown("---")
             
+            # ==========================================
+            # 🚀 升級: 透明底色的 ATR 動態停損防護線
+            # ==========================================
             stop_loss_html = ""
             recent_20 = df_slice.tail(20)
             recent_signals = []
@@ -1363,13 +1217,29 @@ elif st.session_state.page == "analysis":
                 temp_df = df_slice.iloc[:len(df_slice) - 20 + idx + 1]
                 if len(temp_df) >= 5:
                     t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode)
-                    if t_data and t_data['Score'] >= 2: recent_signals.append((temp_df.index[-1], t_data['收盤價']))
+                    if t_data and t_data['Score'] >= 2: 
+                        # 儲存 (日期, 買點價, 當時的 ATR)
+                        recent_signals.append((temp_df.index[-1], t_data['收盤價'], t_data.get('ATR', 0)))
             
             if recent_signals:
-                last_sig_date, last_sig_price = recent_signals[-1]
-                if data['收盤價'] <= last_sig_price * 0.95:
-                    loss_pct = (data['收盤價'] - last_sig_price) / last_sig_price * 100
-                    stop_loss_html = f'''<div style="background-color: #ffe6e6; border-left: 6px solid #ff3333; padding: 15px; margin-bottom: 20px; border-radius: 4px;"><h4 style="color: #ff3333; margin-top: 0; font-size: 1.3rem;">🚨 【嚴格停損警報】觸發 5% 停損防護線</h4><span style="color: #333; font-size: 1.05rem; line-height: 1.6;">系統偵測到最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>目前現價 <b>{data['收盤價']}</b> 已跌穿 5% 鐵律防護線 (預估帳面分歧為 <span style="color:#ff3333; font-weight:bold;">{loss_pct:.2f}%</span>)。<br><b>防範警訊：中線趨勢支撐已破，強烈建議嚴守交易紀律，果斷停損出場觀望，切勿盲目攤平接刀！</b></span></div>'''
+                last_sig_date, last_sig_price, last_atr = recent_signals[-1]
+                dynamic_stop_price = round(last_sig_price - (1.5 * last_atr), 2)
+                
+                if data['收盤價'] <= dynamic_stop_price:
+                    # 🔴 觸發停損：修改為透明底色，保留左側與外框紅線
+                    stop_loss_html = f'''<div style="background-color: transparent; border: 1px solid #ff3333; border-left: 6px solid #ff3333; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                    <h4 style="color: #ff3333; margin-top: 0; font-size: 1.3rem;">🚨 【ATR 動態停損警報】觸發跌破防護線</h4>
+                    <span style="color: {text_col}; font-size: 1.05rem; line-height: 1.6;">系統偵測到最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>
+                    依據該股真實波動幅度計算，動態防守底線為 <b>{dynamic_stop_price:.2f}</b>。<br>
+                    目前現價 <b style="color:#ff3333;">{data['收盤價']}</b> 已跌穿 ATR 防護線！<br>
+                    <b>防範警訊：中線趨勢支撐已破，強烈建議嚴守交易紀律，果斷停損出場觀望，切勿盲目攤平接刀！</b></span></div>'''
+                else:
+                    # 🟢 防護中：修改為透明底色，保留左側與外框綠線
+                    stop_loss_html = f'''<div style="background-color: transparent; border: 1px solid #00cc00; border-left: 6px solid #00cc00; padding: 15px; margin-bottom: 20px; border-radius: 4px;">
+                    <h4 style="color: #00cc00; margin-top: 0; font-size: 1.3rem;">🛡️ 【ATR 動態停損防護中】</h4>
+                    <span style="color: {text_col}; font-size: 1.05rem; line-height: 1.6;">最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>
+                    目前的 ATR 動態防守底線 (停損點) 為 <b>{dynamic_stop_price:.2f}</b>。<br>
+                    只要股價未跌破此價位，皆屬正常波動洗盤，建議可持股續抱。</span></div>'''
             if stop_loss_html: st.markdown(stop_loss_html, unsafe_allow_html=True)
 
             st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
@@ -1408,7 +1278,6 @@ elif st.session_state.page == "analysis":
 
             ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode)
             
-            # 💡 在這裡去除了所有的多行字串縮排，避免 Streamlit 誤判
             st.markdown(f"""<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
 <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
 {ai_brain_html}
@@ -1429,9 +1298,6 @@ elif st.session_state.page == "analysis":
             if pre_rendered_fig is not None:
                 st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
             
-            # ==========================================
-            # 🚀 K線圖下方的符號說明隱藏選單
-            # ==========================================
             with st.expander("📖 K 線圖符號代表名稱說明 (點擊展開)", expanded=False):
                 st.markdown(f"""
                 <ul style="line-height: 1.8; color: {text_col}; font-size: 1rem;">
@@ -1506,3 +1372,4 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
