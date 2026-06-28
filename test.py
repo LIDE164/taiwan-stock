@@ -1,5 +1,5 @@
-# 最後修改時間: 2026-06-28 21:40 CST
-# 版本: 原版完美 UI 保留 + Fugle/Yahoo API 核心升級 + Fragment局部更新 + K線破圖修復
+# 最後修改時間: 2026-06-28 21:50 CST
+# 版本: 原版完美 UI 保留 + Fugle/FinMind 產業基本面精準化 + 買點箭頭優化 + Fragment局部更新
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -133,15 +133,6 @@ if auto_refresh:
 
 st.sidebar.divider()
 
-ENG_TO_TW_INDUSTRY = {
-    "Semiconductors": "半導體業", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
-    "Computer Hardware": "電腦及週邊設備", "Building Materials": "玻璃陶瓷", "Marine Shipping": "航運業",
-    "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意業", "Technology": "電子科技",
-    "Industrials": "工業", "Basic Materials": "原物料", "Financial Services": "金融業",
-    "Consumer Cyclical": "非必需消費品", "Healthcare": "生技醫療", "Real Estate": "建材營造",
-    "Utilities": "公用事業", "Energy": "能源", "Communication Services": "通信網路"
-}
-
 def get_stock_name(ticker):
     if not ticker: return ""
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -194,7 +185,7 @@ def fetch_twse_top_100():
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
 # ==========================================
-# 🟢 API 切換核心 1: Fugle 富果 API (含 K 線破圖修復)
+# 🟢 API 切換核心 1: Fugle 富果 API 歷史 K 線與報價
 # ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
@@ -214,7 +205,6 @@ def get_stock_data(ticker_number):
                 data = res.json().get('data', [])
                 if data:
                     df = pd.DataFrame(data)
-                    # 💡 修復破圖關鍵：移除 Fugle 日期自帶的時區，確保能與本地時區一致對接
                     df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
                     df.set_index('date', inplace=True)
                     df = df[['open', 'high', 'low', 'close', 'volume']].rename(columns={'open':'Open', 'high':'High', 'low':'Low', 'close':'Close', 'volume':'Volume'})
@@ -239,7 +229,6 @@ def get_stock_data(ticker_number):
                     
                     if 'closePrice' in quote or 'previousClose' in quote:
                         c_price = quote.get('closePrice', quote.get('previousClose', df['Close'].iloc[-1]))
-                        # 💡 防護機制：避免開盤/高/低價為 0 導致 K 線被拉成長長一條線
                         o_price = quote.get('openPrice', c_price) if quote.get('openPrice') != 0 else c_price
                         h_price = quote.get('highPrice', c_price) if quote.get('highPrice') != 0 else c_price
                         l_price = quote.get('lowPrice', c_price) if quote.get('lowPrice') != 0 else c_price
@@ -257,7 +246,6 @@ def get_stock_data(ticker_number):
             
     if df is None or df.empty: return None
 
-    # 原本完美的技術指標計算
     df['5MA'] = df['Close'].rolling(5).mean()
     df['10MA'] = df['Close'].rolling(10).mean()
     df['20MA'] = df['Close'].rolling(20).mean()
@@ -276,7 +264,7 @@ def get_stock_data(ticker_number):
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     df['J'] = 3 * df['K'] - 2 * df['D']
 
-    # 🚀 新增 ATR 真實波動幅度運算 (動態停損用)
+    # ATR 動態波動
     df['TR'] = pd.concat([
         df['High'] - df['Low'],
         (df['High'] - df['Close'].shift(1)).abs(),
@@ -287,7 +275,7 @@ def get_stock_data(ticker_number):
     return df
 
 # ==========================================
-# 🟢 API 切換核心 2: 替換為 Yahoo Finance API
+# 🟢 API 切換核心 2: FinMind 與 Fugle 完美結合 (取代 yfinance 基本面)
 # ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
@@ -295,24 +283,48 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
 
+    # 1. 向台灣在地的 Fugle API 請求最準確的「產業別」
     try:
-        info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
-        sec, ind_eng = info.get("sector", ""), info.get("industry", "")
-        tw_sec = ENG_TO_TW_INDUSTRY.get(sec, sec)
-        tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
-        ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
-        if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
-        if 'trailingEps' in info and info['trailingEps'] is not None:
-            eps_val = str(round(info['trailingEps'], 2))
+        url_ticker = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/ticker/{base_ticker}"
+        res = requests.get(url_ticker, headers=FUGLE_HEADERS, timeout=3)
+        if res.status_code == 200:
+            data = res.json().get('data', {})
+            if data.get('industry'):
+                ind = data.get('industry')
+    except: pass
+
+    # 2. 向 FinMind API 請求最準確的「每日最新本益比 (PE)」
+    try:
+        start_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+        fm_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPER&data_id={base_ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
+        fm_res = requests.get(fm_url, timeout=3)
+        if fm_res.status_code == 200:
+            fm_data = fm_res.json()
+            if fm_data.get('msg') == 'success' and len(fm_data.get('data', [])) > 0:
+                latest_pe = fm_data['data'][-1].get('PER')
+                if latest_pe and float(latest_pe) > 0:
+                    pe_val = f"{float(latest_pe):.2f}"
     except: pass
     
+    # 3. 若無直接的 EPS，使用 yfinance 當備援，或從 PE 反推
     try:
-        if eps_val != "無":
+        info = yf.Ticker(f"{base_ticker}.TW").info
+        if not info or ('trailingEps' not in info): info = yf.Ticker(f"{base_ticker}.TWO").info
+
+        if 'trailingEps' in info and info['trailingEps'] is not None:
+            eps_val = str(round(info['trailingEps'], 2))
+
+        # 交叉驗算補足缺口
+        if pe_val == "無" and eps_val != "無":
             eps_f = float(eps_val)
-            if eps_f > 0 and current_price > 0: pe_val = str(round(float(current_price) / eps_f, 2))
-            elif eps_f <= 0: pe_val = "無 (EPS ≦ 0)"
+            if eps_f > 0 and current_price > 0:
+                pe_val = str(round(float(current_price) / eps_f, 2))
+        elif eps_val == "無" and pe_val != "無":
+            pe_f = float(pe_val)
+            if pe_f > 0 and current_price > 0:
+                eps_val = str(round(float(current_price) / pe_f, 2))
     except: pass
+
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
 @st.cache_data(ttl=5, show_spinner=False) 
@@ -483,7 +495,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
-        "ATR": round(t.get('ATR', 0), 2) if 'ATR' in t else 0, # 🚀 取出 ATR 資料
+        "ATR": round(t.get('ATR', 0), 2) if 'ATR' in t else 0,
         "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": is_red_engulfing, "黑吞": is_black_engulfing,
         "近七日紅吞": recent_7_red,
@@ -643,7 +655,6 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                # 📌 標示大盤來源
                 st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}<br>⚡ 資料來源: Yahoo Finance/TWSE</div>", unsafe_allow_html=True)
             with col3:
                 st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
@@ -700,7 +711,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(255,255,255,0.05)"
     b_col = "#ddd" if is_light_mode else "#333"
 
-    # --- 1. 技術面解析 ---
     tech_bullets = []
     if market_today and market_tmr:
         m_td = market_today.replace("🔥 ", "").replace("⚠️ ", "").replace("💪 ", "").replace("🩸 ", "").replace("📈 ", "").replace("📉 ", "").replace("⚖️ ", "")
@@ -744,7 +754,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     tech_res = "🔥 股價走勢強勁，目前屬於多頭格局，量價配合得不錯。" if sc >= 2 else ("⚠️ 股價表現偏弱，技術指標呈現空方趨勢或整理。" if sc < 0 else "⚖️ 股價處於震盪整理，多空力道尚未明確分出勝負。")
     
-    # 📌 標示來源：Fugle富果API
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析 <span style='font-size:0.8rem; color:#888; margin-left:10px;'>[來源: Fugle富果 API]</span></h4>"
     tech_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
@@ -755,7 +764,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     tech_html += f"<b>【結　　果】</b>{tech_res}"
     tech_html += f"</div></div>"
 
-    # --- 2. 籌碼面解析 ---
     chip_bullets = []
     chip_res_text = "中立觀望"
     tables_html = ""
@@ -844,7 +852,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     else:
         tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
 
-    # 📌 標示來源：FinMind API
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析 <span style='font-size:0.8rem; color:#888; margin-left:10px;'>[來源: FinMind API]</span></h4>"
     chip_html += f"{tables_html}"
@@ -852,7 +859,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     chip_html += f"<b>【結　　果】</b>{chip_res_text}"
     chip_html += f"</div></div>"
 
-    # --- 3. 基本面解析 ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -866,8 +872,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     
     fund_bullets.append(f"⚪ <b>產業趨勢/題材</b>：隸屬【{ind}】板塊，受惠於整體供應鏈或市場趨勢發展。 <a href='{yahoo_news_url}' target='_blank' style='color:#00ccff; text-decoration:none;'>[🔗Yahoo新聞解析]</a>")
     fund_bullets.append(f"⚪ <b>財報/展望</b>：最新法說會與營收開出狀況將影響股價預期。 <a href='{cnyes_news_url}' target='_blank' style='color:#00ccff; text-decoration:none;'>[🔗鉅亨網個股動態]</a>")
-    fund_bullets.append(f"⚪ <b>EPS / 單月EPS</b>：當季每股盈餘 (EPS) <b>{eps}</b> 元，換算單月約 <b>{m_eps}</b> 元。 <span style='font-size:0.8rem; color:#888;'>[資料來源: 證交所/FinMind]</span>")
-    fund_bullets.append(f"⚪ <b>本益比 (PE)</b>：最新即時估值為 <b>{pe}</b> 倍。 <span style='font-size:0.8rem; color:#888;'>[資料來源: 證交所即時運算]</span>")
+    fund_bullets.append(f"⚪ <b>EPS / 單月EPS</b>：當季每股盈餘 (EPS) <b>{eps}</b> 元，換算單月約 <b>{m_eps}</b> 元。")
+    fund_bullets.append(f"⚪ <b>本益比 (PE)</b>：最新即時估值為 <b>{pe}</b> 倍。")
     
     try: 
         eps_f = float(eps)
@@ -881,9 +887,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     except: 
         fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
-    # 📌 標示來源：Yahoo Finance
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析 <span style='font-size:0.8rem; color:#888; margin-left:10px;'>[來源: Yahoo Finance]</span></h4>"
+    fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析 <span style='font-size:0.8rem; color:#888; margin-left:10px;'>[來源: Fugle富果/FinMind]</span></h4>"
     fund_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
     for b in fund_bullets:
         fund_html += f"<li style='margin-bottom:6px;'>{b}</li>"
@@ -1020,8 +1025,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ff3333", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#00cc00", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
+    # 🟢 更新標示: 買點改為單純的青色向上箭頭
     if show_buy_signal and f_data:
-        buy_x, buy_y, buy_text = [], [], []
+        buy_x, buy_y = [], []
         for i in range(len(df_view)):
             current_date = df_view.index[i]
             pos = df.index.get_loc(current_date)
@@ -1031,9 +1037,8 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
                 if t_data and t_data['Score'] >= 2:
                     buy_x.append(current_date.strftime('%Y-%m-%d'))
                     buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                    buy_text.append("買")
         if buy_x:
-            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), text=buy_text, textposition="bottom center", textfont=dict(color="#00ffcc" if not is_light_mode else '#0066cc', size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers', marker=dict(symbol='triangle-up', size=14, color='#00ffcc' if not is_light_mode else '#0066cc'), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
     macd_colors = ['#ff3333' if val > 0 else '#00cc00' for val in df_view['MACD_Hist']]
@@ -1055,7 +1060,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', hoverlabel=dict(bgcolor=bg_c, font_size=13, font_color=text_c), dragmode=False, showlegend=False)
     
-    # 📌 標示大圖表來源
     fig.add_annotation(text="📊 資料來源: Fugle富果 API / FinMind / Yahoo Finance", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
@@ -1082,7 +1086,6 @@ def get_global_scan_results(pool_tuple):
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     
-    # 💡 使用 Fragment 技術，只有看板會每 60 秒更新，頁面不會閃爍跳動
     if auto_refresh:
         @st.fragment(run_every="60s")
         def render_live_home_board():
@@ -1167,7 +1170,6 @@ elif st.session_state.page == "analysis":
         p_stk = n_pool[i - 1] if i > 0 else None
         n_stk = n_pool[i + 1] if i < len(n_pool) - 1 else None
 
-    # 外層導航按鈕 (不隨局部刷新)
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         if p_stk and st.button(f"⬅ 上一檔", use_container_width=True, key="btn_prev_stock_nav"): st.session_state.update({"current_stock": p_stk}); st.rerun()
@@ -1179,7 +1181,6 @@ elif st.session_state.page == "analysis":
     def set_view_days(days):
         st.session_state.view_days = days
 
-    # 💡 定義分析內容的顯示邏輯 (包裹成 Fragment)
     def render_analysis_content():
         load_ph = st.empty()
         pre_rendered_fig = None  
@@ -1248,7 +1249,6 @@ elif st.session_state.page == "analysis":
                 if up_c.button("🔄 更新個股即時數值", use_container_width=True, key="btn_refresh_stock_data"): st.cache_data.clear(); st.rerun()
                 st.markdown("---")
                 
-                # 🚀 透明化 ATR 動態停損防護線 UI
                 stop_loss_html = ""
                 recent_20 = df_slice.tail(20)
                 recent_signals = []
@@ -1343,7 +1343,7 @@ elif st.session_state.page == "analysis":
                         <li><b><span style='color: #00ccff;'>壓 (藍字)</span></b>：反彈遇壓，當日反彈遭遇均線壓力被打回，收出長上影線。</li>
                         <li><b><span style='color: #ff3333;'>↗️ (紅箭頭)</span></b>：短均線扣低上彎，5日線未來將持續翻揚向上，提供多方保護。</li>
                         <li><b><span style='color: #00cc00;'>↘️ (綠箭頭)</span></b>：短均線扣高下彎，5日線易下彎形成蓋頭壓力。</li>
-                        <li><b><span style='color: #00ffcc;'>買 (青色指標)</span></b>：由系統 AI 綜合動能、型態與乖離計算出之「策略建議試單買點」。</li>
+                        <li><b><span style='color: #00ffcc;'>▲ (青色向上箭頭)</span></b>：由系統 AI 綜合動能、型態與乖離計算出之「策略建議試單買點」。</li>
                     </ul>
                     """, unsafe_allow_html=True)
                 
@@ -1408,7 +1408,6 @@ elif st.session_state.page == "analysis":
                 else:
                     st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
 
-    # 💡 判斷是否需要用 Fragment 執行
     if auto_refresh:
         @st.fragment(run_every="60s")
         def render_live_analysis():
