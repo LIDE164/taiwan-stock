@@ -1,4 +1,5 @@
-# 最後修改時間: 2026-06-25 12:45 CST
+# 最後修改時間: 2026-06-28 20:20 CST
+# 版本: 原版完美 UI 保留 + Fugle/Yahoo API 核心升級 + 來源標示
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -19,8 +20,12 @@ import random
 
 from streamlit_autorefresh import st_autorefresh
 
-# === 使用者專屬 FinMind API Token ===
+# === 核心 API 金鑰設定 ===
+# 使用者專屬 FinMind API Token
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
+# 使用者專屬 Fugle 富果 API Token
+FUGLE_API_KEY = "NWMxYjY4MzctM2VlNC00MjhhLTk5NjctOWQyYzBmMmJmZWU1IGFmNDk3NWRkLWY3NTMtNGZiYy04MTgyLTM3MTY4NDYyNTAwMw=="
+FUGLE_HEADERS = {"X-API-KEY": FUGLE_API_KEY}
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -230,47 +235,72 @@ def fetch_twse_top_100():
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
     except: return ["2330", "2317", "2454", "2382", "3231"]
 
+# ==========================================
+# 🟢 API 切換核心 1: 替換為 Fugle 富果 API
+# ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    def fetch_clean(sym):
+    df = None
+    
+    # 大盤走 yfinance
+    if base_ticker == "^TWII":
         try:
-            d = yf.Ticker(sym).history(period="1y")
-            if d is not None and not d.empty:
-                d = d.dropna(subset=['Close'])
-                if len(d) >= 20: 
-                    d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
-                    return d
+            df = yf.Ticker("^TWII").history(period="1y")[['Open', 'High', 'Low', 'Close', 'Volume']]
+            if not df.empty: df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
         except: pass
-        return None
+    else:
+        # 1. 嘗試使用 Fugle 歷史 K 線 API
+        try:
+            url_hist = f"https://api.fugle.tw/marketdata/v1.0/stock/historical/candles/{base_ticker}?timeframe=D"
+            res = requests.get(url_hist, headers=FUGLE_HEADERS, timeout=5)
+            if res.status_code == 200:
+                data = res.json().get('data', [])
+                if data:
+                    df = pd.DataFrame(data)
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    df = df[['open', 'high', 'low', 'close', 'volume']].rename(columns={'open':'Open', 'high':'High', 'low':'Low', 'close':'Close', 'volume':'Volume'})
+                    df = df.sort_index()
+        except: pass
 
-    df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
-    if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
-    if df is None and base_ticker != "^TWII": df = fetch_clean(base_ticker)
-    
-    if df is None: return None
-    
-    try:
-        url = "https://ws.cnyes.com/charting/api/v1/TWS:TSE01:INDEX/quote" if base_ticker == "^TWII" else f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
-        res = requests.get(url, timeout=3)
-        if res.status_code == 200:
-            q = res.json()['data']['quote']
-            c_price, o_price = float(q['23']), float(q['22'])
-            h_price, l_price = float(q['25']), float(q['26'])
-            v_vol = float(q.get('14', 0)) * 1000 if base_ticker != "^TWII" else 0
-            ts = int(q['20'])
-            dt_live = pd.to_datetime(datetime.fromtimestamp(ts, timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
+        # 2. Fugle 歷史抓失敗，使用 yfinance 備援
+        if df is None or df.empty:
+            try:
+                df = yf.Ticker(f"{base_ticker}.TW").history(period="1y")
+                if df.empty: df = yf.Ticker(f"{base_ticker}.TWO").history(period="1y")
+                df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
+            except: pass
+
+        # 3. 疊加 Fugle 即時 Quote
+        if df is not None and not df.empty:
+            try:
+                url_quote = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
+                res_quote = requests.get(url_quote, headers=FUGLE_HEADERS, timeout=3)
+                if res_quote.status_code == 200:
+                    q_data = res_quote.json()
+                    dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
+                    
+                    if 'closePrice' in q_data:
+                        c_price = q_data.get('closePrice', df['Close'].iloc[-1])
+                        o_price = q_data.get('openPrice', df['Open'].iloc[-1])
+                        h_price = q_data.get('highPrice', df['High'].iloc[-1])
+                        l_price = q_data.get('lowPrice', df['Low'].iloc[-1])
+                        v_vol = q_data.get('totalVolume', 0)
+                        
+                        if dt_live not in df.index:
+                            new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
+                            df = pd.concat([df, new_row])
+                        else:
+                            df.at[dt_live, 'Close'] = c_price
+                            df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
+                            df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
+                            df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
+            except: pass
             
-            if dt_live not in df.index:
-                new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
-                df = pd.concat([df, new_row])
-            else:
-                df.at[dt_live, 'Close'] = c_price
-                df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
-                df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
-                if base_ticker != "^TWII": df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
-    except: pass
+    if df is None or df.empty: return None
 
+    # 原本的技術指標計算
     df['5MA'] = df['Close'].rolling(5).mean()
     df['10MA'] = df['Close'].rolling(10).mean()
     df['20MA'] = df['Close'].rolling(20).mean()
@@ -290,26 +320,15 @@ def get_stock_data(ticker_number):
     df['J'] = 3 * df['K'] - 2 * df['D']
     return df
 
+# ==========================================
+# 🟢 API 切換核心 2: 替換爬蟲為 Yahoo Finance
+# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     eps_val, pe_val = "無", "無"
     ind = "一般產業"
-    try:
-        url = f"https://invest.cnyes.com/twstock/TWS/{base_ticker}/overview"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            text = soup.get_text(separator='|')
-            match = re.search(r'當季EPS\|+([\-\d\.]+)', text)
-            if match: eps_val = match.group(1)
-            else:
-                res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3)
-                if res_api.status_code == 200:
-                    data = res_api.json()
-                    if 'data' in data and 'eps' in data['data']: eps_val = f"{float(data['data']['eps']):.2f}"
-    except: pass
+
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
@@ -318,9 +337,10 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
         tw_ind = ENG_TO_TW_INDUSTRY.get(ind_eng, ind_eng)
         ind_temp = f"{tw_sec} - {tw_ind}" if tw_sec and tw_ind else tw_sec or tw_ind or "一般產業"
         if not re.search(r'[a-zA-Z]', ind_temp): ind = ind_temp
-        if eps_val == "無" and 'trailingEps' in info and info['trailingEps'] is not None:
+        if 'trailingEps' in info and info['trailingEps'] is not None:
             eps_val = str(round(info['trailingEps'], 2))
     except: pass
+    
     try:
         if eps_val != "無":
             eps_f = float(eps_val)
@@ -362,15 +382,7 @@ def get_twii_quote():
 
 @st.cache_data(ttl=5, show_spinner=False)
 def get_stock_live_time(ticker):
-    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     tz_tpe = timezone(timedelta(hours=8))
-    try:
-        url = f"https://ws.cnyes.com/charting/api/v1/TWS:{base_ticker}:STOCK/quote"
-        res = requests.get(url, timeout=3)
-        if res.status_code == 200:
-            ts = int(res.json()['data']['quote']['20'])
-            return datetime.fromtimestamp(ts, tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-    except: pass
     return datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -741,7 +753,8 @@ def render_index_board():
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數 🔗</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}</div>", unsafe_allow_html=True)
+                # 🟢 更新標示: 大盤報價來源
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color: #888;'>🕒 抓取時間: {twii_time_str}<br>⚡ 資料來源: Yahoo Finance/TWSE</div>", unsafe_allow_html=True)
             with col3:
                 st.markdown(f"<div style='text-align: left; color: #ffcc00; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; font-size: 1.1rem; font-weight: bold;'>{today_title}</div>", unsafe_allow_html=True)
@@ -770,20 +783,20 @@ def render_index_board():
         sox_p = sox_data.get('pct', 0)
         sox_c = "#ff3333" if sox_p >= 0 else "#00cc00"
         with mc1.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data.get('price', 0):,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data.get('time', '無')}<br><a href='{sox_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_c};'>{sox_data.get('price', 0):,.1f}<br>{'+' if sox_p>0 else ''}{sox_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {sox_data.get('time', '無')}<br><a href='{sox_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo Finance</a></div>", unsafe_allow_html=True)
         
         vix_data = macro.get('^VIX', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/^VIX"})
         vix_p = vix_data.get('pct', 0)
         vix_c = "#00cc00" if vix_p <= 0 else "#ff3333"
         with mc2.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo Finance</a></div>", unsafe_allow_html=True)
         
         jpy_data = macro.get('JPY=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/JPY=X"})
         jpy_p = jpy_data.get('pct', 0)
         jpy_c = "#ffcc00" 
         jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
         with mc3.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 來源: Yahoo Finance</a></div>", unsafe_allow_html=True)
             
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
@@ -841,9 +854,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
 
     tech_res = "🔥 股價走勢強勁，目前屬於多頭格局，量價配合得不錯。" if sc >= 2 else ("⚠️ 股價表現偏弱，技術指標呈現空方趨勢或整理。" if sc < 0 else "⚖️ 股價處於震盪整理，多空力道尚未明確分出勝負。")
     
-    # 💡 使用純字串串接，徹底消除任何空格縮排與 HTML 註解
+    # 🟢 更新標示: 加入富果來源標籤
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析</h4>"
+    tech_html += f"<h4 style='color: #00ccff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📈 技術面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: Fugle富果API]</span></h4>"
     tech_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
     for b in tech_bullets:
         tech_html += f"<li style='margin-bottom:6px;'>{b}</li>"
@@ -886,7 +899,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
         th_color = "#ccc" if not is_light_mode else "#555"
         def get_c(val): return "#ff3333" if val > 0 else ("#00cc00" if val < 0 else t_text_c)
         
-        # 💡 使用純字串串接，徹底消除任何空格縮排與 HTML 註解
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: nowrap; overflow-x: auto; margin-top: 15px; width: 100%;'>"
         
         # 左側：進階籌碼圖表區塊
@@ -950,9 +962,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     else:
         tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
 
-    # 💡 移除縮排避免 HTML 跑版
+    # 🟢 更新標示: 加入 FinMind 來源標籤
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析</h4>"
+    chip_html += f"<h4 style='color: #ffcc00; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🏦 籌碼面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: FinMind]</span></h4>"
     chip_html += f"{tables_html}"
     chip_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #ffcc00; font-size: 0.95rem; color: {t_text_c}; line-height: 1.6; margin-top: 15px;'>"
     chip_html += f"<b>【結　　果】</b>{chip_res_text}"
@@ -987,9 +999,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, market_today=""
     except: 
         fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
-    # 💡 移除縮排避免 HTML 跑版
+    # 🟢 更新標示: 加入 Yahoo Finance 來源標籤
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析</h4>"
+    fund_html += f"<h4 style='color: #ff99ff; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>📑 基本面分析 <span style='font-size:0.8rem; color:#888; margin-left: 10px;'>[來源: Yahoo Finance]</span></h4>"
     fund_html += f"<ul style='font-size: 0.95rem; line-height: 1.6; margin-bottom: 15px; color: {t_text_c};'>"
     for b in fund_bullets:
         fund_html += f"<li style='margin-bottom:6px;'>{b}</li>"
@@ -1161,7 +1173,9 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=grid_c)
     
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, hovermode='x unified', hoverlabel=dict(bgcolor=bg_c, font_size=13, font_color=text_c), dragmode=False, showlegend=False)
-    fig.add_annotation(text="📊 資料來源: yfinance / TWSE / WantGoo", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
+    
+    # 🟢 更新標示: 更新圖表底部的資料來源標註
+    fig.add_annotation(text="📊 資料來源: Fugle富果 API / FinMind / Yahoo Finance", xref="paper", yref="paper", x=1.0, y=-0.05, showarrow=False, font=dict(size=12, color=text_c))
     return fig
 
 # ==========================================
