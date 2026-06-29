@@ -1,4 +1,3 @@
-```python
 # 最後修改時間: 2026-06-29 16:30 CST
 # 版本: 完美實戰旗艦版 (無斷層K線 + 左側全局過濾 + 產業熱力圖 + 大戶/回測圖表 + ATR合併)
 import yfinance as yf
@@ -912,4 +911,3 @@ elif st.session_state.page == "analysis":
         render_static_analysis()
 
 
-```
