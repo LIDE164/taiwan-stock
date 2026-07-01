@@ -1218,82 +1218,164 @@ def get_global_scan_results(pool_tuple):
 if st.session_state.page == "home":
     st.markdown("<h1 style='text-align: center;'>🇹🇼 雷達總機</h1>", unsafe_allow_html=True)
     render_index_board()
+    st.markdown("<br>", unsafe_allow_html=True)
     
-    st.markdown("<h3 style='margin-top: 15px;'>🎯 策略條件篩選</h3>", unsafe_allow_html=True)
-    btn_col1, btn_col2, btn_col3 = st.columns(3)
-    if btn_col1.button("✅ 綜合買點榜", use_container_width=True, key="btn_scan_buy"): st.session_state.scan_mode = "buy"; st.rerun()
-    if btn_col2.button("🔥 紅吞反轉榜", use_container_width=True, key="btn_scan_red"): st.session_state.scan_mode = "red_engulf"; st.rerun()
-    if btn_col3.button("📊 近五日成交量", use_container_width=True, key="btn_scan_vol"): st.session_state.scan_mode = "recent"; st.rerun()
+    # 注入專屬 CSS 魔法 (用於膠囊按鈕與表格樣式)
+    pill_bg = "#ffffff" if is_light_mode else "#161b22"
+    pill_border = "#d1d5db" if is_light_mode else "#30363d"
+    pill_text = "#374151" if is_light_mode else "#8b949e"
+    pill_hover = "#f3f4f6" if is_light_mode else "#21262d"
+    
+    st.markdown(f"""
+    <style>
+    div[role="radiogroup"] {{ display: flex; flex-direction: row; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }}
+    div[role="radiogroup"] > label {{ margin: 0 !important; padding: 0 !important; background: transparent !important; }}
+    div[role="radiogroup"] label > div:first-child {{ display: none !important; }}
+    div[role="radiogroup"] div[data-testid="stMarkdownContainer"] p {{
+        background-color: {pill_bg}; border: 1px solid {pill_border}; color: {pill_text} !important;
+        padding: 8px 18px; border-radius: 25px; font-size: 0.95rem; font-weight: 500; margin: 0;
+        cursor: pointer; transition: all 0.2s ease-in-out; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }}
+    div[role="radiogroup"] label:hover div[data-testid="stMarkdownContainer"] p {{ background-color: {pill_hover}; }}
+    div[role="radiogroup"] label:has(input:checked) div[data-testid="stMarkdownContainer"] p {{
+        background-color: #5865F2 !important; border-color: #5865F2 !important; color: white !important;
+        box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); transform: scale(1.02);
+    }}
+    </style>
+    """, unsafe_allow_html=True)
     
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
-    with st.spinner("🚀 大腦背景資料庫存取中 (若無快取約需 5 秒，快取命中則 0.1 秒極速秒發)..."):
+    with st.spinner("🚀 大腦背景資料庫存取中..."):
         scan_results = get_global_scan_results(pool)
             
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
-        # 指示2：首頁中新增目前股票題材，並連動榜單
-        st.markdown("### 🔥 近期發燒題材連動快篩")
-        unique_themes = ["全部題材"] + sorted([x for x in df_results['產業'].unique() if pd.notna(x) and x != "一般產業"])
-        selected_theme = st.radio("選擇題材以過濾下方榜單：", unique_themes, horizontal=True)
+        # 定義題材對應
+        def get_custom_theme(ticker, industry):
+            THEME_MAP = {
+                "2382": ("AI伺服器", "💡"), "2356": ("AI伺服器", "💡"), "3231": ("AI伺服器", "💡"),
+                "2330": ("先進製程", "⚙️"), "2454": ("先進製程", "⚙️"), "6147": ("先進製程", "⚙️"),
+                "1503": ("重電綠能", "⚡"), "1519": ("重電綠能", "⚡"), "2308": ("重電綠能", "⚡"),
+                "2359": ("機器人概念", "🤖"), "2354": ("機器人概念", "🤖")
+            }
+            if ticker in THEME_MAP: return THEME_MAP[ticker]
+            ind = str(industry) if pd.notna(industry) else ""
+            if "半導體" in ind: return ("先進製程", "⚙️")
+            if "電腦" in ind or "電子" in ind: return ("AI伺服器", "💡")
+            if "電機" in ind or "電纜" in ind: return ("重電綠能", "⚡")
+            return ("全部題材", "📌")
+
+        df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_custom_theme(r['代號'], r.get('產業')), axis=1))
+        
+        themes = ["全部題材", "AI伺服器", "先進製程", "重電綠能", "機器人概念"]
+        selected_theme = st.radio("選擇題材以過濾下方榜單：", themes, horizontal=True, label_visibility="collapsed")
         
         if selected_theme != "全部題材":
-            df_results = df_results[df_results['產業'] == selected_theme]
+            df_results = df_results[df_results['Theme_Name'] == selected_theme]
         
-        df_results['Bullish_Count'] = df_results.apply(
-            lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
-                      (1 if r.get('回測有撐') else 0) + 
-                      (1 if r.get('5日線即將上彎') else 0), axis=1)
-
-        st.markdown("---")
-        if st.session_state.scan_mode == "recent":
-            st.markdown("##### 📊 近五日成交量排行榜")
-            df_disp = df_results.sort_values(by="成交量", ascending=False).head(20)
-        elif st.session_state.scan_mode == "red_engulf":
-            st.markdown("##### 🔥 近七日觸發「紅吞」反轉型態標的 (S、A級)")
-            df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 2)].sort_values(
-                by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
-            ).head(20)
-            if df_disp.empty: st.info(f"💡 目前雷達池內近期暫無符合「{selected_theme}」且具備「紅吞反轉型態」的強勢個股。")
-        elif st.session_state.scan_mode == "buy":
-            st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
-            df_disp = df_results[df_results['Score'] >= 2].sort_values(
-                by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
-            ).head(20)
-            if df_disp.empty: st.info(f"目前雷達池內沒有符合「{selected_theme}」條件的標的。")
+        # 直接篩選最高分的紅吞買點股，並取前 20 名
+        df_disp = df_results[df_results['Score'] >= 2].sort_values(by='Score', ascending=False).head(20)
+        
+        # 動態補上大戶動向資料 (僅抓取榜單前 20 筆以保證速度)
+        whale_actions = {}
+        whale_nets = {}
+        for ticker in df_disp['代號']:
+            inst_data = get_institutional_trading(ticker)
+            w_tag = "主力觀望"
+            w_net = 0
+            if inst_data and len(inst_data) >= 3:
+                f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
+                t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+                d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:3] if str(x['自營商(張)']).replace(',', '').lstrip('-').isdigit()])
+                w_net = f_net + t_net + d_net
+                if f_net > 0 and t_net > 0: w_tag = "土洋齊買"
+                elif f_net > 500: w_tag = "外資連買"
+                elif t_net > 200: w_tag = "投信認養"
+                elif w_net > 0: w_tag = "法人偏多"
+                elif f_net < -500 and t_net < -300: w_tag = "土洋雙賣"
+                elif f_net < -500: w_tag = "外資倒貨"
+                elif w_net < 0: w_tag = "法人偏空"
+            whale_actions[ticker] = w_tag
+            whale_nets[ticker] = w_net
             
+        df_disp['Whale_Action'] = df_disp['代號'].map(whale_actions)
+        df_disp['Whale_Net'] = df_disp['代號'].map(whale_nets)
+        
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        for _, r in df_disp.iterrows():
-            p_val = r['漲跌']
-            sign = "+" if p_val > 0 else ""
-            trend_icon = "🔺" if p_val > 0 else ("🔻" if p_val < 0 else "➖")
-            s_score = r['Score']
-            score_icon = "🟢 S級" if s_score >= 5 else ("🟡 A級" if s_score >= 2 else "⚪ 觀望")
-            
-            tags = []
-            if r.get('紅吞'): tags.append("🔺紅吞")
-            elif r.get('黑吞'): tags.append("🔻黑吞")
-            if r.get('回測有撐'): tags.append("📌撐")
-            elif r.get('反彈遇壓'): tags.append("⚠️壓")
-            if '5日線即將上彎' in r:
-                tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
+        # 安全 HTML 串接，避免 Markdown 縮排錯誤
+        table_html = '<div style="background-color: #0b1120; border-radius: 12px; border: 1px solid #1e293b; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); font-family: sans-serif; margin-bottom: 30px;">'
+        table_html += '<div style="padding: 24px; border-bottom: 1px solid #1e293b; background: linear-gradient(180deg, rgba(15,23,42,1) 0%, rgba(11,17,32,1) 100%);">'
+        table_html += '<div style="display: flex; align-items: center; gap: 10px;">'
+        table_html += '<span style="color: #ef4444; font-size: 1.5rem; font-weight: bold;">📈</span>'
+        table_html += '<h2 style="color: #ef4444; margin: 0; font-size: 1.4rem; font-weight: 700; letter-spacing: 0.5px;">多頭紅吞榜 (Red Engulfing)</h2>'
+        table_html += '</div>'
+        table_html += '<div style="color: #94a3b8; font-size: 0.9rem; margin-top: 12px; display: flex; align-items: center; gap: 12px;">'
+        table_html += f'<span>目前篩選條件：{selected_theme}</span>'
+        table_html += f'<span style="background-color: rgba(79, 70, 229, 0.15); color: #818cf8; padding: 3px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; border: 1px solid rgba(79, 70, 229, 0.3);">共 {len(df_disp)} 檔符合</span>'
+        table_html += '</div></div>'
+        
+        table_html += '<div style="overflow-x: auto;">'
+        table_html += '<table style="width: 100%; border-collapse: collapse; text-align: left;">'
+        table_html += '<thead><tr style="background-color: rgba(30, 41, 59, 0.4); color: #94a3b8; font-size: 0.9rem; border-bottom: 1px solid #1e293b;">'
+        table_html += '<th style="padding: 16px 24px; font-weight: 600; white-space: nowrap;">代號 / 股名 / <span style="color: #f97316;">近期題材</span></th>'
+        table_html += '<th style="padding: 16px 24px; font-weight: 600; white-space: nowrap;">成交價</th>'
+        table_html += '<th style="padding: 16px 24px; font-weight: 600; white-space: nowrap;">漲跌幅</th>'
+        table_html += '<th style="padding: 16px 24px; font-weight: 600; white-space: nowrap;">成交量(張)</th>'
+        table_html += '<th style="padding: 16px 24px; font-weight: 600; white-space: nowrap;">大戶與法人動向 (籌碼)</th>'
+        table_html += '</tr></thead><tbody>'
+        
+        if df_disp.empty:
+            table_html += "<tr><td colspan='5' style='text-align: center; padding: 40px; color: #64748b;'>此題材目前暫無符合條件的股票。</td></tr>"
+        else:
+            for _, r in df_disp.iterrows():
+                p_val = r['漲跌']
+                p_col = "#ef4444" if p_val >= 0 else "#22c55e"
+                p_bg = "rgba(239,68,68,0.1)" if p_val >= 0 else "rgba(34,197,94,0.1)"
+                p_border = "rgba(239,68,68,0.3)" if p_val >= 0 else "rgba(34,197,94,0.3)"
+                change_sign = "+" if p_val > 0 else ""
                 
-            tag_display = " | ".join(tags)
-            if tag_display: tag_display = f" | {tag_display}"
-            
-            # 整合題材名稱及籌碼流向動態 (Whale Action)
-            whale_info = f" | 🐳 {r.get('Whale_Action', '主力觀望')} ({'+' if r.get('Whale_Net', 0)>0 else ''}{r.get('Whale_Net', 0):,}張)"
-            theme_info = f" | 🏷️ {r['產業']}"
-            
-            button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}{whale_info}{theme_info}"
-            if st.button(button_label, key=f"btn_scan_list_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
-                st.session_state.update({"current_stock": r['ticker_raw'], "page": "analysis", "date_offset": 0})
-                st.rerun()
+                w_net = r.get('Whale_Net', 0)
+                if w_net > 0:
+                    w_col = "#ef4444"
+                    w_bg = "rgba(239,68,68,0.05)"
+                    w_border = "rgba(239,68,68,0.5)"
+                elif w_net < 0:
+                    w_col = "#22c55e"
+                    w_bg = "rgba(34,197,94,0.05)"
+                    w_border = "rgba(34,197,94,0.5)"
+                else:
+                    w_col = "#94a3b8"
+                    w_bg = "rgba(148,163,184,0.05)"
+                    w_border = "rgba(148,163,184,0.5)"
+
+                whale_net_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
+                vol_str = f"{r['成交量']:,}"
                 
+                table_html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background-color: #0b1120;">'
+                table_html += '<td style="padding: 16px 24px;">'
+                table_html += f'<a href="/?stock={r["代號"]}" target="_self" style="text-decoration: none; color: inherit; display: block;">'
+                table_html += '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">'
+                table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">{r["名稱"]}</span>'
+                table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "一般產業")}</span>'
+                table_html += '</div>'
+                table_html += f'<div style="font-size: 0.85rem; color: #64748b; font-family: \'Courier New\', Courier, monospace;">{r["代號"]}</div>'
+                table_html += '</a></td>'
+                table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 1.2rem; font-weight: 700; color: {p_col}; font-family: \'Courier New\', monospace;">{r["收盤價"]:.1f}</span></td>'
+                table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 0.95rem; font-weight: 700; color: {p_col}; background-color: {p_bg}; border: 1px solid {p_border}; padding: 4px 10px; border-radius: 6px; font-family: \'Courier New\', monospace;">{change_sign}{r["漲跌幅"]}%</span></td>'
+                table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 1.05rem; color: #cbd5e1; font-family: \'Courier New\', monospace; font-weight: 500;">{vol_str}</span></td>'
+                table_html += '<td style="padding: 16px 24px; vertical-align: middle;"><div style="display: flex; flex-direction: column; gap: 6px;">'
+                table_html += f'<span style="font-size: 0.8rem; font-weight: 600; color: {w_col}; background-color: {w_bg}; border: 1px solid {w_border}; padding: 3px 12px; border-radius: 20px; width: fit-content; text-align: center;">{r.get("Whale_Action", "主力觀望")}</span>'
+                table_html += f'<span style="font-size: 0.85rem; color: #94a3b8;">淨買超: <span style="color: {w_col}; font-family: \'Courier New\', monospace; font-weight: 600;">{whale_net_str}</span> 張</span>'
+                table_html += '</div></td></tr>'
+
+        table_html += '</tbody></table></div></div>'
+        st.markdown(table_html, unsafe_allow_html=True)
+        
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
