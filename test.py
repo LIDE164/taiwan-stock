@@ -1194,3 +1194,4 @@ elif st.session_state.page == "analysis":
                         st.session_state.current_stock = stock_id
                         st.rerun()
 
+
