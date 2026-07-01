@@ -1220,7 +1220,7 @@ if st.session_state.page == "home":
     render_index_board()
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # 注入專屬 CSS 魔法 (用於膠囊按鈕與表格樣式)
+    # --- 注入專屬 CSS 魔法 (用於膠囊按鈕與表格樣式) ---
     pill_bg = "#ffffff" if is_light_mode else "#161b22"
     pill_border = "#d1d5db" if is_light_mode else "#30363d"
     pill_text = "#374151" if is_light_mode else "#8b949e"
@@ -1241,6 +1241,9 @@ if st.session_state.page == "home":
         background-color: #5865F2 !important; border-color: #5865F2 !important; color: white !important;
         box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); transform: scale(1.02);
     }}
+    /* 隱藏預設的連結底線與顏色 */
+    a.stock-link {{ text-decoration: none; color: inherit; display: block; padding: 4px; border-radius: 6px; transition: background 0.2s; }}
+    a.stock-link:hover {{ background-color: rgba(255,255,255,0.05); }}
     </style>
     """, unsafe_allow_html=True)
     
@@ -1266,20 +1269,21 @@ if st.session_state.page == "home":
             if "半導體" in ind: return ("先進製程", "⚙️")
             if "電腦" in ind or "電子" in ind: return ("AI伺服器", "💡")
             if "電機" in ind or "電纜" in ind: return ("重電綠能", "⚡")
-            return ("全部題材", "📌")
+            return ("一般題材", "📌")
 
         df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_custom_theme(r['代號'], r.get('產業')), axis=1))
         
-        themes = ["全部題材", "AI伺服器", "先進製程", "重電綠能", "機器人概念"]
-        selected_theme = st.radio("選擇題材以過濾下方榜單：", themes, horizontal=True, label_visibility="collapsed")
+        # 動態產生題材列表
+        available_themes = ["全部題材"] + sorted(list(set(df_results['Theme_Name'].unique()) - {"一般題材"}))
+        selected_theme = st.radio("選擇題材以過濾下方榜單：", available_themes, horizontal=True, label_visibility="collapsed")
         
         if selected_theme != "全部題材":
             df_results = df_results[df_results['Theme_Name'] == selected_theme]
         
-        # 直接篩選最高分的紅吞買點股，並取前 20 名
+        # 預設過濾出「多頭紅吞榜」(評級S或A級，即 Score >= 2)
         df_disp = df_results[df_results['Score'] >= 2].sort_values(by='Score', ascending=False).head(20)
         
-        # 動態補上大戶動向資料 (僅抓取榜單前 20 筆以保證速度)
+        # 動態補上大戶動向資料 (為了保證速度，僅針對前 20 名獲取)
         whale_actions = {}
         whale_nets = {}
         for ticker in df_disp['代號']:
@@ -1307,7 +1311,7 @@ if st.session_state.page == "home":
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        # 安全 HTML 串接，避免 Markdown 縮排錯誤
+        # HTML 表格渲染
         table_html = '<div style="background-color: #0b1120; border-radius: 12px; border: 1px solid #1e293b; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); font-family: sans-serif; margin-bottom: 30px;">'
         table_html += '<div style="padding: 24px; border-bottom: 1px solid #1e293b; background: linear-gradient(180deg, rgba(15,23,42,1) 0%, rgba(11,17,32,1) 100%);">'
         table_html += '<div style="display: flex; align-items: center; gap: 10px;">'
@@ -1356,14 +1360,16 @@ if st.session_state.page == "home":
                 whale_net_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
                 vol_str = f"{r['成交量']:,}"
                 
+                # 使用 <a> 標籤達成點擊股票名稱/代碼即可跳轉至解析
                 table_html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background-color: #0b1120;">'
                 table_html += '<td style="padding: 16px 24px;">'
-                table_html += f'<a href="/?stock={r["代號"]}" target="_self" style="text-decoration: none; color: inherit; display: block;">'
+                table_html += f'<a class="stock-link" href="/?stock={r["代號"]}" target="_self">'
                 table_html += '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">'
                 table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">{r["名稱"]}</span>'
-                table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "一般產業")}</span>'
+                if r.get("Theme_Name") != "一般題材":
+                    table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "")}</span>'
                 table_html += '</div>'
-                table_html += f'<div style="font-size: 0.85rem; color: #64748b; font-family: \'Courier New\', Courier, monospace;">{r["代號"]}</div>'
+                table_html += f'<div style="font-size: 0.85rem; color: #64748b; font-family: \'Courier New\', Courier, monospace;">{r["代號"]} <span style="font-size: 0.75rem; color: #475569; margin-left: 6px;">(點擊進入解析)</span></div>'
                 table_html += '</a></td>'
                 table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 1.2rem; font-weight: 700; color: {p_col}; font-family: \'Courier New\', monospace;">{r["收盤價"]:.1f}</span></td>'
                 table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 0.95rem; font-weight: 700; color: {p_col}; background-color: {p_bg}; border: 1px solid {p_border}; padding: 4px 10px; border-radius: 6px; font-family: \'Courier New\', monospace;">{change_sign}{r["漲跌幅"]}%</span></td>'
@@ -1375,7 +1381,7 @@ if st.session_state.page == "home":
 
         table_html += '</tbody></table></div></div>'
         st.markdown(table_html, unsafe_allow_html=True)
-        
+
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
@@ -1618,4 +1624,5 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
 
