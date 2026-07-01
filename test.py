@@ -421,10 +421,11 @@ def get_global_macro_data():
     tz_tpe = timezone(timedelta(hours=8))
     fetch_time = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     data = {"global_time": fetch_time}
+    # 替換 JPY=X 為 TWD=X (台幣兌美元)
     tickers = {
         "^SOX": "https://finance.yahoo.com/quote/^SOX",
         "^VIX": "https://finance.yahoo.com/quote/^VIX",
-        "JPY=X": "https://finance.yahoo.com/quote/JPY=X"
+        "TWD=X": "https://finance.yahoo.com/quote/TWD=X"
     }
     
     latest_ts = 0
@@ -716,10 +717,12 @@ def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     vix_pct = vix_data.get('pct', 0)
     if vix_curr > 20 or vix_pct > 10.0: risk_score += 20
     elif vix_pct < -5.0: risk_score -= 10
-    jpy_data = macro_data.get('JPY=X', {"price": 0, "pct": 0})
-    jpy_pct = jpy_data.get('pct', 0)
-    if jpy_pct < -0.8: risk_score += 15 
-    elif jpy_pct > 0.5: risk_score -= 5
+    
+    # 修改為 TWD=X 的風險評分邏輯 (台幣貶值不利，升值有利)
+    twd_data = macro_data.get('TWD=X', {"price": 0, "pct": 0})
+    twd_pct = twd_data.get('pct', 0)
+    if twd_pct > 0.3: risk_score += 15 
+    elif twd_pct < -0.2: risk_score -= 5
     
     risk_score = max(5, min(95, int(risk_score))) 
     if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經環境穩定，預估次一交易日 ({next_dt_str}) 有極高機率開平高盤挑戰上檔壓力。"
@@ -778,12 +781,13 @@ def render_index_board():
         with mc2.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_c};'>{vix_data.get('price', 0):,.2f}<br>{'+' if vix_p>0 else ''}{vix_p:.2f}%</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {vix_data.get('time', '無')}<br><a href='{vix_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
         
-        jpy_data = macro.get('JPY=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/JPY=X"})
-        jpy_p = jpy_data.get('pct', 0)
-        jpy_c = "#ffcc00" 
-        jpy_status = "央行趨緩" if jpy_p > 0 else "升息撤資警戒"
+        # 替換為台幣匯率顯示
+        twd_data = macro.get('TWD=X', {"price": 0, "pct": 0, "time": "無", "url": "https://finance.yahoo.com/quote/TWD=X"})
+        twd_p = twd_data.get('pct', 0)
+        twd_c = "#00cc00" if twd_p <= 0 else "#ff3333" # 跌代表台幣升值(有利, 綠色)，漲代表台幣貶值(不利, 紅色)
+        twd_status = "台幣升值 (熱錢入)" if twd_p <= 0 else "台幣貶值 (資金外流)"
         with mc3.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>日圓動向(USD/JPY)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{jpy_c};'>{jpy_data.get('price', 0):,.2f}<br>{jpy_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {jpy_data.get('time', '無')}<br><a href='{jpy_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台幣匯率(USD/TWD)</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{twd_c};'>{twd_data.get('price', 0):,.3f}<br>{twd_status}</div><div style='text-align:center; font-size:0.75rem; color:#888; margin-top:5px;'>🕒 {twd_data.get('time', '無')}<br><a href='{twd_data.get('url', '#')}' target='_blank' style='color:#888; text-decoration:none;'>🔗 Yahoo Finance</a></div>", unsafe_allow_html=True)
             
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
@@ -1206,6 +1210,15 @@ if st.session_state.page == "home":
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
+        # --- 2. 新增目前股票題材，並連動榜單 ---
+        all_industries = sorted(list(df_results['產業'].dropna().unique()))
+        st.markdown("<h5 style='margin-top:10px;'>🏷️ 熱門題材板塊篩選</h5>", unsafe_allow_html=True)
+        selected_ind = st.selectbox("隱藏", ["🌍 全部題材"] + all_industries, label_visibility="collapsed", key="industry_filter")
+        
+        # 連動過濾邏輯
+        if selected_ind != "🌍 全部題材":
+            df_results = df_results[df_results['產業'] == selected_ind]
+        
         df_results['Bullish_Count'] = df_results.apply(
             lambda r: (1 if r.get('紅吞') or r.get('近七日紅吞') else 0) + 
                       (1 if r.get('回測有撐') else 0) + 
@@ -1219,13 +1232,13 @@ if st.session_state.page == "home":
             df_disp = df_results[(df_results['近七日紅吞'] == True) & (df_results['Score'] >= 2)].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
-            if df_disp.empty: st.info("💡 目前雷達池內近七日內暫無符合「紅吞反轉型態」的強勢個股。")
+            if df_disp.empty: st.info("💡 目前篩選條件下，暫無符合「紅吞反轉型態」的強勢個股。")
         elif st.session_state.scan_mode == "buy":
             st.markdown("##### 🎯 尋找買點榜單 (高靈敏度動能捕捉榜)")
             df_disp = df_results[df_results['Score'] >= 2].sort_values(
                 by=['Score', 'Bullish_Count', '漲跌幅'], ascending=[False, False, False]
             ).head(20)
-            if df_disp.empty: st.info("目前雷達池內沒有符合條件的標的。")
+            if df_disp.empty: st.info("目前篩選條件下，沒有符合買點的標的。")
             
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -1245,8 +1258,21 @@ if st.session_state.page == "home":
             if '5日線即將上彎' in r:
                 tags.append("↗️" if r.get('5日線即將上彎') else "↘️")
                 
+            # --- 1. 紅吞榜抓出大戶動向 ---
+            chip_tag = ""
+            if st.session_state.scan_mode == "red_engulf":
+                # 即時向 FinMind 查詢該標的近3日法人動向
+                inst = get_institutional_trading(r['ticker_raw'])
+                if inst and len(inst) >= 3:
+                    net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
+                    if net_buy > 1000: chip_tag = " | 🐋大戶狂買"
+                    elif net_buy > 0: chip_tag = " | 🐟大戶連買"
+                    elif net_buy < -1000: chip_tag = " | 🦈大戶狂倒"
+                    elif net_buy < 0: chip_tag = " | 撤退"
+                    
             tag_display = " | ".join(tags)
             if tag_display: tag_display = f" | {tag_display}"
+            tag_display += chip_tag # 組合大戶動向標籤
             
             button_label = f"▪️ {r['代號']} {r['名稱']} {trend_icon}{r['收盤價']}({sign}{r['漲跌幅']}%) | {score_icon}{tag_display}"
             if st.button(button_label, key=f"btn_scan_list_{r['ticker_raw']}_{st.session_state.scan_mode}", use_container_width=True):
@@ -1492,3 +1518,4 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
