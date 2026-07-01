@@ -206,13 +206,14 @@ if 'scan_mode' not in st.session_state: st.session_state.scan_mode = "buy"
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 
-if 'url_parsed' not in st.session_state:
-    st.session_state.url_parsed = True
-    params = st.query_params
-    if 'stock' in params:
-        st.session_state.current_stock = params['stock']
+# 修正解析點擊沒作用的問題：每次重新整理都檢查 URL 參數以觸發跳轉
+if 'stock' in st.query_params:
+    q_stock = st.query_params['stock']
+    if st.session_state.get('last_q_stock') != q_stock:
+        st.session_state.current_stock = q_stock
         st.session_state.page = "analysis"
         st.session_state.date_offset = 0
+        st.session_state.last_q_stock = q_stock
 
 if 'fav_groups' not in st.session_state:
     default_groups = {"預設群組": ["1802", "2330", "1785"]}
@@ -1241,8 +1242,8 @@ if st.session_state.page == "home":
         background-color: #5865F2 !important; border-color: #5865F2 !important; color: white !important;
         box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); transform: scale(1.02);
     }}
-    /* 隱藏預設的連結底線與顏色 */
-    a.stock-link {{ text-decoration: none; color: inherit; display: block; padding: 4px; border-radius: 6px; transition: background 0.2s; }}
+    /* 隱藏預設的連結底線與顏色，並加上 hover 效果 */
+    a.stock-link {{ text-decoration: none; color: inherit; display: block; padding: 4px 0px; border-radius: 6px; transition: background 0.2s; }}
     a.stock-link:hover {{ background-color: rgba(255,255,255,0.05); }}
     </style>
     """, unsafe_allow_html=True)
@@ -1256,40 +1257,45 @@ if st.session_state.page == "home":
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
-        # 定義題材對應
-        def get_custom_theme(ticker, industry):
-            THEME_MAP = {
-                "2382": ("AI伺服器", "💡"), "2356": ("AI伺服器", "💡"), "3231": ("AI伺服器", "💡"),
-                "2330": ("先進製程", "⚙️"), "2454": ("先進製程", "⚙️"), "6147": ("先進製程", "⚙️"),
-                "1503": ("重電綠能", "⚡"), "1519": ("重電綠能", "⚡"), "2308": ("重電綠能", "⚡"),
-                "2359": ("機器人概念", "🤖"), "2354": ("機器人概念", "🤖")
+        # --- 需求 1：自動更新動態題材 ---
+        def get_dynamic_theme(industry):
+            ind = str(industry).strip() if pd.notna(industry) and industry else ""
+            if not ind or ind == "一般產業": return ("一般題材", "📌")
+            
+            # 建立關鍵字對應表，讓 API 獲取的產業名稱自動匹配對應 Icon
+            icon_map = {
+                "半導體": "⚙️", "電腦": "💻", "電子": "⚡", "電機": "🔌", "綠能": "🌱",
+                "光電": "☀️", "通信": "📡", "網通": "📶", "生技": "🧬", "醫療": "🏥",
+                "航運": "🚢", "鋼鐵": "🏗️", "塑膠": "🔩", "紡織": "🧵", "汽車": "🚗",
+                "建材": "🏢", "營造": "🏗️", "金融": "💰", "觀光": "✈️", "百貨": "🏨",
+                "化工": "🧪", "玻璃": "🪟", "造紙": "📄", "橡膠": "🛢️", "水泥": "🧱",
+                "食品": "🍔", "貿易": "🛒", "電纜": "🔌", "化學": "🔬", "資訊服務": "💾"
             }
-            if ticker in THEME_MAP: return THEME_MAP[ticker]
-            ind = str(industry) if pd.notna(industry) else ""
-            if "半導體" in ind: return ("先進製程", "⚙️")
-            if "電腦" in ind or "電子" in ind: return ("AI伺服器", "💡")
-            if "電機" in ind or "電纜" in ind: return ("重電綠能", "⚡")
-            return ("一般題材", "📌")
+            icon = "🏷️"
+            for kw, ic in icon_map.items():
+                if kw in ind:
+                    icon = ic
+                    break
+            return (ind, icon)
 
-        df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_custom_theme(r['代號'], r.get('產業')), axis=1))
+        df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_dynamic_theme(r.get('產業')), axis=1))
         
-        # 動態產生題材列表
+        # 獲取自動更新的題材選單
         available_themes = ["全部題材"] + sorted(list(set(df_results['Theme_Name'].unique()) - {"一般題材"}))
         selected_theme = st.radio("選擇題材以過濾下方榜單：", available_themes, horizontal=True, label_visibility="collapsed")
         
         if selected_theme != "全部題材":
             df_results = df_results[df_results['Theme_Name'] == selected_theme]
         
-        # 預設過濾出「多頭紅吞榜」(評級S或A級，即 Score >= 2)
-        df_disp = df_results[df_results['Score'] >= 2].sort_values(by='Score', ascending=False).head(20)
+        # --- 需求 3：自動把評分 S 及 A 級顯示在最上面 ---
+        # 直接篩選 Score >= 2 (A級以上) 的標的，並優先按照 Score 降冪排序，確保 S 級一定在最上方
+        df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(20)
         
-        # 動態補上大戶動向資料 (為了保證速度，僅針對前 20 名獲取)
-        whale_actions = {}
-        whale_nets = {}
+        # 動態補上大戶動向資料 (僅抓取前 20 名以加速渲染)
+        whale_actions, whale_nets = {}, {}
         for ticker in df_disp['代號']:
             inst_data = get_institutional_trading(ticker)
-            w_tag = "主力觀望"
-            w_net = 0
+            w_tag, w_net = "主力觀望", 0
             if inst_data and len(inst_data) >= 3:
                 f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
                 t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3] if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
@@ -1311,12 +1317,12 @@ if st.session_state.page == "home":
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        # HTML 表格渲染
+        # --- HTML 完美復刻表格 ---
         table_html = '<div style="background-color: #0b1120; border-radius: 12px; border: 1px solid #1e293b; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); font-family: sans-serif; margin-bottom: 30px;">'
         table_html += '<div style="padding: 24px; border-bottom: 1px solid #1e293b; background: linear-gradient(180deg, rgba(15,23,42,1) 0%, rgba(11,17,32,1) 100%);">'
         table_html += '<div style="display: flex; align-items: center; gap: 10px;">'
         table_html += '<span style="color: #ef4444; font-size: 1.5rem; font-weight: bold;">📈</span>'
-        table_html += '<h2 style="color: #ef4444; margin: 0; font-size: 1.4rem; font-weight: 700; letter-spacing: 0.5px;">多頭紅吞榜 (Red Engulfing)</h2>'
+        table_html += '<h2 style="color: #ef4444; margin: 0; font-size: 1.4rem; font-weight: 700; letter-spacing: 0.5px;">多頭紅吞榜 (S級、A級優選)</h2>'
         table_html += '</div>'
         table_html += '<div style="color: #94a3b8; font-size: 0.9rem; margin-top: 12px; display: flex; align-items: center; gap: 12px;">'
         table_html += f'<span>目前篩選條件：{selected_theme}</span>'
@@ -1358,21 +1364,29 @@ if st.session_state.page == "home":
                     w_border = "rgba(148,163,184,0.5)"
 
                 whale_net_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
-                vol_str = f"{r['成交量']:,}"
+                vol_str = f"{r.get('成交量', 0):,}"
                 
-                # 使用 <a> 標籤達成點擊股票名稱/代碼即可跳轉至解析
+                # --- 需求 3：將評級用顏色符號顯示在股名旁邊 ---
+                score = r.get('Score', 0)
+                rating_html = ""
+                if score >= 5:
+                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px;">🟢 S級</span>'
+                elif score >= 2:
+                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(250,204,21,0.15); color: #facc15; border: 1px solid rgba(250,204,21,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px;">🟡 A級</span>'
+
+                # --- 需求 2：點擊股票名稱與代號區塊進入解析 ---
                 table_html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background-color: #0b1120;">'
                 table_html += '<td style="padding: 16px 24px;">'
                 table_html += f'<a class="stock-link" href="/?stock={r["代號"]}" target="_self">'
                 table_html += '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">'
-                table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">{r["名稱"]}</span>'
+                table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">{r["名稱"]}</span>{rating_html}'
                 if r.get("Theme_Name") != "一般題材":
-                    table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "")}</span>'
+                    table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500; margin-left: auto;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "")}</span>'
                 table_html += '</div>'
                 table_html += f'<div style="font-size: 0.85rem; color: #64748b; font-family: \'Courier New\', Courier, monospace;">{r["代號"]} <span style="font-size: 0.75rem; color: #475569; margin-left: 6px;">(點擊進入解析)</span></div>'
                 table_html += '</a></td>'
                 table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 1.2rem; font-weight: 700; color: {p_col}; font-family: \'Courier New\', monospace;">{r["收盤價"]:.1f}</span></td>'
-                table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 0.95rem; font-weight: 700; color: {p_col}; background-color: {p_bg}; border: 1px solid {p_border}; padding: 4px 10px; border-radius: 6px; font-family: \'Courier New\', monospace;">{change_sign}{r["漲跌幅"]}%</span></td>'
+                table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 0.95rem; font-weight: 700; color: {p_col}; background-color: {p_bg}; border: 1px solid {p_border}; padding: 4px 10px; border-radius: 6px; font-family: \'Courier New\', monospace;">{change_sign}{r.get("漲跌幅", 0)}%</span></td>'
                 table_html += f'<td style="padding: 16px 24px; vertical-align: middle;"><span style="font-size: 1.05rem; color: #cbd5e1; font-family: \'Courier New\', monospace; font-weight: 500;">{vol_str}</span></td>'
                 table_html += '<td style="padding: 16px 24px; vertical-align: middle;"><div style="display: flex; flex-direction: column; gap: 6px;">'
                 table_html += f'<span style="font-size: 0.8rem; font-weight: 600; color: {w_col}; background-color: {w_bg}; border: 1px solid {w_border}; padding: 3px 12px; border-radius: 20px; width: fit-content; text-align: center;">{r.get("Whale_Action", "主力觀望")}</span>'
