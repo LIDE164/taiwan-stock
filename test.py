@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-02 18:45 CST
+# 最後修改時間: 2026-07-02 19:30 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -141,7 +141,6 @@ st.sidebar.title("⏱️ 盤中即時跳動雷達")
 auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False, key="auto_refresh_toggle")
 if auto_refresh: st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
 
-# 🎯 全新：模擬下單紀錄入口
 st.sidebar.divider()
 st.sidebar.title("🛒 模擬交易中心")
 if st.sidebar.button("📋 我的模擬下單紀錄", use_container_width=True, key="btn_sidebar_sim_orders"):
@@ -724,22 +723,30 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     
     return data
 
-# 🎯 全新：封裝獨立且快取的「真實 240 日歷史回測引擎」
+# 🎯 新增：5日冷卻期(Cooldown)解決連續買點重疊，並同時回傳 buy_dates 確保圖表 100% 同步
 @st.cache_data(ttl=3600, show_spinner=False)
 def calculate_historical_winrate(ticker_number):
     df_slice = get_stock_data(ticker_number)
     if df_slice is None or len(df_slice) < 14:
-        return 0.0, 0, 0, 0
+        return 0.0, 0, 0, 0, []
         
     fund = get_fundamental_and_industry_data(ticker_number, round(df_slice['Close'].iloc[-1], 2))
     recent_240 = df_slice.tail(240)
     s_count, a_count = 0, 0
     wins = 0
     closed_signals = 0
+    buy_dates = []
     
     start_idx = len(df_slice) - len(recent_240)
+    last_buy_idx = -999
+    
     for idx in range(len(recent_240)):
         actual_idx = start_idx + idx
+        
+        # 🎯 5 日冷卻期：買進後 5 天內不再觸發新訊號，避免同一波段重複計算
+        if actual_idx - last_buy_idx < 5:
+            continue
+            
         temp_df = df_slice.iloc[:actual_idx + 1]
         
         if len(temp_df) >= 14:
@@ -747,6 +754,9 @@ def calculate_historical_winrate(ticker_number):
             if t_data and t_data['Score'] >= 2:
                 if t_data['Score'] >= 5: s_count += 1
                 else: a_count += 1
+                
+                last_buy_idx = actual_idx
+                buy_dates.append(recent_240.index[idx])
                 
                 buy_price = t_data['收盤價']
                 atr_val = t_data.get('ATR_Target', buy_price * 1.03) - buy_price
@@ -765,7 +775,7 @@ def calculate_historical_winrate(ticker_number):
                     elif future_df['Close'].iloc[-1] > buy_price and not hit_stop: wins += 1
                     
     win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0
-    return win_rate, closed_signals, s_count, a_count
+    return win_rate, closed_signals, s_count, a_count, buy_dates
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_global_scan_results(pool_tuple):
@@ -779,7 +789,8 @@ def get_global_scan_results(pool_tuple):
             
             if data:
                 if data['Score'] >= 2:
-                    wr, _, _, _ = calculate_historical_winrate(stock)
+                    # 抓取快取中的真實回測勝率
+                    wr, _, _, _, _ = calculate_historical_winrate(stock)
                     data['WinRate'] = round(wr, 1)
                 return data
         return None
@@ -934,7 +945,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
 
     return tech_html + chip_html + fund_html
 
-def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True):
+def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_mode, show_buy_signal=False, f_data=None, show_sup_res=False, show_signals=True, buy_dates=[]):
     df_view = df.tail(view_days)
     colors = ['#ef4444' if row['Close'] >= row['Open'] else '#22c55e' for _, row in df_view.iterrows()]
     last_row = df_view.iloc[-1]
@@ -1040,18 +1051,15 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
         if deduct_up_x: fig.add_trace(go.Scatter(x=deduct_up_x, y=deduct_up_y, mode='text', text=deduct_up_text, textposition="bottom center", textfont=dict(color="#ef4444", size=13), name="扣低上彎", hoverinfo='skip'), row=1, col=1)
         if deduct_down_x: fig.add_trace(go.Scatter(x=deduct_down_x, y=deduct_down_y, mode='text', text=deduct_down_text, textposition="top center", textfont=dict(color="#22c55e", size=13), name="扣高下彎", hoverinfo='skip'), row=1, col=1)
 
-    if show_buy_signal and f_data:
+    # 🎯 修復圖表：直接讀取經過冷卻期(Cooldown)過濾的 buy_dates，確保與歷史勝率次數 100% 絕對一致
+    if show_buy_signal and buy_dates:
         buy_x, buy_y, buy_text = [], [], []
-        for i in range(len(df_view)):
-            current_date = df_view.index[i]
-            pos = df.index.get_loc(current_date)
-            sub_df = df.iloc[:pos+1]
-            if len(sub_df) >= 14:
-                t_data = analyze_today(sub_df, ticker_name, inst_data=None, is_light_mode=is_light_mode) 
-                if t_data and t_data['Score'] >= 2: 
-                    buy_x.append(current_date.strftime('%Y-%m-%d'))
-                    buy_y.append(df_view['Low'].iloc[i] * 0.90) 
-                    buy_text.append("買")
+        for d in buy_dates:
+            if d in df_view.index:
+                idx = df_view.index.get_loc(d)
+                buy_x.append(d.strftime('%Y-%m-%d'))
+                buy_y.append(df_view['Low'].iloc[idx] * 0.90) 
+                buy_text.append("買")
         if buy_x:
             fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=14, color='#34d399'), text=buy_text, textposition="bottom center", textfont=dict(color="#34d399", size=11, weight="bold"), name="買進訊號", hoverinfo='skip'), row=1, col=1)
             
@@ -1105,7 +1113,7 @@ if st.session_state.page == "home":
                 
                 if data:
                     if data['Score'] >= 2:
-                        wr, _, _, _ = calculate_historical_winrate(stock)
+                        wr, _, _, _, _ = calculate_historical_winrate(stock)
                         data['WinRate'] = round(wr, 1)
                     return data
             return None
@@ -1364,10 +1372,14 @@ elif st.session_state.page == "analysis":
                 f_data = get_fundamental_and_industry_data(target, data['收盤價'])
                 p_bar.progress(70)
                 
+                # 🎯 呼叫獨立且快取的真實回測引擎
+                win_rate, closed_signals, s_count, a_count, buy_dates = calculate_historical_winrate(target)
+                
                 current_show_buy = st.session_state.get('toggle_buy_sig_ch', True)
                 current_show_sup = st.session_state.get('toggle_sup_res_ch', True)
                 current_show_signals = st.session_state.get('toggle_signals_ch', True)
-                pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals)
+                # 將帶有冷卻期的 buy_dates 傳入圖表，保證與歷史勝率次數同步
+                pre_rendered_fig = draw_professional_chart(df_slice, target, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, f_data, current_show_sup, current_show_signals, buy_dates=buy_dates)
                 p_bar.progress(100)
                 time.sleep(0.1) 
         else:
@@ -1396,7 +1408,6 @@ elif st.session_state.page == "analysis":
             
             st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 1 年 / 240 日)")
             
-            win_rate, closed_signals, s_count, a_count = calculate_historical_winrate(target)
             wr_color = "#ef4444" if win_rate >= 75 else ("#facc15" if win_rate >= 40 else "#22c55e")
             
             with st.container(border=True):
