@@ -536,6 +536,33 @@ def get_decision_score(data, fund_data, inst_data=None):
 
     return sc, rs
 
+def get_dynamic_theme(ticker, industry):
+    THEME_MAP = {
+        "2382": ("AI伺服器", "💡"), "2356": ("AI伺服器", "💡"), "3231": ("AI伺服器", "💡"),
+        "2330": ("先進製程", "⚙️"), "2454": ("先進製程", "⚙️"), "6147": ("先進製程", "⚙️"),
+        "1503": ("重電綠能", "⚡"), "1519": ("重電綠能", "⚡"), "2308": ("重電綠能", "⚡"),
+        "2359": ("機器人概念", "🤖"), "2354": ("機器人概念", "🤖")
+    }
+    if ticker in THEME_MAP: return THEME_MAP[ticker]
+    
+    ind = str(industry).strip() if pd.notna(industry) and industry else ""
+    if not ind or ind == "一般產業": return ("一般題材", "📌")
+    
+    icon_map = {
+        "半導體": "⚙️", "電腦": "💻", "電子": "⚡", "電機": "🔌", "綠能": "🌱",
+        "光電": "☀️", "通信": "📡", "網通": "📶", "生技": "🧬", "醫療": "🏥",
+        "航運": "🚢", "鋼鐵": "🏗️", "塑膠": "🔩", "紡織": "🧵", "汽車": "🚗",
+        "建材": "🏢", "營造": "🏗️", "金融": "💰", "觀光": "✈️", "百貨": "🏨",
+        "化工": "🧪", "玻璃": "🪟", "造紙": "📄", "橡膠": "🛢️", "水泥": "🧱",
+        "食品": "🍔", "貿易": "🛒", "電纜": "🔌", "化學": "🔬", "資訊服務": "💾"
+    }
+    icon = "🏷️"
+    for kw, ic in icon_map.items():
+        if kw in ind:
+            icon = ic
+            break
+    return (ind, icon)
+
 def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
@@ -573,7 +600,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
     except:
         is_ma5_turning_up, is_ma60_turning_up = False, False
 
-    # 指示1：解析並抓出主力/大戶動向以利首頁榜單顯示
     whale_tag = "主力觀望"
     whale_net_buy = 0
     if inst_data and len(inst_data) >= 3:
@@ -590,6 +616,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         elif foreign_net < -500 and trust_net < -300: whale_tag = "土洋雙賣"
         elif foreign_net < -500: whale_tag = "外資倒貨"
         elif total_net < 0: whale_tag = "法人偏空"
+
+    theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -610,7 +638,9 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         "5日線即將上彎": is_ma5_turning_up,
         "季線即將上彎": is_ma60_turning_up,
         "Whale_Action": whale_tag,
-        "Whale_Net": whale_net_buy
+        "Whale_Net": whale_net_buy,
+        "Theme_Name": theme_name,
+        "Theme_Icon": theme_icon
     }
     
     sc, rs = get_decision_score(data, fund, inst_data)
@@ -1257,41 +1287,20 @@ if st.session_state.page == "home":
     if scan_results:
         df_results = pd.DataFrame(scan_results)
         
-        # --- 需求 1：自動更新動態題材 ---
-        def get_dynamic_theme(industry):
-            ind = str(industry).strip() if pd.notna(industry) and industry else ""
-            if not ind or ind == "一般產業": return ("一般題材", "📌")
-            
-            # 建立關鍵字對應表，讓 API 獲取的產業名稱自動匹配對應 Icon
-            icon_map = {
-                "半導體": "⚙️", "電腦": "💻", "電子": "⚡", "電機": "🔌", "綠能": "🌱",
-                "光電": "☀️", "通信": "📡", "網通": "📶", "生技": "🧬", "醫療": "🏥",
-                "航運": "🚢", "鋼鐵": "🏗️", "塑膠": "🔩", "紡織": "🧵", "汽車": "🚗",
-                "建材": "🏢", "營造": "🏗️", "金融": "💰", "觀光": "✈️", "百貨": "🏨",
-                "化工": "🧪", "玻璃": "🪟", "造紙": "📄", "橡膠": "🛢️", "水泥": "🧱",
-                "食品": "🍔", "貿易": "🛒", "電纜": "🔌", "化學": "🔬", "資訊服務": "💾"
-            }
-            icon = "🏷️"
-            for kw, ic in icon_map.items():
-                if kw in ind:
-                    icon = ic
-                    break
-            return (ind, icon)
-
-        df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_dynamic_theme(r.get('產業')), axis=1))
+        # --- 全自動更新動態題材 ---
+        df_results['Theme_Name'], df_results['Theme_Icon'] = zip(*df_results.apply(lambda r: get_dynamic_theme(r['代號'], r.get('產業')), axis=1))
         
-        # 獲取自動更新的題材選單
+        # 獲取自動生成的題材清單
         available_themes = ["全部題材"] + sorted(list(set(df_results['Theme_Name'].unique()) - {"一般題材"}))
         selected_theme = st.radio("選擇題材以過濾下方榜單：", available_themes, horizontal=True, label_visibility="collapsed")
         
         if selected_theme != "全部題材":
             df_results = df_results[df_results['Theme_Name'] == selected_theme]
         
-        # --- 需求 3：自動把評分 S 及 A 級顯示在最上面 ---
-        # 直接篩選 Score >= 2 (A級以上) 的標的，並優先按照 Score 降冪排序，確保 S 級一定在最上方
+        # --- 自動把評分 S 及 A 級置頂顯示 ---
         df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(20)
         
-        # 動態補上大戶動向資料 (僅抓取前 20 名以加速渲染)
+        # 動態補上大戶動向資料 (為了保證速度，僅針對前 20 名獲取)
         whale_actions, whale_nets = {}, {}
         for ticker in df_disp['代號']:
             inst_data = get_institutional_trading(ticker)
@@ -1317,7 +1326,7 @@ if st.session_state.page == "home":
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        # --- HTML 完美復刻表格 ---
+        # HTML 表格渲染
         table_html = '<div style="background-color: #0b1120; border-radius: 12px; border: 1px solid #1e293b; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); font-family: sans-serif; margin-bottom: 30px;">'
         table_html += '<div style="padding: 24px; border-bottom: 1px solid #1e293b; background: linear-gradient(180deg, rgba(15,23,42,1) 0%, rgba(11,17,32,1) 100%);">'
         table_html += '<div style="display: flex; align-items: center; gap: 10px;">'
@@ -1366,22 +1375,24 @@ if st.session_state.page == "home":
                 whale_net_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
                 vol_str = f"{r.get('成交量', 0):,}"
                 
-                # --- 需求 3：將評級用顏色符號顯示在股名旁邊 ---
+                # --- 需求 2：將評級用顏色符號顯示在股名旁邊，並修正跑版折行 ---
                 score = r.get('Score', 0)
                 rating_html = ""
                 if score >= 5:
-                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px;">🟢 S級</span>'
+                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px; white-space: nowrap; flex-shrink: 0;">🟢 S級</span>'
                 elif score >= 2:
-                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(250,204,21,0.15); color: #facc15; border: 1px solid rgba(250,204,21,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px;">🟡 A級</span>'
+                    rating_html = '<span style="font-size: 0.75rem; background-color: rgba(250,204,21,0.15); color: #facc15; border: 1px solid rgba(250,204,21,0.3); padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 8px; white-space: nowrap; flex-shrink: 0;">🟡 A級</span>'
 
-                # --- 需求 2：點擊股票名稱與代號區塊進入解析 ---
+                theme_icon = r.get("Theme_Icon", "📌")
+                theme_name = r.get("Theme_Name", "一般題材")
+
+                # --- 需求 1：修正所有類別的顯示並實裝點擊跳轉 ---
                 table_html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background-color: #0b1120;">'
                 table_html += '<td style="padding: 16px 24px;">'
                 table_html += f'<a class="stock-link" href="/?stock={r["代號"]}" target="_self">'
-                table_html += '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">'
-                table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc;">{r["名稱"]}</span>{rating_html}'
-                if r.get("Theme_Name") != "一般題材":
-                    table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500; margin-left: auto;">{r.get("Theme_Icon", "")} {r.get("Theme_Name", "")}</span>'
+                table_html += '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">'
+                table_html += f'<span style="font-size: 1.15rem; font-weight: 700; color: #f8fafc; white-space: nowrap;">{r["名稱"]}</span>{rating_html}'
+                table_html += f'<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background-color: rgba(79, 70, 229, 0.15); color: #818cf8; border: 1px solid rgba(79, 70, 229, 0.3); display: flex; align-items: center; gap: 4px; font-weight: 500; margin-left: auto; white-space: nowrap; flex-shrink: 0;">{theme_icon} {theme_name}</span>'
                 table_html += '</div>'
                 table_html += f'<div style="font-size: 0.85rem; color: #64748b; font-family: \'Courier New\', Courier, monospace;">{r["代號"]} <span style="font-size: 0.75rem; color: #475569; margin-left: 6px;">(點擊進入解析)</span></div>'
                 table_html += '</a></td>'
@@ -1638,5 +1649,6 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
 
 
