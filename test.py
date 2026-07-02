@@ -716,10 +716,49 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         elif data.get('Est_Vol_Ratio', 1) > 1.3: feature = "出量攻擊"
     data['Feature'] = feature
     
-    sim_winrate = min(98.5, max(40.0, 50 + sc * 4.5 + (20 if is_ma60_turning_up else 0)))
-    data['WinRate'] = round(sim_winrate, 1)
+    # 移除原本的預估假勝率，將初始值設為 0
+    data['WinRate'] = 0.0 
     
     return data
+
+# 🎯 全新：封裝獨立且快取的「真實 240 日歷史回測引擎」
+@st.cache_data(ttl=3600, show_spinner=False)
+def calculate_historical_winrate(ticker_number):
+    df_slice = get_stock_data(ticker_number)
+    if df_slice is None or len(df_slice) < 14:
+        return 0.0, 0, 0, 0
+        
+    recent_240 = df_slice.tail(240)
+    s_count, a_count = 0, 0
+    wins = 0
+    closed_signals = 0
+    
+    for idx in range(len(recent_240)):
+        actual_idx = df_slice.index.get_loc(recent_240.index[idx])
+        temp_df = df_slice.iloc[:actual_idx + 1]
+        
+        if len(temp_df) >= 14:
+            t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False)
+            if t_data and t_data['Score'] >= 2:
+                if t_data['Score'] >= 5: s_count += 1
+                else: a_count += 1
+                
+                buy_price = t_data['收盤價']
+                atr_val = t_data.get('ATR_Target', buy_price * 1.03) - buy_price
+                target_p = buy_price + (atr_val)
+                stop_p = buy_price - (atr_val / t_data.get('RRR', 1.5))
+                
+                future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 6]
+                if len(future_df) > 0:
+                    closed_signals += 1
+                    hit_target = future_df['High'].max() >= target_p
+                    hit_stop = future_df['Low'].min() <= stop_p
+                    
+                    if hit_target and not hit_stop: wins += 1
+                    elif future_df['Close'].iloc[-1] > buy_price and not hit_stop: wins += 1
+                    
+    win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0
+    return win_rate, closed_signals, s_count, a_count
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_global_scan_results(pool_tuple):
@@ -728,7 +767,14 @@ def get_global_scan_results(pool_tuple):
         df = get_stock_data(stock)
         if df is not None: 
             inst_data = get_institutional_trading(stock)
-            return analyze_today(df, stock, inst_data=inst_data, is_light_mode=False)
+            data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=False)
+            
+            if data:
+                # 🎯 只要達到 A 級，就啟動上方寫好的真實回測引擎並寫入 data 中
+                if data['Score'] >= 2:
+                    wr, _, _, _ = calculate_historical_winrate(stock)
+                    data['WinRate'] = round(wr, 1)
+                return data
         return None
         
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1336,37 +1382,10 @@ elif st.session_state.page == "analysis":
             st.markdown("---")
             
             st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 1 年 / 240 日)")
-            recent_240 = df_slice.tail(240)
-            s_count, a_count = 0, 0
-            wins = 0
-            closed_signals = 0
             
-            for idx in range(len(recent_240)):
-                current_date = recent_240.index[idx]
-                actual_idx = df_slice.index.get_loc(current_date)
-                temp_df = df_slice.iloc[:actual_idx + 1]
-                
-                if len(temp_df) >= 14:
-                    t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode)
-                    if t_data and t_data['Score'] >= 2:
-                        if t_data['Score'] >= 5: s_count += 1
-                        else: a_count += 1
-                        
-                        buy_price = t_data['收盤價']
-                        atr_val = t_data.get('ATR_Target', buy_price * 1.03) - buy_price
-                        target_p = buy_price + (atr_val)
-                        stop_p = buy_price - (atr_val / t_data.get('RRR', 1.5))
-                        
-                        future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 6]
-                        if len(future_df) > 0:
-                            closed_signals += 1
-                            hit_target = future_df['High'].max() >= target_p
-                            hit_stop = future_df['Low'].min() <= stop_p
-                            
-                            if hit_target and not hit_stop: wins += 1
-                            elif future_df['Close'].iloc[-1] > buy_price and not hit_stop: wins += 1
+            # 🎯 解析頁面也直接呼叫真實回測引擎 (統一來源，確保數據 100% 一致)
+            win_rate, closed_signals, s_count, a_count = calculate_historical_winrate(target)
             
-            win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0
             wr_color = "#ef4444" if win_rate >= 75 else ("#facc15" if win_rate >= 50 else "#22c55e")
             
             with st.container(border=True):
