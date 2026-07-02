@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-02 18:30 CST
+# 最後修改時間: 2026-07-02 18:45 CST
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -141,6 +141,13 @@ st.sidebar.title("⏱️ 盤中即時跳動雷達")
 auto_refresh = st.sidebar.toggle("🟢 開啟即時自動更新 (每30秒)", False, key="auto_refresh_toggle")
 if auto_refresh: st_autorefresh(interval=30000, limit=None, key="market_auto_refresh")
 
+# 🎯 全新：模擬下單紀錄入口
+st.sidebar.divider()
+st.sidebar.title("🛒 模擬交易中心")
+if st.sidebar.button("📋 我的模擬下單紀錄", use_container_width=True, key="btn_sidebar_sim_orders"):
+    st.session_state.page = "simulated_orders"
+    st.rerun()
+
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體業", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Building Materials": "玻璃陶瓷", "Marine Shipping": "航運業",
@@ -182,6 +189,7 @@ def get_stock_name(ticker):
 FAV_FILE = "favorites.json" 
 FAV_GROUPS_FILE = "fav_groups.json" 
 POOL_FILE = "pool.json"
+SIM_FILE = "simulated_orders.json"
 
 def load_json(fp, default):
     if os.path.exists(fp):
@@ -194,10 +202,13 @@ def save_json(fp, data):
 
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
-if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231", "2891", "9904", "1809", "0050", "2027"])
+if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231", "2891", "9904", "1809", "0050", "2027", "1409", "3016"])
 if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
+
+if 'simulated_orders' not in st.session_state:
+    st.session_state.simulated_orders = load_json(SIM_FILE, [])
 
 if 'stock' in st.query_params:
     q_stock = st.query_params['stock']
@@ -550,9 +561,6 @@ def render_index_board():
     except Exception as e: 
         st.error(f"大盤儀表板渲染發生錯誤，防護系統啟動中。({str(e)})")
 
-# ==========================================
-# 🚀 完美還原「圖一」分析邏輯
-# ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
@@ -646,7 +654,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
     
-    # 盤中即時精算 (動態滿分逼近 99)
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
     vwap_dev = (t_close - vwap_approx) / vwap_approx * 100
     est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
@@ -668,7 +675,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
     elif t_close > vwap_approx: flow = "主動買盤"
     elif est_vol_ratio > 1.5 and t_close < vwap_approx: flow = "大單倒出"
 
-    # 盤後 ATR 精算
     atr_val = t.get('ATR', t_close * 0.03)
     target_p = t_close + (atr_val * 1.5)
     stop_p = t_close - (atr_val * 1.0)
@@ -734,14 +740,12 @@ def get_global_scan_results(pool_tuple):
             except: pass
     return scan_results
 
-# 🎯 還原：技術面、籌碼面(長條圖+表格)、基本面白話文解析
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
     card_bg = "#f4f6f9" if is_light_mode else "#0f172a"
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(30,41,59,0.5)"
     b_col = "#ddd" if is_light_mode else "#1e293b"
 
-    # --- 1. 技術面完整白話文解析 ---
     tech_bullets = []
     for reason in data['Reasons']:
         if "✅" in reason or "🔥" in reason:
@@ -761,7 +765,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     tech_html += f"<b>【結　　果】</b>{tech_res}"
     tech_html += f"</div></div>"
 
-    # --- 2. 籌碼面解析 (還原進階籌碼長條圖 + 右側表格) ---
     chip_res_text = "中立觀望"
     tables_html = ""
     
@@ -785,7 +788,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         th_color = "#ccc" if not is_light_mode else "#555"
         def get_c(val): return "#ef4444" if val > 0 else ("#22c55e" if val < 0 else t_text_c)
         
-        # 安全串接 HTML，絕對不產生 Markdown 縮排錯誤
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: wrap; margin-top: 15px; width: 100%;'>"
         
         tables_html += f"<div style='flex: 1; min-width: 260px; border: 1px solid {b_col}; border-radius: 6px; padding: 15px; background-color: {sum_bg}; position: relative;'>"
@@ -848,7 +850,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     chip_html += f"<b>【結　　果】</b>{chip_res_text}"
     chip_html += f"</div></div>"
 
-    # --- 3. 基本面解析 ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -1033,7 +1034,6 @@ if st.session_state.page == "home":
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
-    # 🎯 修改：加入掃描進度條，並利用 session_state 暫存結果避免切換時重複讀取
     if "scan_results" not in st.session_state:
         st.session_state.scan_results = []
         progress_text = st.empty()
@@ -1059,7 +1059,6 @@ if st.session_state.page == "home":
                     if res: st.session_state.scan_results.append(res)
                 except: pass
                 
-                # 即時更新進度條與文字
                 p_bar.progress(min(completed / total, 1.0))
                 progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙引擎資料精密解析中... ({completed} / {total})</div>", unsafe_allow_html=True)
                 
@@ -1097,7 +1096,6 @@ if st.session_state.page == "home":
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        # 🎯 修改：文字更新為近 1 年波段勝率
         st.markdown(f"<div style='display: flex; justify-content: space-between; font-size: 0.8rem; color: #94a3b8; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-bottom: 16px;'><span><i class='fa-solid fa-bolt'></i> {'09:00-13:30 高勝率預估' if is_intraday else '近 1 年波段勝率與風報比'}</span><span>共 {len(df_disp)} 檔</span></div>", unsafe_allow_html=True)
         
         if df_disp.empty:
@@ -1178,6 +1176,94 @@ if st.session_state.page == "home":
                 
             st.markdown(cards_html, unsafe_allow_html=True)
 
+# ==========================================
+# 🚀 模擬交易紀錄獨立頁面
+# ==========================================
+elif st.session_state.page == "simulated_orders":
+    st.markdown("<h2 style='text-align: center; color: #818cf8; margin-bottom: 20px;'>🛒 我的模擬下單紀錄</h2>", unsafe_allow_html=True)
+    
+    col_home, col_clear = st.columns([1, 1])
+    with col_home:
+        if st.button("🏠 回雷達總機", use_container_width=True, key="btn_sim_home"): 
+            st.session_state.page = "home"
+            st.rerun()
+    with col_clear:
+        if st.button("🗑️ 清空所有紀錄", use_container_width=True, key="btn_sim_clear"):
+            st.session_state.simulated_orders = []
+            save_json(SIM_FILE, [])
+            st.success("已清除所有模擬下單紀錄！")
+            st.rerun()
+            
+    orders = st.session_state.get('simulated_orders', [])
+    
+    if not orders:
+        st.info("目前沒有模擬下單紀錄。請先進入「個股解析頁面」，點擊「🛒 執行模擬下單」來建立您的紙上測試部位！")
+    else:
+        st.markdown(f"<div style='text-align: right; font-size: 0.85rem; color: #888; margin-bottom: 15px;'>共 {len(orders)} 筆未平倉紀錄，價格為即時抓取更新</div>", unsafe_allow_html=True)
+        cards_html = ""
+        card_bg_global = "#f4f6f9" if is_light_mode else "#0f172a"
+        title_c_global = "#111" if is_light_mode else "#f8fafc"
+        
+        for order in orders:
+            curr_price = order['buy_price']
+            try:
+                # 安全地獲取快取中的現價，不拖慢網頁速度
+                df_temp = get_stock_data(order['ticker'])
+                if df_temp is not None and not df_temp.empty:
+                    curr_price = float(df_temp['Close'].iloc[-1])
+            except:
+                pass
+                
+            pl_val = curr_price - order['buy_price']
+            pl_pct = (pl_val / order['buy_price']) * 100 if order['buy_price'] > 0 else 0
+            pl_col = "#ef4444" if pl_val >= 0 else "#22c55e"
+            pl_bg = "rgba(239,68,68,0.1)" if pl_val >= 0 else "rgba(34,197,94,0.1)"
+            sign = "+" if pl_val > 0 else ""
+            
+            stock_link = f'href="/?stock={order["ticker"]}" target="_self"'
+            
+            cards_html += f'''
+            <div style="background-color: {card_bg_global}; border: 1px solid {border_col}; border-radius: 12px; padding: 16px; margin-bottom: 14px; position: relative; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                    <a {stock_link} class="stock-card-link">
+                        <div style="display: flex; align-items: baseline; gap: 8px;">
+                            <span style="color: {title_c_global}; font-weight: bold; font-size: 1.25rem;">{order['name']}</span>
+                            <span style="color: #64748b; font-family: monospace; font-size: 0.9rem;">{order['ticker']}</span>
+                        </div>
+                        <div style="font-size: 0.75rem; color: #64748b; margin-top: 2px;">下單時間: {order['time']}</div>
+                    </a>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 2px;">最新現價 / 報酬率</div>
+                        <div style="font-size: 1.3rem; font-weight: bold; font-family: monospace; color: {pl_col}; line-height: 1.1;">{curr_price:.1f}</div>
+                        <div style="font-size: 0.85rem; font-weight: bold; font-family: monospace; color: {pl_col}; background-color: {pl_bg}; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 4px;">{sign}{pl_pct:.2f}%</div>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">買進成本</span>
+                        <span style="font-size: 1rem; font-weight: bold; color: {text_col}; font-family: monospace;">{order['buy_price']:.1f}</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">動態停利</span>
+                        <span style="font-size: 1rem; font-weight: bold; color: #ef4444; font-family: monospace;">🎯 {order['target_price']:.1f}</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">嚴格停損</span>
+                        <span style="font-size: 1rem; font-weight: bold; color: #22c55e; font-family: monospace;">🛑 {order['stop_price']:.1f}</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">風報比 (RRR)</span>
+                        <span style="font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;">1 : {order['rrr']}</span>
+                    </div>
+                </div>
+            </div>
+            '''
+        st.markdown(cards_html, unsafe_allow_html=True)
+
+# ==========================================
+# 🚀 進入單一個股解析頁面
+# ==========================================
 elif st.session_state.page == "analysis":
     target = st.session_state.current_stock
     c_name = get_stock_name(target)
@@ -1249,10 +1335,6 @@ elif st.session_state.page == "analysis":
             if up_c.button("🔄 更新個股即時數值", use_container_width=True, key="btn_refresh_stock_data"): st.cache_data.clear(); st.rerun()
             st.markdown("---")
             
-            # ==========================================
-            # 🚀 ATR 動態停利損勝率回測引擎
-            # ==========================================
-            # 🎯 修改：引擎回測範圍從 60 日擴大為近 1 年 (約 240 個交易日)
             st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 1 年 / 240 日)")
             recent_240 = df_slice.tail(240)
             s_count, a_count = 0, 0
@@ -1300,7 +1382,6 @@ elif st.session_state.page == "analysis":
                 
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-            # === AI 雙引擎決策大腦 ===
             ai_html = generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=is_light_mode)
             
             v_c = "#22c55e" if sc < 2 else ("#facc15" if sc < 5 else "#ef4444")
@@ -1319,12 +1400,25 @@ elif st.session_state.page == "analysis":
                 {ai_html}
             </div>""", unsafe_allow_html=True)
             
-            # 🎯 修改：新增模擬下單測試按鈕
+            # 🎯 全新：模擬下單功能儲存按鈕
             if st.button("🛒 執行模擬下單 (紙上測試)", use_container_width=True):
+                new_order = {
+                    "id": str(int(time.time())),
+                    "ticker": target,
+                    "name": c_name,
+                    "buy_price": data['收盤價'],
+                    "target_price": data['ATR_Target'],
+                    "stop_price": data['ATR_Stop'],
+                    "rrr": data['RRR'],
+                    "time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
+                }
+                st.session_state.simulated_orders.insert(0, new_order)
+                save_json(SIM_FILE, st.session_state.simulated_orders)
+                
                 st.success(f"✅ **模擬下單設定成功！** 已在 **{data['收盤價']}** 元虛擬買進 {target} {c_name}。\n\n"
                            f"🎯 **設定停利**：{data['ATR_Target']} 元\n"
                            f"🛑 **設定停損**：{data['ATR_Stop']} 元\n"
-                           f"⚖️ **風報比**：1 : {data['RRR']}")
+                           f"👉 您可以從左側選單進入「模擬交易中心」隨時追蹤即時報酬率！")
                 st.balloons()
             
             # K線圖操作區
