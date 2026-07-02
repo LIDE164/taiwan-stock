@@ -1267,7 +1267,7 @@ elif st.session_state.page == "simulated_orders":
     if not orders:
         st.info("目前沒有模擬下單紀錄。請先進入「個股解析頁面」，點擊「🛒 執行模擬下單」來建立您的紙上測試部位！")
     else:
-        st.markdown(f"<div style='text-align: right; font-size: 0.85rem; color: #888; margin-bottom: 15px;'>共 {len(orders)} 筆未平倉紀錄，價格為即時抓取更新</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: right; font-size: 0.85rem; color: #888; margin-bottom: 15px;'>共 {len(orders)} 筆紀錄，價格為即時抓取更新</div>", unsafe_allow_html=True)
         cards_html = ""
         card_bg_global = "#f4f6f9" if is_light_mode else "#0f172a"
         title_c_global = "#111" if is_light_mode else "#f8fafc"
@@ -1287,45 +1287,53 @@ elif st.session_state.page == "simulated_orders":
             pl_bg = "rgba(239,68,68,0.1)" if pl_val >= 0 else "rgba(34,197,94,0.1)"
             sign = "+" if pl_val > 0 else ""
             
+            # 🎯 新增：判斷是否停利或停損
+            status_html = ""
+            if curr_price >= order['target_price']:
+                status_html = "<div style='background-color: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid #ef4444; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 8px;'><i class='fa-solid fa-bullseye'></i> 🎯 停利達標</div>"
+            elif curr_price <= order['stop_price']:
+                status_html = "<div style='background-color: rgba(34,197,94,0.2); color: #22c55e; border: 1px solid #22c55e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 8px;'><i class='fa-solid fa-triangle-exclamation'></i> 🛑 觸發停損</div>"
+            else:
+                status_html = "<div style='background-color: rgba(96,165,250,0.1); color: #60a5fa; border: 1px solid #60a5fa; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; margin-left: 8px;'><i class='fa-solid fa-spinner'></i> 🔄 持倉中</div>"
+            
             stock_link = f'href="/?stock={order["ticker"]}" target="_self"'
             
-            cards_html += f'''
-            <div style="background-color: {card_bg_global}; border: 1px solid {border_col}; border-radius: 12px; padding: 16px; margin-bottom: 14px; position: relative; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
-                    <a {stock_link} class="stock-card-link">
-                        <div style="display: flex; align-items: baseline; gap: 8px;">
-                            <span style="color: {title_c_global}; font-weight: bold; font-size: 1.25rem;">{order['name']}</span>
-                            <span style="color: #64748b; font-family: monospace; font-size: 0.9rem;">{order['ticker']}</span>
-                        </div>
-                        <div style="font-size: 0.75rem; color: #64748b; margin-top: 2px;">下單時間: {order['time']}</div>
-                    </a>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 2px;">最新現價 / 報酬率</div>
-                        <div style="font-size: 1.3rem; font-weight: bold; font-family: monospace; color: {pl_col}; line-height: 1.1;">{curr_price:.1f}</div>
-                        <div style="font-size: 0.85rem; font-weight: bold; font-family: monospace; color: {pl_col}; background-color: {pl_bg}; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 4px;">{sign}{pl_pct:.2f}%</div>
-                    </div>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-                    <div style="display: flex; flex-direction: column; align-items: center;">
-                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">買進成本</span>
-                        <span style="font-size: 1rem; font-weight: bold; color: {text_col}; font-family: monospace;">{order['buy_price']:.1f}</span>
-                    </div>
-                    <div style="display: flex; flex-direction: column; align-items: center;">
-                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">動態停利</span>
-                        <span style="font-size: 1rem; font-weight: bold; color: #ef4444; font-family: monospace;">🎯 {order['target_price']:.1f}</span>
-                    </div>
-                    <div style="display: flex; flex-direction: column; align-items: center;">
-                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">嚴格停損</span>
-                        <span style="font-size: 1rem; font-weight: bold; color: #22c55e; font-family: monospace;">🛑 {order['stop_price']:.1f}</span>
-                    </div>
-                    <div style="display: flex; flex-direction: column; align-items: center;">
-                        <span style="font-size: 0.7rem; color: #64748b; margin-bottom: 4px;">風報比 (RRR)</span>
-                        <span style="font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;">1 : {order['rrr']}</span>
-                    </div>
-                </div>
-            </div>
-            '''
+            # 安全單行字串串接，防止 Markdown 縮排錯誤
+            cards_html += f"<div style='background-color: {card_bg_global}; border: 1px solid {border_col}; border-radius: 12px; padding: 16px; margin-bottom: 14px; position: relative; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>"
+            cards_html += f"<div style='display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;'>"
+            cards_html += f"<a {stock_link} class='stock-card-link' style='flex: 1;'>"
+            cards_html += f"<div style='display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;'>"
+            cards_html += f"<span style='color: {title_c_global}; font-weight: bold; font-size: 1.25rem;'>{order['name']}</span>"
+            cards_html += f"<span style='color: #64748b; font-family: monospace; font-size: 0.9rem;'>{order['ticker']}</span>"
+            cards_html += status_html
+            cards_html += f"</div>"
+            cards_html += f"<div style='font-size: 0.75rem; color: #64748b;'>下單時間: {order['time']}</div>"
+            cards_html += f"</a>"
+            cards_html += f"<div style='text-align: right; flex-shrink: 0;'>"
+            cards_html += f"<div style='font-size: 0.8rem; color: #94a3b8; margin-bottom: 2px;'>最新現價 / 報酬率</div>"
+            cards_html += f"<div style='font-size: 1.3rem; font-weight: bold; font-family: monospace; color: {pl_col}; line-height: 1.1;'>{curr_price:.1f}</div>"
+            cards_html += f"<div style='font-size: 0.85rem; font-weight: bold; font-family: monospace; color: {pl_col}; background-color: {pl_bg}; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top: 4px;'>{sign}{pl_pct:.2f}%</div>"
+            cards_html += f"</div></div>"
+            
+            cards_html += f"<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;'>"
+            cards_html += f"<div style='display: flex; flex-direction: column; align-items: center;'>"
+            cards_html += f"<span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>買進成本</span>"
+            cards_html += f"<span style='font-size: 1rem; font-weight: bold; color: {text_col}; font-family: monospace;'>{order['buy_price']:.1f}</span>"
+            cards_html += f"</div>"
+            cards_html += f"<div style='display: flex; flex-direction: column; align-items: center;'>"
+            cards_html += f"<span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>動態停利</span>"
+            cards_html += f"<span style='font-size: 1rem; font-weight: bold; color: #ef4444; font-family: monospace;'>🎯 {order['target_price']:.1f}</span>"
+            cards_html += f"</div>"
+            cards_html += f"<div style='display: flex; flex-direction: column; align-items: center;'>"
+            cards_html += f"<span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>嚴格停損</span>"
+            cards_html += f"<span style='font-size: 1rem; font-weight: bold; color: #22c55e; font-family: monospace;'>🛑 {order['stop_price']:.1f}</span>"
+            cards_html += f"</div>"
+            cards_html += f"<div style='display: flex; flex-direction: column; align-items: center;'>"
+            cards_html += f"<span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>風報比 (RRR)</span>"
+            cards_html += f"<span style='font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;'>1 : {order['rrr']}</span>"
+            cards_html += f"</div>"
+            cards_html += f"</div></div>"
+            
         st.markdown(cards_html, unsafe_allow_html=True)
 
 # ==========================================
