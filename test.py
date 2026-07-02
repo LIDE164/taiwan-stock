@@ -498,41 +498,52 @@ def get_global_macro_data():
 
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
-    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
-    if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
-    if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
     
+    # 🎯 高勝率濾網 1：大趨勢防護 (長線保護短線)
+    if data['收盤價'] >= data['60MA']:
+        sc += 2; rs.append("✅ 站穩季線 (長線多頭保護，勝率提升)")
+    else:
+        sc -= 3; rs.append("🚨 跌破季線 (長線空頭，反彈易遇壓，降低勝率)")
+
+    # 🎯 基本面與乖離
     try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
     except: eps_f = 0.0
-    if eps_f > 0: sc+=2; rs.append("✅ 基本面獲利")
+    if eps_f > 0: sc += 1; rs.append("✅ 基本面獲利")
+    else: sc -= 2; rs.append("⚠️ 基本面虧損")
     
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
-        
-    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
-    else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
+    if data['BIAS'] < -5 and data['收盤價'] >= data['60MA']: sc += 1; rs.append("✅ 負乖離且具長線支撐")
+    if data['收盤價'] <= data['BB_DN'] * 1.02: sc += 1; rs.append("✅ 觸及布林下軌支撐")
 
+    # 🎯 高勝率濾網 2：將「法人籌碼」真實納入計分系統
     if inst_data and len(inst_data) >= 3:
         net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
-        else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
+        if net_buy > 500: sc += 3; rs.append(f"🔥 法人近三日大買 (累計買超 {net_buy} 張，籌碼極佳)")
+        elif net_buy > 0: sc += 1; rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
+        else: sc -= 2; rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張，籌碼鬆動)")
 
-    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
-    if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
+    # 🎯 高勝率濾網 3：嚴格要求「量價配合」與動能
+    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.3: sc += 2; rs.append("🔥 量能顯著放大 (主力明確點火)")
+    elif data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc += 1; rs.append("✅ 量能溫和放大")
+    else: sc -= 1; rs.append("⚠️ 量能萎縮 (缺乏攻擊動能，易遇假突破)")
+        
+    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc += 2; rs.append("✅ MACD 動能轉強")
+    else: sc -= 2; rs.append("⚠️ MACD 空方動能擴大")
 
-    if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
-    if data.get('反彈遇壓'): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
+    # 🎯 K線型態判定
+    if data.get('紅吞'): sc += 3; rs.append("🔥 出現「紅吞」反轉型態 (強烈買訊)")
+    if data.get('黑吞'): sc -= 3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空訊)")
+    if data.get('回測有撐'): sc += 2; rs.append("🔥 帶量長下影線 (主力支撐成功)")
+    if data.get('反彈遇壓'): sc -= 2; rs.append("🩸 反彈遇壓留長上影線")
     
-    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): 
-        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): 
-        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
+    if data['收盤價'] >= data['5MA'] and data.get('5日線即將上彎'): sc += 2; rs.append("🔥 5日線扣低值將上彎")
+    if data['收盤價'] < data['5MA'] and not data.get('5日線即將上彎'): sc -= 1; rs.append("⚠️ 5日線扣高值壓力")
 
-    if data['J值'] >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data['BB_UP'] * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data['BIAS'] > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data['20MA']: sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
+    # 🎯 過熱與破線重罰
+    if data['J值'] >= 80: sc -= 2; rs.append("⚠️ KDJ高檔過熱 (追高風險)")
+    if data['收盤價'] >= data['BB_UP'] * 0.98: sc -= 2; rs.append("⚠️ 觸及布林上軌壓力")
+    if data['BIAS'] > 7: sc -= 2; rs.append("⚠️ 正乖離過大")
+    if data['收盤價'] < data['20MA']: sc -= 2; rs.append("⚠️ 跌破月線支撐")
+    if data['訊號']: sc += 2; rs.append("✅ 穩在月線上且KDJ超賣")
 
     return sc, rs
 
@@ -646,7 +657,9 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
     sc, rs = get_decision_score(data, fund, inst_data)
     data['Score'] = sc
     data['Reasons'] = rs
-    data['評級'] = "🟢 S級" if sc >= 5 else ("🟡 A級" if sc >= 2 else "⚪ 觀望")
+    
+    # 🎯 嚴格化門檻：S級需達 7 分以上，A級需達 3 分以上 (過濾掉雜訊)
+    data['評級'] = "🟢 S級" if sc >= 7 else ("🟡 A級" if sc >= 3 else "⚪ 觀望")
     
     return data
 
@@ -1512,76 +1525,76 @@ elif st.session_state.page == "analysis":
                     stop_loss_html = f'''<div style="background-color: #ffe6e6; border-left: 6px solid #ff3333; padding: 15px; margin-bottom: 20px; border-radius: 4px;"><h4 style="color: #ff3333; margin-top: 0; font-size: 1.3rem;">🚨 【嚴格停損警報】觸發 5% 停損防護線</h4><span style="color: #333; font-size: 1.05rem; line-height: 1.6;">系統偵測到最近一次策略買訊 ({last_sig_date.strftime('%Y/%m/%d')}) 基準成本為 <b>{last_sig_price:.2f}</b>。<br>目前現價 <b>{data['收盤價']}</b> 已跌穿 5% 鐵律防護線 (預估帳面分歧為 <span style="color:#ff3333; font-weight:bold;">{loss_pct:.2f}%</span>)。<br><b>防範警訊：中線趨勢支撐已破，強烈建議嚴守交易紀律，果斷停損出場觀望，切勿盲目攤平接刀！</b></span></div>'''
             if stop_loss_html: st.markdown(stop_loss_html, unsafe_allow_html=True)
 
-            st.markdown("##### 💡 近一個月歷史買點回測與趨勢分析")
-            recent_30 = df_slice.tail(30)
+            # ==========================================
+            # 🚀 全新升級：AI 策略勝率歷史回測引擎 (近 60 日)
+            # ==========================================
+            st.markdown("##### 📊 AI 策略勝率歷史回測報告 (近 60 日)")
+            recent_60 = df_slice.tail(60)
             s_count, a_count = 0, 0
+            wins = 0
+            closed_signals = 0
             buy_points_prices = []
-            price_30_days_ago = recent_30['Close'].iloc[0]
-            current_price = recent_30['Close'].iloc[-1]
-            month_trend_pct = (current_price - price_30_days_ago) / price_30_days_ago * 100
-            trend_color = "#ff3333" if month_trend_pct >= 0 else "#00cc00"
-            trend_text = "上漲" if month_trend_pct >= 0 else "下跌"
-            sign_t = "+" if month_trend_pct > 0 else ""
             
-            for idx in range(len(recent_30)):
-                temp_df = df_slice.iloc[:len(df_slice) - 30 + idx + 1]
+            for idx in range(len(recent_60)):
+                current_date = recent_60.index[idx]
+                actual_idx = df_slice.index.get_loc(current_date)
+                temp_df = df_slice.iloc[:actual_idx + 1]
+                
                 if len(temp_df) >= 5:
                     t_data = analyze_today(temp_df, target, inst_data=None, is_light_mode=is_light_mode)
-                    if t_data:
-                        if t_data['Score'] >= 5: s_count += 1; buy_points_prices.append(t_data['收盤價'])
-                        elif t_data['Score'] >= 2: a_count += 1; buy_points_prices.append(t_data['收盤價'])
+                    if t_data and t_data['Score'] >= 2:
+                        if t_data['Score'] >= 5: s_count += 1
+                        else: a_count += 1
+                        
+                        buy_price = t_data['收盤價']
+                        buy_points_prices.append(buy_price)
+                        
+                        # 向後看 5 個交易日，評估短線波段勝率
+                        future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 6]
+                        if len(future_df) > 0:
+                            closed_signals += 1
+                            max_high = future_df['High'].max()
+                            
+                            # 【勝率判斷條件】：5日內最高價達 +2% 短線停利點，或是 5 日後收盤價仍高於買進價
+                            if max_high >= buy_price * 1.02 or future_df['Close'].iloc[-1] > buy_price:
+                                wins += 1
+            
+            # 計算勝率數值與顏色
+            win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0
+            wr_color = "#ef4444" if win_rate >= 60 else ("#facc15" if win_rate >= 40 else "#64748b")
+            
+            # 計算 60 日大波段趨勢
+            price_60_days_ago = recent_60['Close'].iloc[0]
+            current_price = recent_60['Close'].iloc[-1]
+            month_trend_pct = (current_price - price_60_days_ago) / price_60_days_ago * 100
+            trend_color = "#ef4444" if month_trend_pct >= 0 else "#22c55e"
+            trend_text = "波段上漲" if month_trend_pct >= 0 else "波段下跌"
+            sign_t = "+" if month_trend_pct > 0 else ""
             
             with st.container(border=True):
-                col_sum1, col_sum2, col_sum3 = st.columns(3)
-                with col_sum1: st.markdown(f"<div style='text-align:center;'>近一月趨勢<br><span style='color:{trend_color}; font-size:1.6rem; font-weight:900;'>{trend_text} {sign_t}{month_trend_pct:.2f}%</span></div>", unsafe_allow_html=True)
-                with col_sum2: st.markdown(f"<div style='text-align:center;'>🟢 S級 強烈買進<br><span style='font-size:1.6rem; font-weight:900; color:#00cc00;'>{s_count} 次</span></div>", unsafe_allow_html=True)
-                with col_sum3: st.markdown(f"<div style='text-align:center;'>🟡 A級 偏多試單<br><span style='font-size:1.6rem; font-weight:900; color:#ffcc00;'>{a_count} 次</span></div>", unsafe_allow_html=True)
-                if not buy_points_prices:
-                    summary_text = "近一個月股價呈現高檔推升或低迷打底，未曾觸發 any A/S 級超賣點條件，建議控制風險。"
-                else:
-                    avg_buy_price = sum(buy_points_prices) / len(buy_points_prices)
-                    profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
-                    prof_color = "#ff3333" if profit_pct >= 0 else "#00cc00"
-                    prof_text = "獲利" if profit_pct >= 0 else "虧損"
-                    summary_text = f"本月共發出 **{s_count + a_count}** 次策略買點。等額分批建倉平均成本約為 **{avg_buy_price:.2f}**。對比今日收盤，策略回測呈 <span style='color:{prof_color}; font-weight:bold;'>{prof_text} {'+' if profit_pct>0 else ''}{profit_pct:.2f}%</span>。"
-                st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e2433'}; border-radius:8px; line-height: 1.6;'>📝 <b>大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
-
-            ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, t_title, tmr_title, is_light_mode)
-            
-            st.markdown(f"""<div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
-<h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
-{ai_brain_html}
-<hr style="border-color: {border_col}; margin: 20px 0;">
-<div style="background-color: {'#f0f8ff' if is_light_mode else '#1e2433'}; padding: 15px; border-radius: 8px; border-left: 5px solid {v_c};">
-<p style="font-size: 1.15rem; color: {text_col}; margin: 0; line-height: 1.6;">{v_a}</p>
-</div>
-</div>""", unsafe_allow_html=True)
-            
-            dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
-            dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_view_30d")
-            dc2.button("60日", on_click=set_view_days, args=(60,), key="btn_view_60d")
-            dc3.button("90日", on_click=set_view_days, args=(90,), key="btn_view_90d")
-            with dc5: st.toggle("🛒 顯示買進", value=True, key='toggle_buy_sig_ch')
-            with dc6: st.toggle("📏 歷史高低點", value=True, key='toggle_sup_res_ch')
-            with dc7: st.toggle("🏷️ 顯示符號", value=True, key='toggle_signals_ch')
+                col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+                with col_sum1: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>近60日策略勝率<br><span style='color:{wr_color}; font-size:1.8rem; font-weight:900;'>{win_rate:.1f}%</span></div>", unsafe_allow_html=True)
+                with col_sum2: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>{trend_text}<br><span style='color:{trend_color}; font-size:1.8rem; font-weight:900;'>{sign_t}{month_trend_pct:.1f}%</span></div>", unsafe_allow_html=True)
+                with col_sum3: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>🟢 S級 強烈買進<br><span style='font-size:1.8rem; font-weight:900; color:#22c55e;'>{s_count} 次</span></div>", unsafe_allow_html=True)
+                with col_sum4: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>🟡 A級 偏多試單<br><span style='font-size:1.8rem; font-weight:900; color:#facc15;'>{a_count} 次</span></div>", unsafe_allow_html=True)
                 
-            if pre_rendered_fig is not None:
-                st.plotly_chart(pre_rendered_fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': False})
+                if closed_signals == 0:
+                    summary_text = "過去 60 日內尚未產生足夠的歷史買進訊號可供勝率回測，建議參考下方的技術指標與籌碼動向進行判斷。"
+                else:
+                    avg_buy_price = sum(buy_points_prices) / len(buy_points_prices) if buy_points_prices else 0
+                    profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100 if avg_buy_price > 0 else 0
+                    prof_color = "#ef4444" if profit_pct >= 0 else "#22c55e"
+                    prof_text = "帳面獲利" if profit_pct >= 0 else "帳面虧損"
+                    
+                    summary_text = f"過去 60 個交易日中共觸發 **{closed_signals}** 次有效策略買點。假設每次訊號皆進場並持有 5 日，其中有 **{wins}** 次成功達成短線獲利條件，短線波段勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>。若依據訊號等額建倉並長抱至今，平均成本約為 **{avg_buy_price:.1f}**，整體回測潛在報酬率約 <span style='color:{prof_color}; font-weight:bold;'>{'+' if profit_pct>0 else ''}{profit_pct:.1f}%</span>。"
+                
+                st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:{'#f0f8ff' if is_light_mode else '#1e293b'}; border-radius:8px; line-height: 1.6; font-size:0.95rem; color:{'#333' if is_light_mode else '#cbd5e1'};'>📝 <b>策略大腦回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
+
+            ai_brain_html, v_t, v_c, v_a = generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=is_light_mode)
             
-            # ==========================================
-            # 🚀 K線圖下方的符號說明隱藏選單
-            # ==========================================
-            with st.expander("📖 K 線圖符號代表名稱說明 (點擊展開)", expanded=False):
-                st.markdown(f"""
-                <ul style="line-height: 1.8; color: {text_col}; font-size: 1rem;">
-                    <li><b><span style='color: #ff3333;'>紅吞</span></b>：代表強烈的短線反轉向上買進訊號。</li>
-                    <li><b><span style='color: #00cc00;'>黑吞</span></b>：代表強烈的短線高檔反轉向下警訊。</li>
-                    <li><b><span style='color: #ff9900;'>撐 (橘黃字)</span></b>：回測有撐，當日價格下殺後爆出買盤收長下影線，主力防守支撐。</li>
-                    <li><b><span style='color: #00ccff;'>壓 (藍字)</span></b>：反彈遇壓，當日反彈遭遇均線壓力被打回，收出長上影線。</li>
-                    <li><b><span style='color: #ff3333;'>↗️ (紅箭頭)</span></b>：短均線扣低上彎，5日線未來將持續翻揚向上，提供多方保護。</li>
-                    <li><b><span style='color: #00cc00;'>↘️ (綠箭頭)</span></b>：短均線扣高下彎，5日線易下彎形成蓋頭壓力。</li>
-                    <li><b><span style='color: #00ffcc;'>買 (青色指標)</span></b>：由系統 AI 綜合動能、型態與乖離計算出之「策略建議試單買點」。</li>
-                </ul>
+            st.markdown(f"""
+            <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: {bg_col};">
+                <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 AI 決策大腦：{v_t.replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '').replace('🟠 ', '').replace('🔴 ', '')}</h3>
                 """, unsafe_allow_html=True)
             
             st.divider()
@@ -1649,6 +1662,9 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
+
+
 
 
 
