@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 import re
 import concurrent.futures
 import random
+import numpy as np  # 🎯 新增 numpy 用於高效能的 ADX 矩陣運算
 
 from streamlit_autorefresh import st_autorefresh
 
@@ -290,8 +291,20 @@ def get_stock_data(ticker_number):
         tr3 = (df['Low'] - df['Close'].shift(1)).abs()
         df['TR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['ATR'] = df['TR'].rolling(14).mean().bfill()
+        
+        # 🎯 升級 1：新增 ADX 平均趨向指數運算 (過濾盤整假突破)
+        up_move = df['High'] - df['High'].shift(1)
+        down_move = df['Low'].shift(1) - df['Low']
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1) # 避免除以零
+        df['ADX'] = dx.ewm(span=14, adjust=False).mean().bfill()
     except:
         df['ATR'] = df['Close'] * 0.03
+        df['ADX'] = 20 # 若運算失敗，預設為盤整狀態
         
     df['5MA'] = df['Close'].rolling(5).mean()
     df['10MA'] = df['Close'].rolling(10).mean()
@@ -562,9 +575,27 @@ def render_index_board():
 
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
-    if data['訊號']: sc+=3; rs.append("✅ 穩在月線上且KDJ超賣")
+    
+    # 🎯 取出新算的 ADX 與 RS (近月漲幅)
+    adx = data.get('ADX', 0)
+    roc_20 = data.get('ROC_20', 0)
+    is_trending = adx >= 25 # ADX >= 25 視為脫離盤整，具備趨勢
+    
+    # 1. 趨勢與動能評估 (ADX 濾網)
+    if data['訊號']: 
+        if is_trending:
+            sc+=3; rs.append(f"✅ 穩在月線上且KDJ超賣 (ADX:{adx} 趨勢明確)")
+        else:
+            sc+=1; rs.append(f"⚠️ 穩在月線上 (但 ADX:{adx} 盤整區間，動能稍弱)")
+            
     if data['收盤價'] <= data['BB_DN'] * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
     if data['BIAS'] < -5: sc+=1; rs.append("✅ 負乖離過大")
+    
+    # 2. 強勢股濾網 (相對強度 RS 對比)
+    if roc_20 > 10:
+        sc+=2; rs.append(f"🔥 近月漲幅 {roc_20}% 表現亮眼，具備市場主流強勢股特徵")
+    elif roc_20 < -5:
+        sc-=2; rs.append(f"🩸 近月跌幅 {roc_20}% 表現弱勢，請避開弱勢接刀陷阱")
     
     try: eps_f = float(str(fund_data['EPS']).replace(',', ''))
     except: eps_f = 0.0
@@ -581,7 +612,13 @@ def get_decision_score(data, fund_data, inst_data=None):
         if net_buy > 0: rs.append(f"✅ 法人近三日偏多 (累計買超 {net_buy} 張)")
         else: rs.append(f"⚠️ 法人近三日偏空 (累計賣超 {abs(net_buy)} 張)")
 
-    if data.get('紅吞'): sc+=3; rs.append("🔥 出現「紅吞」反轉型態 (強烈多頭買進訊號)")
+    # 🎯 升級 2：ADX 判斷突破的真實性
+    if data.get('紅吞'): 
+        if is_trending:
+            sc+=4; rs.append("🔥 出現「紅吞」反轉型態 (趨勢確認，強烈買訊)")
+        else:
+            sc+=1; rs.append("⚠️ 出現「紅吞」(但 ADX 偏低處於盤整，提防假突破)")
+            
     if data.get('黑吞'): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
 
     if data.get('回測有撐'): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
@@ -685,6 +722,12 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     stop_pct = (stop_p - t_close) / t_close * 100
     rrr = round(abs(target_pct / stop_pct), 1) if stop_pct != 0 else 0
 
+    # 🎯 升級 3：計算近月動能 (ROC_20)，作為 RS 相對強弱的近似參考
+    if len(df) >= 20:
+        roc_20 = (t_close - float(df['Close'].iloc[-20])) / float(df['Close'].iloc[-20]) * 100
+    else:
+        roc_20 = 0
+
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
@@ -694,6 +737,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "BB_UP": round(t['BB_UP'], 2), "BB_DN": round(t['BB_DN'], 2), "BIAS": round(t['BIAS_20'], 2),
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
+        "ADX": round(t.get('ADX', 0), 1), "ROC_20": round(roc_20, 2), # 寫入新計算結果
         "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": bool(red_mask.iloc[-1]), "黑吞": bool(black_mask.iloc[-1]),
         "近七日紅吞": bool(red_mask.tail(7).any()),
@@ -811,6 +855,18 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     b_col = "#ddd" if is_light_mode else "#1e293b"
 
     tech_bullets = []
+    
+    # 🎯 在技術面白話文最上方，顯示目前的 ADX 與 RS 強度解析
+    adx = data.get('ADX', 0)
+    roc = data.get('ROC_20', 0)
+    if adx >= 25:
+        tech_bullets.append(f"🔥 <span style='color:#ef4444; font-weight:bold;'>ADX 趨勢指標 ({adx})：大於 25，代表多空方向明確，任何突破的真實性與延續性極高。</span>")
+    else:
+        tech_bullets.append(f"⚠️ <span style='color:#facc15; font-weight:bold;'>ADX 趨勢指標 ({adx})：低於 25，目前正處於橫盤震盪，較容易出現假突破被雙巴。</span>")
+        
+    if roc > 10:
+        tech_bullets.append(f"🔥 <span style='color:#ef4444; font-weight:bold;'>強勢股濾網 (近月漲幅 {roc}%)：大幅打敗大盤平均水準，屬於市場主流資金偏好的強勢標的。</span>")
+
     for reason in data['Reasons']:
         if "✅" in reason or "🔥" in reason:
             tech_bullets.append(f"<span style='color:#ef4444; font-weight:bold;'>{reason}</span>")
@@ -1533,3 +1589,5 @@ elif st.session_state.page == "analysis":
                         st.rerun()
             else:
                 st.info("暫無榜單暫存。請先返回首頁執行篩選掃描。")
+
+
