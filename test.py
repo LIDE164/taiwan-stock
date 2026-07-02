@@ -53,6 +53,7 @@ is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_
 
 if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True, key="btn_clear_cache"):
     st.cache_data.clear()
+    if "scan_results" in st.session_state: del st.session_state["scan_results"]
     st.sidebar.success("已清除暫存，請重整網頁！")
 
 bg_col = "#ffffff" if is_light_mode else "#0b1120"
@@ -1032,11 +1033,41 @@ if st.session_state.page == "home":
     top_100_pool = fetch_twse_top_100()
     pool = tuple(set(top_100_pool + st.session_state.custom_pool + list(STOCK_NAMES.keys())))
     
-    with st.spinner("🚀 盤中/盤後雙引擎資料精密解析中..."):
-        scan_results = get_global_scan_results(pool)
+    # 🎯 修改：加入掃描進度條，並利用 session_state 暫存結果避免切換時重複讀取
+    if "scan_results" not in st.session_state:
+        st.session_state.scan_results = []
+        progress_text = st.empty()
+        p_bar = st.progress(0)
+        
+        pool_list = list(pool)
+        total = len(pool_list)
+        completed = 0
+        
+        def process_scan(stock):
+            df = get_stock_data(stock)
+            if df is not None: 
+                inst_data = get_institutional_trading(stock)
+                return analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode)
+            return None
             
-    if scan_results:
-        df_results = pd.DataFrame(scan_results)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(process_scan, stock): stock for stock in pool_list}
+            for future in concurrent.futures.as_completed(futures):
+                completed += 1
+                try:
+                    res = future.result()
+                    if res: st.session_state.scan_results.append(res)
+                except: pass
+                
+                # 即時更新進度條與文字
+                p_bar.progress(min(completed / total, 1.0))
+                progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙引擎資料精密解析中... ({completed} / {total})</div>", unsafe_allow_html=True)
+                
+        progress_text.empty()
+        p_bar.empty()
+            
+    if st.session_state.scan_results:
+        df_results = pd.DataFrame(st.session_state.scan_results)
         
         col_m1, col_m2 = st.columns([1, 1])
         with col_m1:
@@ -1066,7 +1097,8 @@ if st.session_state.page == "home":
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-        st.markdown(f"<div style='display: flex; justify-content: space-between; font-size: 0.8rem; color: #94a3b8; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-bottom: 16px;'><span><i class='fa-solid fa-bolt'></i> {'09:00-13:30 高勝率預估' if is_intraday else '近60日波段勝率與風報比'}</span><span>共 {len(df_disp)} 檔</span></div>", unsafe_allow_html=True)
+        # 🎯 修改：文字更新為近 1 年波段勝率
+        st.markdown(f"<div style='display: flex; justify-content: space-between; font-size: 0.8rem; color: #94a3b8; border-bottom: 1px solid #1e293b; padding-bottom: 8px; margin-bottom: 16px;'><span><i class='fa-solid fa-bolt'></i> {'09:00-13:30 高勝率預估' if is_intraday else '近 1 年波段勝率與風報比'}</span><span>共 {len(df_disp)} 檔</span></div>", unsafe_allow_html=True)
         
         if df_disp.empty:
             st.markdown("<div style='text-align: center; padding: 40px; color: #64748b; font-size: 0.9rem;'>此條件下暫無符合條件的標的。</div>", unsafe_allow_html=True)
@@ -1220,14 +1252,15 @@ elif st.session_state.page == "analysis":
             # ==========================================
             # 🚀 ATR 動態停利損勝率回測引擎
             # ==========================================
-            st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 60 日)")
-            recent_60 = df_slice.tail(60)
+            # 🎯 修改：引擎回測範圍從 60 日擴大為近 1 年 (約 240 個交易日)
+            st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 1 年 / 240 日)")
+            recent_240 = df_slice.tail(240)
             s_count, a_count = 0, 0
             wins = 0
             closed_signals = 0
             
-            for idx in range(len(recent_60)):
-                current_date = recent_60.index[idx]
+            for idx in range(len(recent_240)):
+                current_date = recent_240.index[idx]
                 actual_idx = df_slice.index.get_loc(current_date)
                 temp_df = df_slice.iloc[:actual_idx + 1]
                 
@@ -1261,9 +1294,9 @@ elif st.session_state.page == "analysis":
                 with col_sum3: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>🟡 A級 偏多試單<br><span style='font-size:1.8rem; font-weight:900; color:#facc15;'>{a_count} 次</span></div>", unsafe_allow_html=True)
                 
                 if closed_signals == 0:
-                    summary_text = "過去 60 日內尚未產生足夠的歷史買進訊號。"
+                    summary_text = "過去 1 年內尚未產生足夠的歷史買進訊號。"
                 else:
-                    summary_text = f"過去 60 日共觸發 **{closed_signals}** 次有效買點。導入 ATR 動態停利模型後，短線波段勝率達 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>。當前建議之風報比 (RRR) 為 1 : {data['RRR']}，代表每次獲利期望值為虧損的 {data['RRR']} 倍。"
+                    summary_text = f"過去 1 年共觸發 **{closed_signals}** 次有效買點。導入 ATR 動態停利模型後，短線波段勝率達 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>。當前建議之風報比 (RRR) 為 1 : {data['RRR']}，代表每次獲利期望值為虧損的 {data['RRR']} 倍。"
                 
                 st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
@@ -1285,6 +1318,14 @@ elif st.session_state.page == "analysis":
                 </div>
                 {ai_html}
             </div>""", unsafe_allow_html=True)
+            
+            # 🎯 修改：新增模擬下單測試按鈕
+            if st.button("🛒 執行模擬下單 (紙上測試)", use_container_width=True):
+                st.success(f"✅ **模擬下單設定成功！** 已在 **{data['收盤價']}** 元虛擬買進 {target} {c_name}。\n\n"
+                           f"🎯 **設定停利**：{data['ATR_Target']} 元\n"
+                           f"🛑 **設定停損**：{data['ATR_Stop']} 元\n"
+                           f"⚖️ **風報比**：1 : {data['RRR']}")
+                st.balloons()
             
             # K線圖操作區
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
