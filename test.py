@@ -618,10 +618,14 @@ def get_dynamic_theme(ticker, industry):
         if kw in ind: icon = ic; break
     return (ind, icon)
 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None):
     if df is None or len(df) < 5: return None
     t, p, p5 = df.iloc[-1], df.iloc[-2], df.iloc[-5]
-    fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
+    
+    if pre_fund is not None:
+        fund = pre_fund
+    else:
+        fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
     
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
@@ -716,7 +720,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False):
         elif data.get('Est_Vol_Ratio', 1) > 1.3: feature = "出量攻擊"
     data['Feature'] = feature
     
-    # 移除原本的預估假勝率，將初始值設為 0
     data['WinRate'] = 0.0 
     
     return data
@@ -728,25 +731,29 @@ def calculate_historical_winrate(ticker_number):
     if df_slice is None or len(df_slice) < 14:
         return 0.0, 0, 0, 0
         
+    fund = get_fundamental_and_industry_data(ticker_number, round(df_slice['Close'].iloc[-1], 2))
     recent_240 = df_slice.tail(240)
     s_count, a_count = 0, 0
     wins = 0
     closed_signals = 0
     
+    start_idx = len(df_slice) - len(recent_240)
     for idx in range(len(recent_240)):
-        actual_idx = df_slice.index.get_loc(recent_240.index[idx])
+        actual_idx = start_idx + idx
         temp_df = df_slice.iloc[:actual_idx + 1]
         
         if len(temp_df) >= 14:
-            t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False)
+            t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund)
             if t_data and t_data['Score'] >= 2:
                 if t_data['Score'] >= 5: s_count += 1
                 else: a_count += 1
                 
                 buy_price = t_data['收盤價']
                 atr_val = t_data.get('ATR_Target', buy_price * 1.03) - buy_price
-                target_p = buy_price + (atr_val)
-                stop_p = buy_price - (atr_val / t_data.get('RRR', 1.5))
+                target_p = buy_price + atr_val
+                rrr = t_data.get('RRR', 1.5)
+                if rrr <= 0: rrr = 1.5
+                stop_p = buy_price - (atr_val / rrr)
                 
                 future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 6]
                 if len(future_df) > 0:
@@ -767,10 +774,10 @@ def get_global_scan_results(pool_tuple):
         df = get_stock_data(stock)
         if df is not None: 
             inst_data = get_institutional_trading(stock)
-            data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=False)
+            fund = get_fundamental_and_industry_data(stock, round(df['Close'].iloc[-1], 2))
+            data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=False, pre_fund=fund)
             
             if data:
-                # 🎯 只要達到 A 級，就啟動上方寫好的真實回測引擎並寫入 data 中
                 if data['Score'] >= 2:
                     wr, _, _, _ = calculate_historical_winrate(stock)
                     data['WinRate'] = round(wr, 1)
@@ -1093,7 +1100,14 @@ if st.session_state.page == "home":
             df = get_stock_data(stock)
             if df is not None: 
                 inst_data = get_institutional_trading(stock)
-                return analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode)
+                fund = get_fundamental_and_industry_data(stock, round(df['Close'].iloc[-1], 2))
+                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund)
+                
+                if data:
+                    if data['Score'] >= 2:
+                        wr, _, _, _ = calculate_historical_winrate(stock)
+                        data['WinRate'] = round(wr, 1)
+                    return data
             return None
             
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1204,8 +1218,8 @@ if st.session_state.page == "home":
                     cards_html += f"</div>"
                     cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>盤中訊號：{r.get('Intraday_Signal', '穩守均價線')}</span></div>"
                 else:
-                    wr_val = r.get('WinRate', 50.0)
-                    wr_col = "#ef4444" if wr_val >= 75 else "#facc15"
+                    wr_val = r.get('WinRate', 0.0)
+                    wr_col = "#ef4444" if wr_val >= 75 else ("#facc15" if wr_val >= 40 else "#22c55e")
                     rrr_val = r.get('RRR', 1.5)
                     w_net = r.get('Whale_Net', 0)
                     w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
@@ -1253,7 +1267,6 @@ elif st.session_state.page == "simulated_orders":
         for order in orders:
             curr_price = order['buy_price']
             try:
-                # 安全地獲取快取中的現價，不拖慢網頁速度
                 df_temp = get_stock_data(order['ticker'])
                 if df_temp is not None and not df_temp.empty:
                     curr_price = float(df_temp['Close'].iloc[-1])
@@ -1383,10 +1396,8 @@ elif st.session_state.page == "analysis":
             
             st.markdown("##### 📊 ATR 動態勝率歷史回測 (近 1 年 / 240 日)")
             
-            # 🎯 解析頁面也直接呼叫真實回測引擎 (統一來源，確保數據 100% 一致)
             win_rate, closed_signals, s_count, a_count = calculate_historical_winrate(target)
-            
-            wr_color = "#ef4444" if win_rate >= 75 else ("#facc15" if win_rate >= 50 else "#22c55e")
+            wr_color = "#ef4444" if win_rate >= 75 else ("#facc15" if win_rate >= 40 else "#22c55e")
             
             with st.container(border=True):
                 col_sum1, col_sum2, col_sum3 = st.columns(3)
@@ -1419,7 +1430,6 @@ elif st.session_state.page == "analysis":
                 {ai_html}
             </div>""", unsafe_allow_html=True)
             
-            # 🎯 全新：模擬下單功能儲存按鈕
             if st.button("🛒 執行模擬下單 (紙上測試)", use_container_width=True):
                 new_order = {
                     "id": str(int(time.time())),
@@ -1440,7 +1450,6 @@ elif st.session_state.page == "analysis":
                            f"👉 您可以從左側選單進入「模擬交易中心」隨時追蹤即時報酬率！")
                 st.balloons()
             
-            # K線圖操作區
             dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
             dc1.button("30日", on_click=set_view_days, args=(30,), key="btn_view_30d")
             dc2.button("60日", on_click=set_view_days, args=(60,), key="btn_view_60d")
