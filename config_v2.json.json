@@ -1,0 +1,22 @@
+{
+  "analysis_config": {
+    "trend_threshold": 60,
+    "signal_confidence_threshold": 0.5,
+    "backtest_days": 90,
+    "signal_interval_days": 5,
+    "volume_limit_ratio": 0.1,
+    "slippage_cost": 0.001
+  },
+  "score_weights": {
+    "trend_filter": 0.25,
+    "technical": 0.35,
+    "chip": 0.20,
+    "fundamental": 0.15,
+    "volume": 0.05
+  },
+  "rating_thresholds": {
+    "S_grade": 75,
+    "A_grade": 60,
+    "hold": 40
+  }
+}
