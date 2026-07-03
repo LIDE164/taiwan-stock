@@ -362,29 +362,57 @@ def get_finmind_chip_and_revenue(ticker):
     big_player_ratio = 0.0
     mom = 0.0
     yoy = 0.0
+    foreign_ratio = 0.0
+    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     try:
-        # 🌟 獲取集保 400 張大戶持股比例 (Level >= 13)
-        url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={ticker}&token={FINMIND_TOKEN}"
-        res_chip = requests.get(url_chip, timeout=5).json()
-        if 'data' in res_chip and len(res_chip['data']) > 0:
-            df_chip = pd.DataFrame(res_chip['data'])
-            df_latest = df_chip[df_chip['date'] == df_chip['date'].max()]
-            df_latest['HoldingSharesLevel'] = pd.to_numeric(df_latest['HoldingSharesLevel'], errors='coerce')
-            big_player_ratio = df_latest[df_latest['HoldingSharesLevel'] >= 13]['percent'].sum()
+        # 🌟 必須加上 start_date，否則 FinMind 預設只抓「今天」，會導致無資料回傳
+        start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        start_date_rev = (datetime.now() - timedelta(days=450)).strftime('%Y-%m-%d') # 抓過去15個月算 YoY
+        
+        # 1. 🌟 獲取集保 400 張大戶持股比例 (Level 12 起為 400 張以上)
+        try:
+            url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
+            res_chip = requests.get(url_chip, timeout=5).json()
+            if 'data' in res_chip and len(res_chip['data']) > 0:
+                df_chip = pd.DataFrame(res_chip['data'])
+                if not df_chip.empty:
+                    df_latest = df_chip[df_chip['date'] == df_chip['date'].max()].copy()
+                    df_latest['HoldingSharesLevel'] = pd.to_numeric(df_latest['HoldingSharesLevel'], errors='coerce')
+                    df_latest['percent'] = pd.to_numeric(df_latest['percent'], errors='coerce') # 🎯 確保 percent 轉為數字，否則 sum() 會失敗
+                    big_player_ratio = df_latest[df_latest['HoldingSharesLevel'] >= 12]['percent'].sum()
+        except: pass
+
+        # 2. 🌟 獲取外資真實持股比例 (TaiwanStockShareholding 僅提供外資)
+        try:
+            url_share = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockShareholding&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
+            res_share = requests.get(url_share, timeout=5).json()
+            if 'data' in res_share and len(res_share['data']) > 0:
+                df_share = pd.DataFrame(res_share['data'])
+                if not df_share.empty:
+                    df_latest_share = df_share[df_share['date'] == df_share['date'].max()].iloc[0]
+                    foreign_ratio = float(df_latest_share.get('ForeignInvestmentSharesRatio', 0.0))
+        except: pass
             
-        # 🌟 獲取最新月營收與雙增動能
-        url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={ticker}&token={FINMIND_TOKEN}"
-        res_rev = requests.get(url_rev, timeout=5).json()
-        if 'data' in res_rev and len(res_rev['data']) >= 13:
-            df_rev = pd.DataFrame(res_rev['data'])
-            df_rev['revenue'] = pd.to_numeric(df_rev['revenue'], errors='coerce')
-            curr_rev = df_rev['revenue'].iloc[-1]
-            last_m_rev = df_rev['revenue'].iloc[-2]
-            last_y_rev = df_rev['revenue'].iloc[-13]
-            mom = (curr_rev - last_m_rev) / last_m_rev * 100 if last_m_rev else 0
-            yoy = (curr_rev - last_y_rev) / last_y_rev * 100 if last_y_rev else 0
-    except: pass
-    return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
+        # 3. 🌟 獲取最新月營收與雙增動能
+        try:
+            url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
+            res_rev = requests.get(url_rev, timeout=5).json()
+            if 'data' in res_rev and len(res_rev['data']) > 0:
+                df_rev = pd.DataFrame(res_rev['data'])
+                if not df_rev.empty:
+                    df_rev = df_rev.sort_values(by='date').reset_index(drop=True)
+                    df_rev['revenue'] = pd.to_numeric(df_rev['revenue'], errors='coerce')
+                    if len(df_rev) >= 2:
+                        last_m_rev = df_rev['revenue'].iloc[-2]
+                        mom = (df_rev['revenue'].iloc[-1] - last_m_rev) / last_m_rev * 100 if last_m_rev else 0
+                    if len(df_rev) >= 13:
+                        last_y_rev = df_rev['revenue'].iloc[-13]
+                        yoy = (df_rev['revenue'].iloc[-1] - last_y_rev) / last_y_rev * 100 if last_y_rev else 0
+        except: pass
+    except Exception as e: 
+        pass
+    
+    return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2), round(foreign_ratio, 2)
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
@@ -715,7 +743,13 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     p_open, p_close = float(p['Open']), float(p['Close'])
     
     # 🌟 取得真實的 FinMind 籌碼與月營收資料
-    bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
+    bp_ratio, mom, yoy, f_ratio = get_finmind_chip_and_revenue(ticker_number)
+    
+    # 🌟 計算投信與自營商近10日累積買賣超
+    t_net_10d, d_net_10d = 0, 0
+    if inst_data:
+        t_net_10d = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data if str(x['投信(張)']).replace(',', '').lstrip('-').isdigit()])
+        d_net_10d = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data if str(x['自營商(張)']).replace(',', '').lstrip('-').isdigit()])
     
     red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
     black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
@@ -788,7 +822,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "MACD": round(t['MACD'], 2), "MACD柱": round(t['MACD_Hist'], 3), "前日MACD柱": round(p['MACD_Hist'], 3),
         "K": round(t['K'], 2), "D": round(t['D'], 2), "J值": round(t['J'], 2),
         "ADX": round(t.get('ADX', 0), 1), "ROC_20": round(roc_20, 2),
-        "BigPlayerRatio": bp_ratio, "MoM": mom, "YoY": yoy, # 🌟 寫入真實雙增與大戶資料
+        "BigPlayerRatio": bp_ratio, "MoM": mom, "YoY": yoy, 
+        "ForeignRatio": f_ratio, "TrustNet10d": t_net_10d, "DealerNet10d": d_net_10d, # 🌟 寫入真實法人籌碼動能數據
         "訊號": (t_close > t['20MA']) and (t_close < t['5MA']) and (t['J'] < 20),
         "紅吞": bool(red_mask.iloc[-1]), "黑吞": bool(black_mask.iloc[-1]),
         "近七日紅吞": bool(red_mask.tail(7).any()),
@@ -934,15 +969,11 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     chip_res_text = "中立觀望"
     tables_html = ""
     
-    # 🌟 換成真實大戶持股比例
+    # 🌟 換成真實大戶與法人籌碼數據
     big_player_ratio = data.get('BigPlayerRatio', 0.0)
-    foreign_ratio = round(random.uniform(5, 45), 2) # 外資持股因為FinMind未直接提供這支的單獨百分比，保留部分輔助視覺
-    trust_ratio = round(foreign_ratio / 4, 2)
-    broker_names = ["凱基-台北", "元大", "富邦", "國泰", "群益"]
-    top_broker = random.choice(broker_names)
-    broker_net = random.randint(100, 1500)
-    broker_action = random.choice(["買超", "賣超"])
-    b_color = "#ef4444" if broker_action == "買超" else "#22c55e"
+    foreign_ratio = data.get('ForeignRatio', 0.0) 
+    trust_net = data.get('TrustNet10d', 0)
+    dealer_net = data.get('DealerNet10d', 0)
     
     if inst_data and len(inst_data) >= 3:
         f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3] if str(x['外資(張)']).replace(',', '').lstrip('-').isdigit()])
@@ -966,19 +997,21 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {big_player_ratio}%; height: 100%; background-color: {bp_c}; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
-        tables_html += f"<div style='margin-bottom: 12px;'>"
-        tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>外資持股比例 (估計)</span><span style='color: #60a5fa; font-weight: bold;'>{foreign_ratio}%</span></div>"
+        tables_html += f"<div style='margin-bottom: 15px;'>"
+        tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>外資持股比例</span><span style='color: #60a5fa; font-weight: bold;'>{foreign_ratio}%</span></div>"
         tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {foreign_ratio}%; height: 100%; background-color: #60a5fa; border-radius: 4px;'></div></div>"
         tables_html += f"</div>"
         
+        t_color = "#ef4444" if trust_net > 0 else ("#22c55e" if trust_net < 0 else t_text_c)
         tables_html += f"<div style='margin-bottom: 15px;'>"
-        tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>投信持股比例 (估計)</span><span style='color: #c084fc; font-weight: bold;'>{trust_ratio}%</span></div>"
-        tables_html += f"<div style='width: 100%; height: 8px; background-color: rgba(128,128,128,0.2); border-radius: 4px;'><div style='width: {trust_ratio}%; height: 100%; background-color: #c084fc; border-radius: 4px;'></div></div>"
+        tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>投信近10日累積買賣超</span><span style='color: {t_color}; font-weight: bold;'>{'+' if trust_net>0 else ''}{trust_net:,} 張</span></div>"
         tables_html += f"</div>"
         
-        tables_html += f"<div style='font-size: 0.85rem; color: {t_text_c}; border-top: 1px dashed {b_col}; padding-top: 10px; margin-top: 10px;'>"
-        tables_html += f"關鍵主力分點：【{top_broker}】近五日 <span style='color: {b_color}; font-weight: bold;'>{broker_action} {broker_net}</span> 張。"
+        d_color = "#ef4444" if dealer_net > 0 else ("#22c55e" if dealer_net < 0 else t_text_c)
+        tables_html += f"<div style='margin-bottom: 15px;'>"
+        tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; color: {t_text_c}; margin-bottom: 4px;'><span>自營商近10日累積買賣超</span><span style='color: {d_color}; font-weight: bold;'>{'+' if dealer_net>0 else ''}{dealer_net:,} 張</span></div>"
         tables_html += f"</div>"
+        
         tables_html += f"</div>"
         
         tables_html += f"<div style='flex: 1.5; min-width: 320px;'>"
