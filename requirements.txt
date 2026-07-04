@@ -1,5 +1,8 @@
-yfinance
 streamlit
 pandas
+yfinance
+requests
 plotly
+beautifulsoup4
 streamlit-autorefresh
+pandas-ta
