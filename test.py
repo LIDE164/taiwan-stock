@@ -1,10 +1,8 @@
-# 最後修改時間: 2026-07-04 16:30 CST (V2.2 極速漏斗引擎版)
+# 最後修改時間: 2026-07-04 16:50 CST (穩定流暢版)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import time
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
@@ -23,12 +21,6 @@ from streamlit_autorefresh import st_autorefresh
 # === 雙引擎 API 憑證 ===
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
 FUGLE_API_KEY = "YzIzNTU5MTItYWNjMi00OGQ0LWFkNmEtYjU2MDA1N2FlZjJlIDE2ZGQzM2MzLTA5MDEtNGU2NS04MWMwLTIyMzIyMzdjODIzOA=="
-
-# 🌟 建立全域強健連線池 (Robust Session) 解決 API 卡死問題
-req_session = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
-req_session.mount('http://', HTTPAdapter(max_retries=retries))
-req_session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -106,9 +98,9 @@ STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "230
 def get_all_tw_stock_names():
     names = STOCK_NAMES.copy()
     try:
-        res = req_session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
         for i in res.json(): names[i['Code']] = i['Name']
-        res2 = req_session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
         for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
     except: pass
     return names
@@ -161,7 +153,7 @@ ENG_TO_TW_INDUSTRY = {
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
     try:
-        res = req_session.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
+        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
         h2 = soup.find('h2')
         if h2:
@@ -230,7 +222,7 @@ if 'fav_groups' not in st.session_state:
 @st.cache_data(ttl=1800)
 def fetch_twse_top_100():
     try:
-        res = req_session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
@@ -250,7 +242,7 @@ def fetch_twse_index_history():
 # 🚀 Fugle API & 量化指標引擎
 # ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
-def get_stock_data(ticker_number, is_scan=False):
+def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
         try:
@@ -269,31 +261,30 @@ def get_stock_data(ticker_number, is_scan=False):
     
     if df is None: return None
     
-    if not is_scan:
-        try:
-            if base_ticker != "^TWII":
-                url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
-                headers = {'X-API-KEY': FUGLE_API_KEY}
-                res = req_session.get(url, headers=headers, timeout=4)
-                if res.status_code == 200:
-                    q = res.json()
-                    c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
-                    o_price = float(q.get('openPrice', c_price))
-                    h_price = float(q.get('highPrice', c_price))
-                    l_price = float(q.get('lowPrice', c_price))
-                    v_vol = float(q.get('total', {}).get('tradeVolume', 0))
-                    
-                    dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
-                    
-                    if dt_live not in df.index:
-                        new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
-                        df = pd.concat([df, new_row])
-                    else:
-                        df.at[dt_live, 'Close'] = c_price
-                        df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
-                        df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
-                        df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
-        except: pass
+    try:
+        if base_ticker != "^TWII":
+            url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
+            headers = {'X-API-KEY': FUGLE_API_KEY}
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                q = res.json()
+                c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
+                o_price = float(q.get('openPrice', c_price))
+                h_price = float(q.get('highPrice', c_price))
+                l_price = float(q.get('lowPrice', c_price))
+                v_vol = float(q.get('total', {}).get('tradeVolume', 0))
+                
+                dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
+                
+                if dt_live not in df.index:
+                    new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
+                    df = pd.concat([df, new_row])
+                else:
+                    df.at[dt_live, 'Close'] = c_price
+                    df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
+                    df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
+                    df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
+    except: pass
 
     try:
         tr1 = df['High'] - df['Low']
@@ -372,7 +363,7 @@ def get_finmind_chip_and_revenue(ticker):
         
         try:
             url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
-            res_chip = req_session.get(url_chip, timeout=4).json()
+            res_chip = requests.get(url_chip, timeout=4).json()
             if 'data' in res_chip and len(res_chip['data']) > 0:
                 d_list = res_chip['data']
                 latest_date = max([x.get('date', '') for x in d_list])
@@ -387,7 +378,7 @@ def get_finmind_chip_and_revenue(ticker):
 
         try:
             url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
-            res_rev = req_session.get(url_rev, timeout=4).json()
+            res_rev = requests.get(url_rev, timeout=4).json()
             if 'data' in res_rev and len(res_rev['data']) > 0:
                 d_list = res_rev['data']
                 d_list.sort(key=lambda x: x.get('date', ''))
@@ -423,7 +414,7 @@ def get_twii_quote():
     try:
         ts = int(datetime.now(tz_tpe).timestamp() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        res = req_session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
         if res.status_code == 200:
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
@@ -447,7 +438,7 @@ def get_institutional_trading(ticker):
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
-        res = req_session.get(url, timeout=4)
+        res = requests.get(url, timeout=4)
         if res.status_code == 200:
             data = res.json()
             if data.get('msg') == 'success' and len(data.get('data', [])) > 0:
@@ -713,7 +704,7 @@ def get_dynamic_theme(ticker, industry):
     return (ind, icon)
 
 @st.cache_data(ttl=5, show_spinner=False) 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None, skip_finmind=False):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None):
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
     
@@ -723,11 +714,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
     
-    # ⚡ 如果是在 Fast Pass 模式，跳過耗時的 FinMind 讀取
-    if skip_finmind:
-        bp_ratio, mom, yoy = 0.0, 0.0, 0.0
-    else:
-        bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
+    bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
     
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
     if inst_data:
@@ -789,6 +776,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     data['Score'] = sc
     data['Reasons'] = rs
     
+    # 🌟 卡片圈圈圖示僅顯示S, A, B 級
     data['評級'] = "S級" if sc >= 75 else ("A級" if sc >= 60 else ("B級" if sc >= 40 else "觀望"))
     
     feature = "一般狀態"
@@ -839,9 +827,9 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
                 
             temp_df = df_slice.iloc[:actual_idx + 1]
             if len(temp_df) >= 60: 
-                # ⚡ 回測時使用 skip_finmind=True 以避免極大量外部呼叫
-                t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund, skip_finmind=True)
+                t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund)
                 
+                # 🌟 降低回測觸發門檻 (40分)，增加樣本數以提供具參考價值的歷史勝率
                 if t_data and t_data['Score'] >= 40: 
                     if t_data['Score'] >= 75: s_count += 1
                     else: a_count += 1
@@ -1068,7 +1056,6 @@ def generate_cards_html(df_disp, is_intraday):
         
         score = r.get('Intraday_Score', 50) if is_intraday else r.get('Score', 0)
         
-        # 🌟 改進首頁卡片的評級顯示，去除非必要文字
         if is_intraday:
             s_col = "#ef4444" if score >= 80 else ("#facc15" if score >= 60 else "#22c55e")
             rating = "動能"
@@ -1264,29 +1251,13 @@ if st.session_state.page == "home":
         
         def process_scan(stock):
             try:
-                # ⚡ [is_scan=True] 略過 Fugle 即時 API 以極大化提升掃描速度
-                df = get_stock_data(stock, is_scan=True)
+                # 回歸穩定不卡的掃描方式：單純依序取資料，若有錯誤即跳過
+                df = get_stock_data(stock)
                 if df is None or len(df) < 60: return None
                 
-                # ⚡【Early Exit 第一階段】：極速純看均線，過濾純空頭走勢
-                close = df['Close'].iloc[-1]
-                ma20 = df['20MA'].iloc[-1]
-                ma60 = df['60MA'].iloc[-1]
-                if close < ma20 and close < ma60:
-                    return None 
-                
-                # ⚡【Early Exit 第二階段】：純算技術面得分，不呼叫外部 API
-                dummy_fund = {"EPS": "無", "PE": "無", "Industry": "一般產業"}
-                fast_data = analyze_today(df, stock, inst_data=[], is_light_mode=is_light_mode, pre_fund=dummy_fund, skip_finmind=True)
-                
-                # 拒絕技術面太弱的標的，節省 70% 的外部 API 請求
-                if not fast_data or fast_data.get('Score', 0) < 25:
-                    return None
-    
-                # ⚡【第三階段】：只有通過初篩的強勢股，才去抓取耗時的籌碼與財報 API
                 inst_data = get_institutional_trading(stock)
-                fund = get_fundamental_and_industry_data(stock, round(close, 2))
-                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund, skip_finmind=False)
+                fund = get_fundamental_and_industry_data(stock, round(df['Close'].iloc[-1], 2))
+                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund)
                 
                 if data:
                     if data.get('Score', 0) >= 40 or data.get('Intraday_Score', 0) >= 60: 
@@ -1298,7 +1269,6 @@ if st.session_state.page == "home":
                 pass
             return None
             
-        # ⚡ 降為 10 個執行緒，確保穩健不斷線，但由於加入了 Early Exit，整體掃描反而會變快！
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor: 
             futures = {executor.submit(process_scan, stock): stock for stock in pool_list}
             for future in concurrent.futures.as_completed(futures):
@@ -1377,7 +1347,6 @@ elif st.session_state.page == "simulated_orders":
     if not orders:
         st.info("目前沒有模擬下單紀錄。請先進入「個股解析頁面」，點擊「🛒 執行模擬下單」來建立您的紙上測試部位！")
     else:
-        # ⚠️ 投資組合產業集中度警告
         sector_counts = {}
         for order in orders:
             sec = order.get('industry', '未知')
@@ -1400,7 +1369,7 @@ elif st.session_state.page == "simulated_orders":
         title_c_global = "#111" if is_light_mode else "#f8fafc"
         
         for idx, order in enumerate(orders):
-            df_temp = get_stock_data(order['ticker']) # 不帶 is_scan，強制獲取最新 Fugle 報價
+            df_temp = get_stock_data(order['ticker']) 
             curr_price = float(df_temp['Close'].iloc[-1]) if df_temp is not None else order['buy_price']
             ma10 = float(df_temp['10MA'].iloc[-1]) if df_temp is not None else order['buy_price']
             atr = float(df_temp['ATR'].iloc[-1]) if df_temp is not None and not pd.isna(df_temp['ATR'].iloc[-1]) else order['buy_price'] * 0.03
@@ -1500,7 +1469,7 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 雙引擎分析大腦...</h4>", unsafe_allow_html=True)
         p_bar = st.progress(0)
         
-        df_chart = get_stock_data(target) # 在解析頁面不需要 is_scan=True，確保抓到 Fugle 即時資料
+        df_chart = get_stock_data(target) 
         p_bar.progress(30)
 
         if df_chart is not None:
