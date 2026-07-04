@@ -18,7 +18,7 @@ import concurrent.futures
 import numpy as np
 import logging
 import random
-import pandas_ta as ta
+#import pandas_ta as ta
 
 from streamlit_autorefresh import st_autorefresh
 
