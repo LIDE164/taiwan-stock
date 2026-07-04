@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-04 15:37 CST (V2.1 極速效能實戰版)
+# 最後修改時間: 2026-07-04 16:30 CST (V2.2 極速漏斗引擎版)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -247,7 +247,7 @@ def fetch_twse_index_history():
     return None
 
 # ==========================================
-# 🚀 Fugle API & 量化指標引擎 (極速退場版)
+# 🚀 Fugle API & 量化指標引擎
 # ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number, is_scan=False):
@@ -269,7 +269,6 @@ def get_stock_data(ticker_number, is_scan=False):
     
     if df is None: return None
     
-    # ⚡ 掃描模式 (is_scan=True) 時不呼叫 Fugle API，節省 100 個網路請求防卡死
     if not is_scan:
         try:
             if base_ticker != "^TWII":
@@ -679,7 +678,6 @@ def get_decision_score(data, fund_data):
 
     final_score = (trend_score * 0.25) + (tech_score * 0.35) + (chip_score * 0.20) + (fund_score * 0.15) + (vol_score * 0.05)
     
-    # 🛡️ 宏觀風險強制阻斷 (Macro Block)
     macro_risk = st.session_state.get('macro_risk', 50)
     if macro_risk >= 75 and final_score >= 60:
         final_score = 59 
@@ -715,7 +713,7 @@ def get_dynamic_theme(ticker, industry):
     return (ind, icon)
 
 @st.cache_data(ttl=5, show_spinner=False) 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None, skip_finmind=False):
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
     
@@ -725,7 +723,11 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
     
-    bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
+    # ⚡ 如果是在 Fast Pass 模式，跳過耗時的 FinMind 讀取
+    if skip_finmind:
+        bp_ratio, mom, yoy = 0.0, 0.0, 0.0
+    else:
+        bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
     
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
     if inst_data:
@@ -787,7 +789,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     data['Score'] = sc
     data['Reasons'] = rs
     
-    # 🌟 圓圈文字簡化，並符合圖二需求
     data['評級'] = "S級" if sc >= 75 else ("A級" if sc >= 60 else ("B級" if sc >= 40 else "觀望"))
     
     feature = "一般狀態"
@@ -814,7 +815,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     data['WinRate240'] = 0.0
     return data
 
-# 🌟 回測引擎：導入真實交易成本，並放寬觸發門檻以提升樣本數
 @st.cache_data(ttl=3600, show_spinner=False)
 def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None):
     df_slice = df_cached if df_cached is not None else get_stock_data(ticker_number)
@@ -839,9 +839,9 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
                 
             temp_df = df_slice.iloc[:actual_idx + 1]
             if len(temp_df) >= 60: 
-                t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund)
+                # ⚡ 回測時使用 skip_finmind=True 以避免極大量外部呼叫
+                t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund, skip_finmind=True)
                 
-                # 🌟 門檻調降至 >=40 分 (B級)，確保產生足夠樣本數計算勝率
                 if t_data and t_data['Score'] >= 40: 
                     if t_data['Score'] >= 75: s_count += 1
                     else: a_count += 1
@@ -862,7 +862,7 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
                         hit_stop = future_df['Low'].min() <= stop_p
                         hit_target = future_df['High'].max() >= target_p
                         
-                        # 🩸 真實交易成本計算 (手續費來回約0.285%，證交稅0.3% = 0.585%)
+                        # 🩸 導入真實交易成本 (手續費 0.285% + 稅 0.3% = 0.585%)
                         buy_cost = buy_price * 1.001425
                         if hit_stop:
                             pass 
@@ -1067,12 +1067,14 @@ def generate_cards_html(df_disp, is_intraday):
         change_sign = "+" if p_val > 0 else ""
         
         score = r.get('Intraday_Score', 50) if is_intraday else r.get('Score', 0)
+        
+        # 🌟 改進首頁卡片的評級顯示，去除非必要文字
         if is_intraday:
             s_col = "#ef4444" if score >= 80 else ("#facc15" if score >= 60 else "#22c55e")
             rating = "動能"
         else:
             s_col = "#ef4444" if score >= 75 else ("#facc15" if score >= 60 else "#22c55e")
-            rating = r.get('評級', '觀望').replace('🟢 ', '').replace('🟡 ', '').replace('🟠 ', '').replace('⚪ ', '')
+            rating = "S級" if score >= 75 else ("A級" if score >= 60 else ("B級" if score >= 40 else "觀望"))
             
         r_col = "#4ade80" if "S級" in rating else ("#facc15" if "A級" in rating else "#94a3b8")
         
@@ -1266,19 +1268,27 @@ if st.session_state.page == "home":
                 df = get_stock_data(stock, is_scan=True)
                 if df is None or len(df) < 60: return None
                 
-                # ⚡【Early Exit 提早退場機制】：過濾明顯空頭走勢，節省 60% 外部 API 請求時間
+                # ⚡【Early Exit 第一階段】：極速純看均線，過濾純空頭走勢
                 close = df['Close'].iloc[-1]
                 ma20 = df['20MA'].iloc[-1]
                 ma60 = df['60MA'].iloc[-1]
                 if close < ma20 and close < ma60:
-                    return None # 均線弱勢排列，直接跳過不耗時抓財報與籌碼
+                    return None 
+                
+                # ⚡【Early Exit 第二階段】：純算技術面得分，不呼叫外部 API
+                dummy_fund = {"EPS": "無", "PE": "無", "Industry": "一般產業"}
+                fast_data = analyze_today(df, stock, inst_data=[], is_light_mode=is_light_mode, pre_fund=dummy_fund, skip_finmind=True)
+                
+                # 拒絕技術面太弱的標的，節省 70% 的外部 API 請求
+                if not fast_data or fast_data.get('Score', 0) < 25:
+                    return None
     
+                # ⚡【第三階段】：只有通過初篩的強勢股，才去抓取耗時的籌碼與財報 API
                 inst_data = get_institutional_trading(stock)
                 fund = get_fundamental_and_industry_data(stock, round(close, 2))
-                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund)
+                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund, skip_finmind=False)
                 
                 if data:
-                    # 只有達到 B級 (40分) 或盤中強勢，才執行耗時的勝率回測
                     if data.get('Score', 0) >= 40 or data.get('Intraday_Score', 0) >= 60: 
                         wr_90, wr_240, _, _, _ = calculate_historical_winrate(stock, df_cached=df, fund_cached=fund)
                         data['WinRate'] = round(wr_90, 1)
@@ -1288,8 +1298,8 @@ if st.session_state.page == "home":
                 pass
             return None
             
-        # ⚡ 將 workers 調降至 12 (平衡掃描速度與防 API 限流被 Ban)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor: 
+        # ⚡ 降為 10 個執行緒，確保穩健不斷線，但由於加入了 Early Exit，整體掃描反而會變快！
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor: 
             futures = {executor.submit(process_scan, stock): stock for stock in pool_list}
             for future in concurrent.futures.as_completed(futures):
                 completed += 1
@@ -1555,7 +1565,6 @@ elif st.session_state.page == "analysis":
         v_c = "#22c55e" if sc < 40 else ("#facc15" if sc < 75 else "#ef4444")
         v_t = "🔴 空手觀望" if sc < 40 else ("🟡 A級試單" if sc < 75 else "🟢 S級強烈買進")
         
-        # ⚠️ 如果有宏觀風險阻斷，顯示紅框警告
         macro_risk = st.session_state.get('macro_risk', 50)
         macro_warning = ""
         if macro_risk >= 75:
@@ -1580,7 +1589,7 @@ elif st.session_state.page == "analysis":
                 "id": str(int(time.time())),
                 "ticker": target,
                 "name": c_name,
-                "industry": f_data.get('Industry', '未知'), # 🌟 寫入板塊名稱供資金控管檢查
+                "industry": f_data.get('Industry', '未知'),
                 "buy_price": data['收盤價'],
                 "highest_price": data['收盤價'],
                 "target_price": data['ATR_Target'],
