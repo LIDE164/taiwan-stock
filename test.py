@@ -1361,13 +1361,11 @@ if st.session_state.page == "home":
             df_results = df_results[df_results['Feature'] == selected_feature]
         
         if not df_results.empty:
-            if is_intraday:
-                df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Intraday_Score', '漲跌幅'], ascending=[False, False]).head(30)
-            else:
-                df_disp = df_results[df_results['Score'] >= 2].sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
-        else:
-            df_disp = df_results
-        
+    if is_intraday:
+        df_disp = df_results.sort_values(by=['Intraday_Score', '漲跌幅'], ascending=[False, False]).head(30)
+    else:
+        df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
+       
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
