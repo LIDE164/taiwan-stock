@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-04 16:50 CST (穩定流暢版 - 完美名單修復)
+# 最後修改時間: 2026-07-04 17:30 CST (防卡死穩健版)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -153,7 +153,7 @@ ENG_TO_TW_INDUSTRY = {
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
     try:
-        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
+        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
         soup = BeautifulSoup(res.text, 'html.parser')
         h2 = soup.find('h2')
         if h2:
@@ -1023,7 +1023,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     risk_html += f"<h4 style='color: #34d399; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🛡️ 風險與資金控管 (Position Sizing)</h4>"
     
     risk_html += f"<div style='background-color: rgba(245, 158, 11, 0.1); border-left: 4px solid #f59e0b; padding: 10px; margin-bottom: 15px; font-size: 0.9rem; color: {t_text_c};'>"
-    risk_html += f"⚠️ <b>注意：</b> 盤中指標（如紅吞、MACD）隨報價跳動會產生重繪效應。真正的波段買點，建議於 <b>13:20 尾盤</b> 確認 K 線型態後再行決策。"
+    risk_html += f"⚠️ <b>注意：</b> 盤中指標隨報價跳動會產生重繪效應。真正的波段買點，建議於 <b>13:20 尾盤</b> 確認 K 線型態後再行決策。"
     risk_html += f"</div>"
     
     buy_p = data['收盤價']
@@ -1140,10 +1140,12 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ef4444', decreasing_line_color='#22c55e', name="K線"), row=1, col=1)
     
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#facc15', width=2), name="10T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['60MA'], line=dict(color='#c084fc', width=2.5), name="60T季線"), row=1, col=1) 
+    # 🌟 強制掛載所有短中長均線與現價提示
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='#f59e0b', width=1.5), name="5T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#10b981', width=1.5), name="10T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='#8b5cf6', width=1.5), name="20T"), row=1, col=1)
     
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1)
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1, annotation_text=f"現價 {latest_price}", annotation_position="left")
     
     if show_sup_res:
         highest_price = df_view['High'].max()
@@ -1213,7 +1215,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['ADX'], line=dict(color=adx_color, width=2.5), name="ADX趨勢動能"), row=4, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="#facc15", row=4, col=1, annotation_text="強勢線 (30)", annotation_font=dict(size=10, color="#facc15"))
 
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"10T:{last_row['10MA']:.1f} | 60T:{last_row['60MA']:.1f}", showarrow=False, font=dict(color="#facc15", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#facc15", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"ADX:{last_row['ADX']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -1246,6 +1248,8 @@ if st.session_state.page == "home":
         completed = 0
         
         def process_scan(stock):
+            # 🌟 加入安全延遲，避免瞬間打爆免費版 API 額度導致卡死不動
+            time.sleep(0.15) 
             try:
                 df = get_stock_data(stock)
                 if df is None or len(df) < 60: return None
@@ -1260,11 +1264,12 @@ if st.session_state.page == "home":
                         data['WinRate'] = round(wr_90, 1)
                         data['WinRate240'] = round(wr_240, 1)
                     return data
-            except:
+            except Exception as e:
                 pass
             return None
             
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor: 
+        # 🌟 調降 workers 數量至 5，換取 100% 不卡死的穩定度
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: 
             futures = {executor.submit(process_scan, stock): stock for stock in pool_list}
             for future in concurrent.futures.as_completed(futures):
                 completed += 1
@@ -1274,7 +1279,7 @@ if st.session_state.page == "home":
                 except: pass
                 
                 p_bar.progress(min(completed / total, 1.0))
-                progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙週期回測極速解析中... ({completed} / {total})</div>", unsafe_allow_html=True)
+                progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙週期回測安全掃描中... ({completed} / {total})</div>", unsafe_allow_html=True)
                 
         progress_text.empty()
         p_bar.empty()
@@ -1606,32 +1611,25 @@ elif st.session_state.page == "analysis":
         st.divider()
         st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;"><i class='fa-solid fa-list'></i> 同步監控雷達清單</div>''', unsafe_allow_html=True)
         
-        if n_pool:
-            if 'nav_pool_data' in st.session_state and st.session_state.nav_pool_data:
-                nav_data = st.session_state.nav_pool_data
-                df_nav = pd.DataFrame(nav_data)
-                if 'ticker_raw' in df_nav.columns:
-                    df_nav = df_nav[df_nav['ticker_raw'] != target]
-                    if not df_nav.empty:
-                        is_intra = st.session_state.get('is_intraday', True)
-                        bottom_cards_html = generate_cards_html(df_nav, is_intra)
-                        st.markdown(bottom_cards_html, unsafe_allow_html=True)
-                    else:
-                        st.info("目前清單中已無其他符合條件的標的。")
-                else:
-                    st.info("目前清單中無效的標的資料。")
+        # 🌟 底層名單連動修復：確保與首頁暫存結果同步
+        if 'scan_results' in st.session_state and st.session_state.scan_results:
+            df_nav = pd.DataFrame(st.session_state.scan_results)
+            is_intra = st.session_state.get('is_intraday', True)
+            
+            # 套用與首頁相同的嚴格分數濾網
+            if is_intra:
+                df_nav = df_nav[df_nav['Intraday_Score'] >= 60].sort_values(by=['Intraday_Score', '漲跌幅'], ascending=[False, False])
             else:
-                # 🌟 FALLBACK: 若重新整理導致資料遺失，自動渲染備用按鈕清單，保證底部絕對不會空掉！
-                fallback_pool = [s for s in n_pool if s != target]
-                if fallback_pool:
-                    st.markdown("<div style='color: #94a3b8; margin-bottom: 12px; font-size: 0.9rem;'>⚠️ 暫存資料已重置，以下顯示預設觀察名單。若要查看詳細數據卡片，請返回首頁執行雷達快篩。</div>", unsafe_allow_html=True)
-                    cols = st.columns(4)
-                    for i, stock_id in enumerate(fallback_pool):
-                        with cols[i % 4]:
-                            if st.button(f"📊 {stock_id} {get_stock_name(stock_id)}", key=f"bottom_nav_{stock_id}", use_container_width=True):
-                                st.session_state.current_stock = stock_id
-                                st.rerun()
+                df_nav = df_nav[df_nav['Score'] >= 40].sort_values(by=['Score', '漲跌幅'], ascending=[False, False])
+                
+            if 'ticker_raw' in df_nav.columns:
+                df_nav = df_nav[df_nav['ticker_raw'] != target]
+                if not df_nav.empty:
+                    bottom_cards_html = generate_cards_html(df_nav, is_intra)
+                    st.markdown(bottom_cards_html, unsafe_allow_html=True)
                 else:
-                    st.info("目前清單中已無其他標的。")
+                    st.info("目前清單中已無其他符合條件的標的。")
+            else:
+                st.info("暫存資料格式異常，請返回首頁重新掃描。")
         else:
-            st.info("目前無掃描名單暫存。請先返回首頁執行雷達快篩。")
+            st.warning("⚠️ 系統尚未執行雷達掃描，或暫存資料已重置。請返回首頁點擊掃描！")
