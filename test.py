@@ -1,8 +1,10 @@
-# 最後修改時間: 2026-07-04 15:30 CST (V2.1 終極實戰版)
+# 最後修改時間: 2026-07-04 15:37 CST (V2.1 極速效能實戰版)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
@@ -21,6 +23,12 @@ from streamlit_autorefresh import st_autorefresh
 # === 雙引擎 API 憑證 ===
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
 FUGLE_API_KEY = "YzIzNTU5MTItYWNjMi00OGQ0LWFkNmEtYjU2MDA1N2FlZjJlIDE2ZGQzM2MzLTA5MDEtNGU2NS04MWMwLTIyMzIyMzdjODIzOA=="
+
+# 🌟 建立全域強健連線池 (Robust Session) 解決 API 卡死問題
+req_session = requests.Session()
+retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])
+req_session.mount('http://', HTTPAdapter(max_retries=retries))
+req_session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -98,9 +106,9 @@ STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "230
 def get_all_tw_stock_names():
     names = STOCK_NAMES.copy()
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        res = req_session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
         for i in res.json(): names[i['Code']] = i['Name']
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+        res2 = req_session.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
         for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
     except: pass
     return names
@@ -153,7 +161,7 @@ ENG_TO_TW_INDUSTRY = {
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_real_chinese_name(ticker):
     try:
-        res = requests.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        res = req_session.get(f"https://invest.cnyes.com/twstock/TWS/{ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
         soup = BeautifulSoup(res.text, 'html.parser')
         h2 = soup.find('h2')
         if h2:
@@ -222,7 +230,7 @@ if 'fav_groups' not in st.session_state:
 @st.cache_data(ttl=1800)
 def fetch_twse_top_100():
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res = req_session.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
         df = pd.DataFrame(res.json())
         df['TradeVolume'] = pd.to_numeric(df['TradeVolume'], errors='coerce')
         return df[df['Code'].str.match(r'^\d{4}$')].sort_values(by='TradeVolume', ascending=False).head(100)['Code'].tolist()
@@ -239,10 +247,10 @@ def fetch_twse_index_history():
     return None
 
 # ==========================================
-# 🚀 Fugle API & 量化指標引擎
+# 🚀 Fugle API & 量化指標引擎 (極速退場版)
 # ==========================================
 @st.cache_data(ttl=60, show_spinner=False) 
-def get_stock_data(ticker_number):
+def get_stock_data(ticker_number, is_scan=False):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
         try:
@@ -261,30 +269,32 @@ def get_stock_data(ticker_number):
     
     if df is None: return None
     
-    try:
-        if base_ticker != "^TWII":
-            url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
-            headers = {'X-API-KEY': FUGLE_API_KEY}
-            res = requests.get(url, headers=headers, timeout=3)
-            if res.status_code == 200:
-                q = res.json()
-                c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
-                o_price = float(q.get('openPrice', c_price))
-                h_price = float(q.get('highPrice', c_price))
-                l_price = float(q.get('lowPrice', c_price))
-                v_vol = float(q.get('total', {}).get('tradeVolume', 0))
-                
-                dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
-                
-                if dt_live not in df.index:
-                    new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
-                    df = pd.concat([df, new_row])
-                else:
-                    df.at[dt_live, 'Close'] = c_price
-                    df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
-                    df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
-                    df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
-    except: pass
+    # ⚡ 掃描模式 (is_scan=True) 時不呼叫 Fugle API，節省 100 個網路請求防卡死
+    if not is_scan:
+        try:
+            if base_ticker != "^TWII":
+                url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
+                headers = {'X-API-KEY': FUGLE_API_KEY}
+                res = req_session.get(url, headers=headers, timeout=4)
+                if res.status_code == 200:
+                    q = res.json()
+                    c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
+                    o_price = float(q.get('openPrice', c_price))
+                    h_price = float(q.get('highPrice', c_price))
+                    l_price = float(q.get('lowPrice', c_price))
+                    v_vol = float(q.get('total', {}).get('tradeVolume', 0))
+                    
+                    dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
+                    
+                    if dt_live not in df.index:
+                        new_row = pd.DataFrame({'Open': [o_price], 'High': [h_price], 'Low': [l_price], 'Close': [c_price], 'Volume': [v_vol]}, index=[dt_live])
+                        df = pd.concat([df, new_row])
+                    else:
+                        df.at[dt_live, 'Close'] = c_price
+                        df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], h_price)
+                        df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], l_price)
+                        df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], v_vol)
+        except: pass
 
     try:
         tr1 = df['High'] - df['Low']
@@ -363,7 +373,7 @@ def get_finmind_chip_and_revenue(ticker):
         
         try:
             url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
-            res_chip = requests.get(url_chip, timeout=5).json()
+            res_chip = req_session.get(url_chip, timeout=4).json()
             if 'data' in res_chip and len(res_chip['data']) > 0:
                 d_list = res_chip['data']
                 latest_date = max([x.get('date', '') for x in d_list])
@@ -378,7 +388,7 @@ def get_finmind_chip_and_revenue(ticker):
 
         try:
             url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
-            res_rev = requests.get(url_rev, timeout=5).json()
+            res_rev = req_session.get(url_rev, timeout=4).json()
             if 'data' in res_rev and len(res_rev['data']) > 0:
                 d_list = res_rev['data']
                 d_list.sort(key=lambda x: x.get('date', ''))
@@ -412,11 +422,9 @@ def get_twii_quote():
             fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
     except: pass
     try:
-        session = requests.Session()
-        session.get("https://mis.twse.com.tw/stock/index.jsp", headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         ts = int(datetime.now(tz_tpe).timestamp() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&json=1&delay=0&_={ts}"
-        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        res = req_session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
         if res.status_code == 200:
             data = res.json()
             if 'msgArray' in data and len(data['msgArray']) > 0:
@@ -440,7 +448,7 @@ def get_institutional_trading(ticker):
     try:
         start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
-        res = requests.get(url, timeout=5)
+        res = req_session.get(url, timeout=4)
         if res.status_code == 200:
             data = res.json()
             if data.get('msg') == 'success' and len(data.get('data', [])) > 0:
@@ -532,7 +540,6 @@ def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或台幣弱勢，預防次一交易日開平低盤回測下檔支撐。"
     else: tmr_title, tmr_desc = "🚨 極度警戒", f"總經風險飆高，VIX大漲，強烈建議啟動時間停損與嚴格資金控管。"
     
-    # 🌟 寫入 session_state 供個股決策引擎進行宏觀風險阻斷
     st.session_state.macro_risk = risk_score
     
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro_data
@@ -576,7 +583,7 @@ def render_index_board():
     except Exception as e: st.error(f"大盤儀表板渲染發生錯誤。({str(e)})")
 
 # ==========================================
-# 🌟 核心引擎重構：多因子決策樹與動態風報比 (V2.1 實戰版)
+# 🌟 核心引擎重構：多因子決策樹與動態風報比
 # ==========================================
 def get_decision_score(data, fund_data):
     rs = []
@@ -590,7 +597,6 @@ def get_decision_score(data, fund_data):
     ma60 = data.get('60MA', close)
     ma200 = data.get('200MA', close)
     
-    # 1. 趨勢驗證
     trend_score = 0
     if close > ma20 > ma60 > ma200:
         trend_score = 100
@@ -605,7 +611,6 @@ def get_decision_score(data, fund_data):
         trend_score = 40
         rs.append("⚖️ 趨勢震盪整理中")
         
-    # 2. 技術面驗證
     tech_score = 0
     if data.get('紅吞', False): 
         tech_score += 30
@@ -627,7 +632,6 @@ def get_decision_score(data, fund_data):
         rs.append("⚠️ 出現空方吞噬或長上影線壓力")
     tech_score = max(0, min(100, tech_score))
     
-    # 3. 籌碼面驗證
     chip_score = 0
     f_net = data.get('ForeignNet10d', 0)
     t_net = data.get('TrustNet10d', 0)
@@ -644,7 +648,6 @@ def get_decision_score(data, fund_data):
         rs.append(f"✅ 大戶持股高度集中 ({data['BigPlayerRatio']}%)")
     chip_score = max(0, min(100, chip_score))
     
-    # 4. 基本面驗證
     fund_score = 0
     yoy = data.get('YoY', 0)
     mom = data.get('MoM', 0)
@@ -663,7 +666,6 @@ def get_decision_score(data, fund_data):
     except: pass
     fund_score = max(0, min(100, fund_score))
     
-    # 5. 量能確認
     vol_score = 0
     vol_ratio = data.get('Est_Vol_Ratio', 1)
     if vol_ratio > 1.5:
@@ -675,23 +677,21 @@ def get_decision_score(data, fund_data):
     else:
         vol_score = 20
 
-    # 綜合評分 (0-100)
     final_score = (trend_score * 0.25) + (tech_score * 0.35) + (chip_score * 0.20) + (fund_score * 0.15) + (vol_score * 0.05)
     
     # 🛡️ 宏觀風險強制阻斷 (Macro Block)
     macro_risk = st.session_state.get('macro_risk', 50)
     if macro_risk >= 75 and final_score >= 60:
-        final_score = 59 # 強制降級為 B 級觀望
+        final_score = 59 
         rs.append("🚨 【系統保護觸發】總經大盤風險過高，已強制取消買進訊號，轉為觀望。")
     
-    # 動態 ATR 風報比設定
     roc_20 = data.get('ROC_20', 0)
     if roc_20 > 20: 
-        atr_target_mult, atr_stop_mult = 1.2, 1.0 # 漲多提防，縮小目標嚴格防守
+        atr_target_mult, atr_stop_mult = 1.2, 1.0 
     elif roc_20 > 10: 
         atr_target_mult, atr_stop_mult = 1.5, 1.0
     else: 
-        atr_target_mult, atr_stop_mult = 2.0, 1.2 # 初升段，讓獲利奔跑
+        atr_target_mult, atr_stop_mult = 2.0, 1.2 
         
     rrr = round(atr_target_mult / atr_stop_mult, 2)
     
@@ -786,6 +786,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     sc, rs, atr_target_mult, atr_stop_mult, rrr = get_decision_score(data, fund)
     data['Score'] = sc
     data['Reasons'] = rs
+    
+    # 🌟 圓圈文字簡化，並符合圖二需求
     data['評級'] = "S級" if sc >= 75 else ("A級" if sc >= 60 else ("B級" if sc >= 40 else "觀望"))
     
     feature = "一般狀態"
@@ -812,10 +814,9 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     data['WinRate240'] = 0.0
     return data
 
-# 🌟 回測引擎：導入真實交易成本，並增加 240 日牛熊雙回測
+# 🌟 回測引擎：導入真實交易成本，並放寬觸發門檻以提升樣本數
 @st.cache_data(ttl=3600, show_spinner=False)
 def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None):
-    # 共用快取，加速運算
     df_slice = df_cached if df_cached is not None else get_stock_data(ticker_number)
     if df_slice is None or len(df_slice) < 60:
         return 0.0, 0.0, 0, 0, []
@@ -839,7 +840,9 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
             temp_df = df_slice.iloc[:actual_idx + 1]
             if len(temp_df) >= 60: 
                 t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund)
-                if t_data and t_data['Score'] >= 40: # B級以上即納入回測
+                
+                # 🌟 門檻調降至 >=40 分 (B級)，確保產生足夠樣本數計算勝率
+                if t_data and t_data['Score'] >= 40: 
                     if t_data['Score'] >= 75: s_count += 1
                     else: a_count += 1
                     
@@ -873,47 +876,10 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
         win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0
         return win_rate, closed_signals, s_count, a_count, b_dates
 
-    # 執行雙週期回測
     wr_90, closed_90, sc_90, ac_90, dates_90 = run_backtest_for_period(90)
-    wr_240, _, _, _, _ = run_backtest_for_period(240) # 近 1 年勝率
+    wr_240, _, _, _, _ = run_backtest_for_period(240) 
     
     return wr_90, wr_240, closed_90, sc_90, dates_90
-
-@st.cache_data(ttl=180, show_spinner=False)
-def get_global_scan_results(pool_tuple):
-    scan_results = []
-    def process_scan(stock):
-        df = get_stock_data(stock)
-        if df is None or len(df) < 60: return None
-        
-        # ⚡【Early Exit 提早退場機制】：過濾明顯空頭走勢，節省 60% API 時間
-        close = df['Close'].iloc[-1]
-        ma20 = df['20MA'].iloc[-1]
-        ma60 = df['60MA'].iloc[-1]
-        if close < ma20 and close < ma60 and (ma20 < ma60):
-            return None # 純空頭排列，直接跳過不耗時抓財報與籌碼
-
-        inst_data = get_institutional_trading(stock)
-        fund = get_fundamental_and_industry_data(stock, round(close, 2))
-        data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=False, pre_fund=fund)
-        
-        if data:
-            if data['Score'] >= 40: 
-                wr_90, wr_240, _, _, _ = calculate_historical_winrate(stock, df_cached=df, fund_cached=fund)
-                data['WinRate'] = round(wr_90, 1)
-                data['WinRate240'] = round(wr_240, 1)
-            return data
-        return None
-        
-    # ⚡ 增加 workers 到 20 提升併發速度
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(process_scan, stock): stock for stock in pool_tuple}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                res = future.result()
-                if res: scan_results.append(res)
-            except: pass
-    return scan_results
 
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
@@ -1071,9 +1037,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     risk_html = f"<div style='border: 1px solid #34d399; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: rgba(16, 185, 129, 0.05);'>"
     risk_html += f"<h4 style='color: #34d399; margin-top: 0; font-size: 1.2rem; display: flex; align-items: center;'>🛡️ 風險與資金控管 (Position Sizing)</h4>"
     
-    # ⚠️ 新增警告：盤中指標重繪效應
     risk_html += f"<div style='background-color: rgba(245, 158, 11, 0.1); border-left: 4px solid #f59e0b; padding: 10px; margin-bottom: 15px; font-size: 0.9rem; color: {t_text_c};'>"
-    risk_html += f"⚠️ <b>注意：</b> 盤中指標（如紅吞、MACD）隨報價跳動會產生重繪效應。真正的 S 級波段買點，建議於 <b>13:20 尾盤</b> 確認 K 線型態後再行決策。"
+    risk_html += f"⚠️ <b>注意：</b> 盤中指標（如紅吞、MACD）隨報價跳動會產生重繪效應。真正的波段買點，建議於 <b>13:20 尾盤</b> 確認 K 線型態後再行決策。"
     risk_html += f"</div>"
     
     buy_p = data['收盤價']
@@ -1088,7 +1053,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         risk_desc = "無法計算風險距，建議觀望。"
 
     risk_html += f"<p style='font-size: 1rem; color: {t_text_c}; line-height: 1.6;'>{risk_desc}</p>"
-    risk_html += f"<p style='font-size: 0.85rem; color: #888;'>*量化交易核心在於資金分配。歷史勝率回測已扣除 0.5% 交易摩擦成本，請嚴格執行停損，切勿單筆重押。</p>"
+    risk_html += f"<p style='font-size: 0.85rem; color: #888;'>*量化交易核心在於資金分配。歷史勝率回測已扣除 0.585% 交易稅費摩擦成本，請嚴格執行停損，切勿單筆重押。</p>"
     risk_html += f"</div>"
 
     return tech_html + chip_html + fund_html + risk_html
@@ -1296,30 +1261,35 @@ if st.session_state.page == "home":
         completed = 0
         
         def process_scan(stock):
-            df = get_stock_data(stock)
-            if df is None or len(df) < 60: return None
-            
-            # ⚡【Early Exit 提早退場機制】：過濾明顯空頭走勢，節省 60% API 請求時間
-            close = df['Close'].iloc[-1]
-            ma20 = df['20MA'].iloc[-1]
-            ma60 = df['60MA'].iloc[-1]
-            if close < ma20 and close < ma60 and (ma20 < ma60):
-                return None # 純空頭排列，直接跳過不耗時抓財報與籌碼
-
-            inst_data = get_institutional_trading(stock)
-            fund = get_fundamental_and_industry_data(stock, round(close, 2))
-            data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund)
-            
-            if data:
-                # 只有達到觀察級別以上，才執行耗時的勝率回測
-                if data.get('Score', 0) >= 40 or data.get('Intraday_Score', 0) >= 60: 
-                    wr_90, wr_240, _, _, _ = calculate_historical_winrate(stock, df_cached=df, fund_cached=fund)
-                    data['WinRate'] = round(wr_90, 1)
-                    data['WinRate240'] = round(wr_240, 1)
-                return data
+            try:
+                # ⚡ [is_scan=True] 略過 Fugle 即時 API 以極大化提升掃描速度
+                df = get_stock_data(stock, is_scan=True)
+                if df is None or len(df) < 60: return None
+                
+                # ⚡【Early Exit 提早退場機制】：過濾明顯空頭走勢，節省 60% 外部 API 請求時間
+                close = df['Close'].iloc[-1]
+                ma20 = df['20MA'].iloc[-1]
+                ma60 = df['60MA'].iloc[-1]
+                if close < ma20 and close < ma60:
+                    return None # 均線弱勢排列，直接跳過不耗時抓財報與籌碼
+    
+                inst_data = get_institutional_trading(stock)
+                fund = get_fundamental_and_industry_data(stock, round(close, 2))
+                data = analyze_today(df, stock, inst_data=inst_data, is_light_mode=is_light_mode, pre_fund=fund)
+                
+                if data:
+                    # 只有達到 B級 (40分) 或盤中強勢，才執行耗時的勝率回測
+                    if data.get('Score', 0) >= 40 or data.get('Intraday_Score', 0) >= 60: 
+                        wr_90, wr_240, _, _, _ = calculate_historical_winrate(stock, df_cached=df, fund_cached=fund)
+                        data['WinRate'] = round(wr_90, 1)
+                        data['WinRate240'] = round(wr_240, 1)
+                    return data
+            except:
+                pass
             return None
             
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor: # ⚡ 最大併發數提升至20
+        # ⚡ 將 workers 調降至 12 (平衡掃描速度與防 API 限流被 Ban)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor: 
             futures = {executor.submit(process_scan, stock): stock for stock in pool_list}
             for future in concurrent.futures.as_completed(futures):
                 completed += 1
@@ -1329,7 +1299,7 @@ if st.session_state.page == "home":
                 except: pass
                 
                 p_bar.progress(min(completed / total, 1.0))
-                progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙週期回測加速解析中... ({completed} / {total})</div>", unsafe_allow_html=True)
+                progress_text.markdown(f"<div style='text-align: center; color: #818cf8; font-weight: bold;'>🚀 雙週期回測極速解析中... ({completed} / {total})</div>", unsafe_allow_html=True)
                 
         progress_text.empty()
         p_bar.empty()
@@ -1420,7 +1390,7 @@ elif st.session_state.page == "simulated_orders":
         title_c_global = "#111" if is_light_mode else "#f8fafc"
         
         for idx, order in enumerate(orders):
-            df_temp = get_stock_data(order['ticker'])
+            df_temp = get_stock_data(order['ticker']) # 不帶 is_scan，強制獲取最新 Fugle 報價
             curr_price = float(df_temp['Close'].iloc[-1]) if df_temp is not None else order['buy_price']
             ma10 = float(df_temp['10MA'].iloc[-1]) if df_temp is not None else order['buy_price']
             atr = float(df_temp['ATR'].iloc[-1]) if df_temp is not None and not pd.isna(df_temp['ATR'].iloc[-1]) else order['buy_price'] * 0.03
@@ -1520,7 +1490,7 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<h4 style='text-align:center;'>🚀 正在喚醒【{target} {c_name}】AI 雙引擎分析大腦...</h4>", unsafe_allow_html=True)
         p_bar = st.progress(0)
         
-        df_chart = get_stock_data(target)
+        df_chart = get_stock_data(target) # 在解析頁面不需要 is_scan=True，確保抓到 Fugle 即時資料
         p_bar.progress(30)
 
         if df_chart is not None:
