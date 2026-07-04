@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-04 16:50 CST (穩定流暢版)
+# 最後修改時間: 2026-07-04 16:50 CST (穩定流暢版 - 完美名單修復)
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -776,7 +776,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     data['Score'] = sc
     data['Reasons'] = rs
     
-    # 🌟 卡片圈圈圖示僅顯示S, A, B 級
     data['評級'] = "S級" if sc >= 75 else ("A級" if sc >= 60 else ("B級" if sc >= 40 else "觀望"))
     
     feature = "一般狀態"
@@ -829,7 +828,6 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
             if len(temp_df) >= 60: 
                 t_data = analyze_today(temp_df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=fund)
                 
-                # 🌟 降低回測觸發門檻 (40分)，增加樣本數以提供具參考價值的歷史勝率
                 if t_data and t_data['Score'] >= 40: 
                     if t_data['Score'] >= 75: s_count += 1
                     else: a_count += 1
@@ -850,7 +848,6 @@ def calculate_historical_winrate(ticker_number, df_cached=None, fund_cached=None
                         hit_stop = future_df['Low'].min() <= stop_p
                         hit_target = future_df['High'].max() >= target_p
                         
-                        # 🩸 導入真實交易成本 (手續費 0.285% + 稅 0.3% = 0.585%)
                         buy_cost = buy_price * 1.001425
                         if hit_stop:
                             pass 
@@ -1143,9 +1140,8 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     
     fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ef4444', decreasing_line_color='#22c55e', name="K線"), row=1, col=1)
     
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='#f59e0b', width=1.5), name="5T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#10b981', width=1.5), name="10T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='#8b5cf6', width=1.5), name="20T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#facc15', width=2), name="10T"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['60MA'], line=dict(color='#c084fc', width=2.5), name="60T季線"), row=1, col=1) 
     
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1)
     
@@ -1217,7 +1213,7 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.add_trace(go.Scatter(x=x_vals, y=df_view['ADX'], line=dict(color=adx_color, width=2.5), name="ADX趨勢動能"), row=4, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="#facc15", row=4, col=1, annotation_text="強勢線 (30)", annotation_font=dict(size=10, color="#facc15"))
 
-    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"5T:{last_row['5MA']:.1f} | 10T:{last_row['10MA']:.1f} | 20T:{last_row['20MA']:.1f}", showarrow=False, font=dict(color="#facc15", size=12), xanchor="left", bgcolor=ann_bg)
+    fig.add_annotation(x=0.01, y=0.98, xref="paper", yref="y domain", text=f"10T:{last_row['10MA']:.1f} | 60T:{last_row['60MA']:.1f}", showarrow=False, font=dict(color="#facc15", size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y2 domain", text=f"VOL: {last_row['Volume']:,.0f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y3 domain", text=f"MACD:{last_row['MACD']:.2f} | DIF:{last_row['Signal']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
     fig.add_annotation(x=0.01, y=0.95, xref="paper", yref="y4 domain", text=f"ADX:{last_row['ADX']:.2f}", showarrow=False, font=dict(color=text_c, size=12), xanchor="left", bgcolor=ann_bg)
@@ -1251,7 +1247,6 @@ if st.session_state.page == "home":
         
         def process_scan(stock):
             try:
-                # 回歸穩定不卡的掃描方式：單純依序取資料，若有錯誤即跳過
                 df = get_stock_data(stock)
                 if df is None or len(df) < 60: return None
                 
@@ -1609,11 +1604,11 @@ elif st.session_state.page == "analysis":
             st.rerun()
 
         st.divider()
-        st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;"><i class='fa-solid fa-list'></i> 同步監控雷達清單 (首頁快篩結果)</div>''', unsafe_allow_html=True)
+        st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;"><i class='fa-solid fa-list'></i> 同步監控雷達清單</div>''', unsafe_allow_html=True)
         
-        if n_pool and 'nav_pool_data' in st.session_state:
-            nav_data = st.session_state.nav_pool_data
-            if nav_data: 
+        if n_pool:
+            if 'nav_pool_data' in st.session_state and st.session_state.nav_pool_data:
+                nav_data = st.session_state.nav_pool_data
                 df_nav = pd.DataFrame(nav_data)
                 if 'ticker_raw' in df_nav.columns:
                     df_nav = df_nav[df_nav['ticker_raw'] != target]
@@ -1626,6 +1621,17 @@ elif st.session_state.page == "analysis":
                 else:
                     st.info("目前清單中無效的標的資料。")
             else:
-                st.info("目前清單中已無其他符合條件的標的。")
+                # 🌟 FALLBACK: 若重新整理導致資料遺失，自動渲染備用按鈕清單，保證底部絕對不會空掉！
+                fallback_pool = [s for s in n_pool if s != target]
+                if fallback_pool:
+                    st.markdown("<div style='color: #94a3b8; margin-bottom: 12px; font-size: 0.9rem;'>⚠️ 暫存資料已重置，以下顯示預設觀察名單。若要查看詳細數據卡片，請返回首頁執行雷達快篩。</div>", unsafe_allow_html=True)
+                    cols = st.columns(4)
+                    for i, stock_id in enumerate(fallback_pool):
+                        with cols[i % 4]:
+                            if st.button(f"📊 {stock_id} {get_stock_name(stock_id)}", key=f"bottom_nav_{stock_id}", use_container_width=True):
+                                st.session_state.current_stock = stock_id
+                                st.rerun()
+                else:
+                    st.info("目前清單中已無其他標的。")
         else:
             st.info("目前無掃描名單暫存。請先返回首頁執行雷達快篩。")
