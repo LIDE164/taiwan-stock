@@ -45,15 +45,15 @@ st.markdown('''
 </head>
 ''', unsafe_allow_html=True)
 
-components.html(
-    """
-    <script>
-        var body = window.parent.document.querySelector('.main');
-        if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
-    </script>
-    """,
-    height=0, width=0
-)
+#components.html(
+ #   """
+  #  <script>
+   #     var body = window.parent.document.querySelector('.main');
+    #    if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
+    #</script>
+    #""",
+    #height=0, width=0
+#)
 
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
