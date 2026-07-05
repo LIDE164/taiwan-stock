@@ -201,7 +201,7 @@ def fetch_twse_index_history():
             return df[['Open', 'High', 'Low', 'Close', 'Volume']]
     except: return None
 
-@st.cache_data(ttl=60, show_spinner=False) 
+@st.cache_data(ttl=60, show_spinner=False)  
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
@@ -223,14 +223,18 @@ def get_stock_data(ticker_number):
             if res.status_code == 200:
                 q = res.json()
                 c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
-                dt_live = pd.to_datetime(datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d'))
-                if dt_live not in df.index:
-                    new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [float(q.get('total', {}).get('tradeVolume', 0))]}, index=[dt_live])
-                    df = pd.concat([df, new_row])
-                else:
-                    df.at[dt_live, 'Close'] = c_price
-                    df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], float(q.get('highPrice', c_price)))
-                    df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], float(q.get('lowPrice', c_price)))
+                
+                # 🚀 修復週末 K 線重複 Bug：判斷是否為交易日
+                now_tpe = datetime.now(timezone(timedelta(hours=8)))
+                if now_tpe.weekday() < 5: # 0-4 代表週一到週五
+                    dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d'))
+                    if dt_live not in df.index:
+                        new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [float(q.get('total', {}).get('tradeVolume', 0))]}, index=[dt_live])
+                        df = pd.concat([df, new_row])
+                    else:
+                        df.at[dt_live, 'Close'] = c_price
+                        df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], float(q.get('highPrice', c_price)))
+                        df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], float(q.get('lowPrice', c_price)))
     except: pass
 
     try:
