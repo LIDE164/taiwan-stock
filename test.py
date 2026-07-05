@@ -28,9 +28,9 @@ from streamlit_autorefresh import st_autorefresh
 # 設定日誌系統，避免發生靜默錯誤
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# === 雙引擎 API 憑證 ===
-FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I")
-FUGLE_API_KEY = st.secrets.get("FUGLE_API_KEY", "YzIzNTU5MTItYWNjMi00OGQ0LWFkNmEtYjU2MDA1N2FlZjJlIDE2ZGQzM2MzLTA5MDEtNGU2NS04MWMwLTIyMzIyMzdjODIzOA==")
+# === 雙引擎 API 憑證 (安全雲端讀取) ===
+FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
+FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
 
 # ==========================================
 # 0. 系統初始化與風格設定
