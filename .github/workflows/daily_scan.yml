@@ -24,10 +24,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 建立環境變數與金鑰
+      - name: 建立環境變數與金鑰 (安全寫入版)
+        env:
+          SECRETS_CONTENT: ${{ secrets.STREAMLIT_SECRETS }}
         run: |
           mkdir -p .streamlit
-          echo "${{ secrets.STREAMLIT_SECRETS }}" > .streamlit/secrets.toml
+          echo "$SECRETS_CONTENT" > .streamlit/secrets.toml
 
       - name: 執行全市場掃描程式
         run: python scanner.py
