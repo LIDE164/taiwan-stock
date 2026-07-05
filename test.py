@@ -1,4 +1,7 @@
-# 最後修改時間: 2026-07-04 (優化穩定性與效能)
+# 最後修改時間: 2026-07-05 (全面升級 Firebase 雲端資料庫)
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 import yfinance as yf
 import streamlit as st
 import pandas as pd
@@ -18,16 +21,16 @@ import concurrent.futures
 import numpy as np
 import logging
 import random
-#import pandas_ta as ta
+# import pandas_ta as ta
 
 from streamlit_autorefresh import st_autorefresh
 
 # 設定日誌系統，避免發生靜默錯誤
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# === 雙引擎 API 憑證 (建議未來移至 .streamlit/secrets.toml) ===
-FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I"
-FUGLE_API_KEY = "YzIzNTU5MTItYWNjMi00OGQ0LWFkNmEtYjU2MDA1N2FlZjJlIDE2ZGQzM2MzLTA5MDEtNGU2NS04MWMwLTIyMzIyMzdjODIzOA=="
+# === 雙引擎 API 憑證 ===
+FINMIND_TOKEN = st.secrets.get("FINMIND_TOKEN", "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsImVtYWlsIjoiYTQ1Njg4MTUwQGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.LUcb8YPV4yo93_aB3obP4Z5iUGqAgTaH28ySx9UNv5I")
+FUGLE_API_KEY = st.secrets.get("FUGLE_API_KEY", "YzIzNTU5MTItYWNjMi00OGQ0LWFkNmEtYjU2MDA1N2FlZjJlIDE2ZGQzM2MzLTA5MDEtNGU2NS04MWMwLTIyMzIyMzdjODIzOA==")
 
 # ==========================================
 # 0. 系統初始化與風格設定
@@ -45,15 +48,8 @@ st.markdown('''
 </head>
 ''', unsafe_allow_html=True)
 
-#components.html(
- #   """
-  #  <script>
-   #     var body = window.parent.document.querySelector('.main');
-    #    if (body) { body.scrollTo({top: 0, behavior: 'smooth'}); }
-    #</script>
-    #""",
-    #height=0, width=0
-#)
+# 前端捲動機制已註解，避免 Streamlit 雲端白畫面
+# components.html(...)
 
 st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
@@ -195,34 +191,60 @@ def get_stock_name(ticker):
     name = name.replace(ticker_str, "").strip()
     return name
 
-FAV_FILE = "favorites.json" 
-FAV_GROUPS_FILE = "fav_groups.json" 
-POOL_FILE = "pool.json"
-SIM_FILE = "simulated_orders.json"
-
-def load_json(fp, default):
-    if os.path.exists(fp):
-        try:
-            with open(fp, "r", encoding="utf-8") as f: return json.load(f)
-        except Exception as e: 
-            logging.error(f"讀取 JSON {fp} 失敗: {e}")
-    return default
-def save_json(fp, data):
+# ==========================================
+# ☁️ Firebase 雲端資料庫初始化與讀寫
+# ==========================================
+if not firebase_admin._apps:
     try:
-        with open(fp, "w", encoding="utf-8") as f: json.dump(data, f)
+        cert_dict = dict(st.secrets["firebase"])
+        cred = credentials.Certificate(cert_dict)
+        firebase_admin.initialize_app(cred)
     except Exception as e:
-        logging.error(f"儲存 JSON {fp} 失敗: {e}")
+        logging.error(f"Firebase 初始化失敗 (請確認 Secrets 設定): {e}")
 
+try:
+    db = firestore.client()
+except:
+    db = None
+
+def load_cloud_data(collection_name, document_name, default_data):
+    """從 Firebase 讀取資料"""
+    if db is None: return default_data
+    try:
+        doc = db.collection(collection_name).document(document_name).get()
+        if doc.exists: return doc.to_dict().get('data', default_data)
+    except Exception as e:
+        logging.error(f"讀取 Firebase 失敗 ({document_name}): {e}")
+    return default_data
+
+def save_cloud_data(collection_name, document_name, data):
+    """將資料存入 Firebase"""
+    if db is None: return
+    try:
+        db.collection(collection_name).document(document_name).set({'data': data})
+    except Exception as e:
+        logging.error(f"寫入 Firebase 失敗 ({document_name}): {e}")
+
+# ==========================================
+# 全域狀態初始化 (替換為 Firebase)
+# ==========================================
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
-if 'custom_pool' not in st.session_state: st.session_state.custom_pool = load_json(POOL_FILE, ["2330", "2317", "2454", "2382", "3231", "2891", "9904", "1809", "0050", "2027", "1409", "3016"])
-if 'nav_pool' not in st.session_state: st.session_state.nav_pool = st.session_state.custom_pool
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
-if 'is_intraday' not in st.session_state: st.session_state.is_intraday = True # 🌟 記住首頁掃描模式
+if 'is_intraday' not in st.session_state: st.session_state.is_intraday = True
+
+if 'custom_pool' not in st.session_state: 
+    st.session_state.custom_pool = load_cloud_data("user_settings", "custom_pool", ["2330", "2317", "2454", "2382", "3231", "2891", "9904", "1809", "0050", "2027", "1409", "3016"])
+if 'nav_pool' not in st.session_state: 
+    st.session_state.nav_pool = st.session_state.custom_pool
 
 if 'simulated_orders' not in st.session_state:
-    st.session_state.simulated_orders = load_json(SIM_FILE, [])
+    st.session_state.simulated_orders = load_cloud_data("user_data", "simulated_orders", [])
+
+if 'fav_groups' not in st.session_state:
+    default_groups = {"預設群組": ["1802", "2330", "1785"]}
+    st.session_state.fav_groups = load_cloud_data("user_settings", "fav_groups", default_groups)
 
 if 'stock' in st.query_params:
     q_stock = st.query_params['stock']
@@ -232,12 +254,6 @@ if 'stock' in st.query_params:
         st.session_state.date_offset = 0
         st.session_state.last_q_stock = q_stock
 
-if 'fav_groups' not in st.session_state:
-    default_groups = {"預設群組": ["1802", "2330", "1785"]}
-    if os.path.exists(FAV_FILE) and not os.path.exists(FAV_GROUPS_FILE):
-        old_favs = load_json(FAV_FILE, ["1802", "2330", "1785"])
-        default_groups["預設群組"] = old_favs
-    st.session_state.fav_groups = load_json(FAV_GROUPS_FILE, default_groups)
 
 @st.cache_data(ttl=1800)
 def fetch_twse_top_100():
@@ -313,22 +329,7 @@ def get_stock_data(ticker_number):
         logging.warning(f"Fugle API 即時報價失敗 {base_ticker}: {e}")
 
     try:
-        # 使用 pandas_ta 進行優化計算
-        df.ta.sma(length=5, append=True)
-        df.ta.sma(length=10, append=True)
-        df.ta.sma(length=20, append=True)
-        df.ta.sma(length=60, append=True)
-        df.rename(columns={'SMA_5': '5MA', 'SMA_10': '10MA', 'SMA_20': '20MA', 'SMA_60': '60MA'}, inplace=True, errors='ignore')
-        
-        df.ta.macd(fast=12, slow=26, signal=9, append=True)
-        for col in df.columns:
-            if col.startswith('MACD_12'): df.rename(columns={col: 'MACD'}, inplace=True)
-            elif col.startswith('MACDh_12'): df.rename(columns={col: 'MACD_Hist'}, inplace=True)
-            elif col.startswith('MACDs_12'): df.rename(columns={col: 'Signal'}, inplace=True)
-            
-    except Exception as e:
-        logging.warning(f"pandas-ta 運算發生錯誤: {e}")
-        # 如果失敗，回退至手動計算以策安全
+        # 手動計算均線與 MACD (退回安全模式)
         df['5MA'] = df['Close'].rolling(5).mean()
         df['10MA'] = df['Close'].rolling(10).mean()
         df['20MA'] = df['Close'].rolling(20).mean()
@@ -337,7 +338,6 @@ def get_stock_data(ticker_number):
         df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = df['MACD'] - df['Signal']
 
-    try:
         # 保留原邏輯，確保布林通道與乖離率算法不變
         df['STD20'] = df['Close'].rolling(20).std()
         df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
@@ -1367,7 +1367,7 @@ if st.session_state.page == "home":
                 df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
         else:
             df_disp = df_results
-            
+
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
         st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
@@ -1393,7 +1393,7 @@ elif st.session_state.page == "simulated_orders":
     with col_clear:
         if st.button("🗑️ 清空所有紀錄", use_container_width=True, key="btn_sim_clear"):
             st.session_state.simulated_orders = []
-            save_json(SIM_FILE, [])
+            save_cloud_data("user_data", "simulated_orders", [])
             st.success("已清除所有模擬下單紀錄！")
             st.rerun()
             
@@ -1407,7 +1407,7 @@ elif st.session_state.page == "simulated_orders":
         if "delete_order_id" in st.session_state:
             del_id = st.session_state.delete_order_id
             st.session_state.simulated_orders = [o for o in orders if o.get('id') != del_id]
-            save_json(SIM_FILE, st.session_state.simulated_orders)
+            save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
             del st.session_state["delete_order_id"]
             st.rerun()
             
@@ -1423,7 +1423,7 @@ elif st.session_state.page == "simulated_orders":
             if 'highest_price' not in order: order['highest_price'] = order['buy_price']
             if curr_price > order['highest_price']: 
                 order['highest_price'] = curr_price
-                save_json(SIM_FILE, st.session_state.simulated_orders)
+                save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
                 
             dynamic_stop = order['highest_price'] - (2 * atr)
             pl_val = curr_price - order['buy_price']
@@ -1605,7 +1605,7 @@ elif st.session_state.page == "analysis":
                 "time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
             }
             st.session_state.simulated_orders.insert(0, new_order)
-            save_json(SIM_FILE, st.session_state.simulated_orders)
+            save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
             
             st.success(f"✅ **模擬下單設定成功！** 已在 **{data['收盤價']}** 元虛擬買進 {target} {c_name}。\n\n"
                        f"👉 **已啟動「讓獲利奔跑」移動防護引擎！** 請從左側選單進入「模擬交易中心」隨時追蹤即時報酬率！")
@@ -1644,7 +1644,7 @@ elif st.session_state.page == "analysis":
             for g in all_groups:
                 if g in selected_groups and target not in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].append(target)
                 elif g not in selected_groups and target in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].remove(target)
-            save_json(FAV_GROUPS_FILE, st.session_state.fav_groups)
+            save_cloud_data("user_settings", "fav_groups", st.session_state.fav_groups)
             st.success("✅ 群組設定已更新！")
             st.rerun()
 
