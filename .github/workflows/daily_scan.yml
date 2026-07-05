@@ -1,0 +1,33 @@
+name: 台股盤後自動掃描雷達
+
+# 設定觸發時間 (使用 UTC 時間，台灣時間減 8 小時)
+# 這裡設定 06:30 UTC，等於台灣時間下午 14:30 執行
+on:
+  schedule:
+    - cron: '30 6 * * 1-5' # 週一到週五執行
+  workflow_dispatch: # 允許在 GitHub 網頁上手動點擊執行測試
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取得程式碼
+        uses: actions/checkout@v3
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 安裝相依套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 建立環境變數與金鑰
+        run: |
+          mkdir -p .streamlit
+          echo "${{ secrets.STREAMLIT_SECRETS }}" > .streamlit/secrets.toml
+
+      - name: 執行全市場掃描程式
+        run: python scanner.py
