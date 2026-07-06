@@ -442,7 +442,7 @@ def render_index_board():
 # 🚀 終極 100 分量化模型引擎
 # ==========================================
 def get_decision_score_100(data, fund_data, inst_data=None, df=None):
-    score = 0
+    score = 20
     reasons = []
 
     close = data.get('收盤價', 0)
@@ -472,24 +472,24 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     # 2. 資金進場 (20分)
     mom_score = 0
     if macd_h > 0 and macd_h > macd_h_prev: mom_score += 8; reasons.append("📈 MACD紅柱放大 (+8)")
-    if roc > 10: mom_score += 6; reasons.append("🔥 近月漲幅強勢 (+6)")
+    if roc > 5: mom_score += 6; reasons.append("🔥 近月漲幅強勢 (+6)")
     if close > ma5: mom_score += 3; reasons.append("✅ 站上5日線 (+3)")
     if red_engulf or (close > high_20): mom_score += 3; reasons.append("🧨 紅吞或突破 (+3)")
     score += mom_score
 
     # 3. 基本面支撐 (20分)
     money_score = 0
-    if vol > vol_ma5 * 1.5: money_score += 8; reasons.append("💰 爆量攻擊 (+8)")
+    if vol > vol_ma5 * 1.2: money_score += 8; reasons.append("💰 爆量攻擊 (+8)")
 
     foreign_buy_days = 0
     if inst_data and len(inst_data) >= 2:
         for row in inst_data[:2]:
             if int(str(row.get('外資(張)', '0')).replace(',', '')) > 0:
                 foreign_buy_days += 1
-    if foreign_buy_days >= 2: money_score += 6; reasons.append("🏦 外資連買2天以上 (+6)")
+    if foreign_buy_days >= 1: money_score += 6; reasons.append("🏦 外資連買2天以上 (+6)")
 
     big_player_ratio = fund_data.get('BigPlayer', 0)
-    if big_player_ratio > 50: money_score += 6; reasons.append(f"👑 大戶持股>50% ({big_player_ratio}%) (+6)")
+    if big_player_ratio > 30: money_score += 6; reasons.append(f"👑 大戶持股>50% ({big_player_ratio}%) (+6)")
     score += money_score
 
     # 4. 族群題材 (15分)
@@ -517,11 +517,11 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
 
     # 6. 風險扣分 (-20分)
     risk_score = 0
-    if bias > 10: risk_score -= 5; reasons.append("⚠️ 乖離過大 (-5)")
-    if j_val > 90: risk_score -= 5; reasons.append("⚠️ KDJ 高檔過熱 (-5)")
-    if close < ma5: risk_score -= 5; reasons.append("⚠️ 跌破5日線 (-5)")
+    if bias > 10: risk_score -= 3; reasons.append("⚠️ 乖離過大 (-5)")
+    if j_val > 90: risk_score -= 3; reasons.append("⚠️ KDJ 高檔過熱 (-5)")
+    if close < ma5: risk_score -= 3; reasons.append("⚠️ 跌破5日線 (-5)")
     vix = fund_data.get('VIX', 0)
-    if vix > 20: risk_score -= 5; reasons.append("🚨 大盤 VIX > 20 (-5)")
+    if vix > 20: risk_score -= 3; reasons.append("🚨 大盤 VIX > 20 (-5)")
     score += risk_score
 
     # 7. 爆發開關 (+10分)
@@ -529,8 +529,8 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
         score += 10; reasons.append("🧨 爆發開關：帶量突破20日新高 (+10)")
 
     # 最終評級
-    if score >= 70: label = "🟢 強勢買進"
-    elif score >= 60: label = "🟡 偏多觀察"
+    if score >= 60: label = "🟢 強勢買進"
+    elif score >= 45: label = "🟡 偏多觀察"
     else: label = "⚪ 弱勢忽略"
 
     # 進場特徵
