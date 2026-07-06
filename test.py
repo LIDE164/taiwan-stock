@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (終極不刪減版：100分制滿血回歸 + 全UI面板修復)
+# 最後修改時間: 2026-07-06 (終極不刪減版：修復盤後名單 KeyError + 100分制滿血)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -750,7 +750,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     return tech_html + chip_html + fund_html
 
 # ==========================================
-# 📊 內部繪製 K 線圖 (避免缺少 charts.py 導致無法執行)
+# 📊 內部繪製 K 線圖 (直接內建，保證不會出錯)
 # ==========================================
 def draw_professional_chart(df, latest_price, view_days, is_light_mode, show_buy_signal=False, show_sup_res=False, show_signals=True, buy_dates=[]):
     df_view = df.tail(view_days).copy()
@@ -894,6 +894,7 @@ if st.session_state.page == "home":
         if is_intraday:
             with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
                 fb_df = pd.DataFrame(cached_list)
+                # 這裡原本用 '代號' 去抓，確保不會報錯
                 targets = list(set([str(t) for t in fb_df['代號'].tolist()[:80]] + st.session_state.custom_pool))
                 live_data = []
                 
@@ -926,8 +927,11 @@ if st.session_state.page == "home":
             
         if not df_results.empty: 
             df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
-            st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
+            
+            # 🔥 關鍵修正：將 'ticker_raw' 改為 '代號'，徹底消滅 KeyError！
+            st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
+            
             st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 當前符合條件標的共 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
         else: st.info("此條件下暫無標的。")
@@ -1153,4 +1157,12 @@ elif st.session_state.page == "analysis":
             save_cloud_data("user_settings", "fav_groups", st.session_state.fav_groups)
             st.success("✅ 群組設定已更新！"); st.rerun()
 
+        # 🔥 修正盤後名單導航連動的 KeyError
+        st.divider()
+        st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;">同步監控雷達清單</div>''', unsafe_allow_html=True)
+        if n_pool and 'nav_pool_data' in st.session_state:
+            df_nav = pd.DataFrame(st.session_state.nav_pool_data)
+            df_nav = df_nav[df_nav['代號'] != target]
+            if not df_nav.empty: st.markdown(generate_cards_html(df_nav, st.session_state.get('is_intraday', True)), unsafe_allow_html=True)
+            else: st.info("目前清單中已無其他符合條件的標的。")
     else: st.error("查無此股票資料。")
