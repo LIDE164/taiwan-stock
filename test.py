@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (升級：V2 狀態機狙擊大腦 + 盤中混合動力洗牌引擎)
+# 最後修改時間: 2026-07-06 (升級：100分量化決策模型 + 修復多執行緒衝突)
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
@@ -238,7 +238,7 @@ def get_stock_data(ticker_number):
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
 
-        # 🚀 新增 RSI 動能計算
+        # 🚀 RSI 動能計算
         delta = df['Close'].diff()
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
@@ -298,6 +298,18 @@ def get_finmind_chip_and_revenue(ticker):
     big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     try:
+        # 大戶持股
+        start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        try:
+            url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
+            res_chip = requests.get(url_chip, timeout=5).json()
+            if 'data' in res_chip and len(res_chip['data']) > 0:
+                latest_date = max([x.get('date', '') for x in res_chip['data']])
+                for x in res_chip['data']:
+                    if x.get('date') == latest_date and int(x.get('HoldingSharesLevel', 0)) >= 12:
+                        big_player_ratio += float(str(x.get('percent', 0)).replace(',', ''))
+        except: pass
+        
         start_date_rev = (datetime.now() - timedelta(days=500)).strftime('%Y-%m-%d')
         try:
             url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
@@ -426,122 +438,112 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
-
 # ==========================================
-# 🚀 V2 狀態機決策大腦 (狙擊槍邏輯)
+# 🚀 終極 100 分量化模型引擎
 # ==========================================
-def get_decision_score_v2(data, fund_data, inst_data=None):
+def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     score = 0
     reasons = []
 
     close = data.get('收盤價', 0)
+    ma5 = data.get('5MA', 0)
     ma20 = data.get('20MA', 0)
     ma60 = data.get('60MA', 0)
     vol = data.get('成交量', 0)
-    vol_ma = data.get('5日均量', 0)
+    vol_ma5 = data.get('5日均量', 0)
     adx = data.get('ADX', 0)
-    rsi = data.get('RSI', 50)
-    atr = data.get('ATR', close * 0.03 if close > 0 else 1)
     roc = data.get('ROC_20', 0)
+    macd_h = data.get('MACD柱', 0)
+    macd_h_prev = data.get('前日MACD柱', 0)
+    j_val = data.get('J值', 50)
+    bias = data.get('BIAS', 0)
+    red_engulf = data.get('紅吞', False)
 
-    # 🧠 1. 市場模式判斷
-    if adx >= 25:
-        market_mode = "TREND"
-        reasons.append(f"📈 趨勢盤 (ADX={adx:.1f})")
-    else:
-        market_mode = "RANGE"
-        reasons.append(f"📦 盤整盤 (ADX={adx:.1f})")
+    high_20 = df['High'].tail(20).max() if df is not None and len(df) >= 20 else close
 
-    # 🚀 2. 進場型態判斷
-    entry_type = "NONE"
-    
-    # 🔥 突破型
-    if close > ma20 and ma20 > ma60 and vol > vol_ma * 1.5 and roc > 5:
-        entry_type = "BREAKOUT"
-        score += 4
-        reasons.append("🔥 突破型態 (多頭+爆量+動能)")
-    # 💪 回檔型 (月線正負 3% 內打底，且在季線之上)
-    elif (ma20 * 0.97) <= close <= (ma20 * 1.03) and close > ma60:
-        entry_type = "PULLBACK"
-        score += 3
-        reasons.append("💪 回檔守穩月線")
-    # 🔄 反轉型 (觸分布林下軌或負乖離過大時出紅吞)
-    elif close < ma20 and data.get('紅吞', False) and (close <= data.get('BB_DN', 0) * 1.02 or data.get('BIAS', 0) < -5):
-        entry_type = "REVERSAL"
-        score += 2
-        reasons.append("🔄 底部反轉 (布林下軌/乖離紅吞)")
-    else:
-        score -= 2
-        reasons.append("⚠️ 無明確進場型態")
+    # 1. 趨勢成立 (25分)
+    trend_score = 0
+    if close > ma20: trend_score += 10; reasons.append("✅ 股價站上月線 (+10)")
+    if ma20 > ma60: trend_score += 5; reasons.append("✅ 月季線多頭排列 (+5)")
+    if adx > 25: trend_score += 5; reasons.append("🔥 ADX 趨勢明確 (+5)")
+    if close >= high_20 * 0.99: trend_score += 5; reasons.append("🚀 突破或逼近20日新高 (+5)")
+    score += trend_score
 
-    # ⚙️ 3. 根據市場模式調整
-    if market_mode == "TREND":
-        if entry_type == "BREAKOUT":
-            score += 3
-            reasons.append("🚀 趨勢盤加成 (突破最強)")
-        elif entry_type == "REVERSAL":
-            score -= 2
-            reasons.append("⚠️ 趨勢盤不做跌破抄底")
-    elif market_mode == "RANGE":
-        if entry_type == "BREAKOUT":
-            score -= 2
-            reasons.append("⚠️ 盤整盤防範假突破")
-        elif entry_type == "REVERSAL":
-            score += 2
-            reasons.append("💰 盤整盤底部反轉有效")
+    # 2. 資金進場 (20分)
+    mom_score = 0
+    if macd_h > 0 and macd_h > macd_h_prev: mom_score += 8; reasons.append("📈 MACD紅柱放大 (+8)")
+    if roc > 10: mom_score += 6; reasons.append("🔥 近月漲幅強勢 (+6)")
+    if close > ma5: mom_score += 3; reasons.append("✅ 站上5日線 (+3)")
+    if red_engulf or (close > high_20): mom_score += 3; reasons.append("🧨 紅吞或突破 (+3)")
+    score += mom_score
 
-    # 📊 4. 動能確認
-    if rsi > 60:
-        score += 2
-        reasons.append(f"📈 動能強 (RSI={rsi:.1f})")
-    elif rsi < 40:
-        score -= 1
-        reasons.append(f"⚠️ 動能偏弱 (RSI={rsi:.1f})")
+    # 3. 基本面支撐 (20分)
+    money_score = 0
+    if vol > vol_ma5 * 1.5: money_score += 8; reasons.append("💰 爆量攻擊 (+8)")
 
-    # 💰 5. 基本面加權
-    try:
-        eps = float(str(fund_data.get('EPS', '0')).replace(',', ''))
-        if eps > 0:
-            score += 1
-            reasons.append("💰 具備實質獲利(正EPS)")
-    except: pass
-    if data.get('YoY', 0) > 15:
-        score += 2
-        reasons.append(f"🔥 營收強勁 (YoY {data.get('YoY')}%)")
+    foreign_buy_days = 0
+    if inst_data and len(inst_data) >= 2:
+        for row in inst_data[:2]:
+            if int(str(row.get('外資(張)', '0')).replace(',', '')) > 0:
+                foreign_buy_days += 1
+    if foreign_buy_days >= 2: money_score += 6; reasons.append("🏦 外資連買2天以上 (+6)")
 
-    # ⚠️ 6. 風險控管
-    if close > 0 and atr / close > 0.06:
-        score -= 3
-        reasons.append(f"⚠️ 波動失控 (ATR佔比 {(atr/close)*100:.1f}%)")
-    if close < ma60:
-        score -= 3
-        reasons.append("⚠️ 跌破季線 (空頭警戒)")
-    if data.get('BIAS', 0) > 8:
-        score -= 2
-        reasons.append("⚠️ 短線正乖離過高 (防追高)")
-        
-    # 法人籌碼加權 (保留原始優良因子)
-    if inst_data and len(inst_data) >= 3:
-        net_buy = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst_data[:3] if str(x['單日合計(張)']).replace(',', '').lstrip('-').isdigit()])
-        if net_buy > 0:
-            reasons.append(f"✅ 法人近三日偏多 (+{net_buy} 張)")
-            score += 1
+    big_player_ratio = fund_data.get('BigPlayer', 0)
+    if big_player_ratio > 50: money_score += 6; reasons.append(f"👑 大戶持股>50% ({big_player_ratio}%) (+6)")
+    score += money_score
 
-    # 🎯 7. 最終評級與UI特徵相容
-    if score >= 8: label = "🟢 S級"
-    elif score >= 4: label = "🟡 A級"
-    else: label = "⚪ 觀望"
+    # 4. 族群題材 (15分)
+    fund_score = 0
+    yoy = float(data.get('YoY', 0))
+    mom = float(data.get('MoM', 0))
+    try: eps = float(str(fund_data.get('EPS', '0')).replace(',', ''))
+    except: eps = 0
+    try: pe = float(str(fund_data.get('PE', '999')).replace(',', ''))
+    except: pe = 999
 
+    if yoy > 15: fund_score += 6; reasons.append(f"📈 YoY > 15% (+6)")
+    if mom > 0: fund_score += 4; reasons.append(f"📈 MoM 成長 (+4)")
+    if eps > 0: fund_score += 3; reasons.append("💰 正 EPS (+3)")
+    if pe < 30 and eps > 0: fund_score += 2; reasons.append("💎 估值合理 PE<30 (+2)")
+    score += fund_score
+
+    # 5. 動能剛啟動 (10分)
+    theme_score = 0
+    hot_themes = ["AI伺服器", "半導體", "重電", "機器人", "航運", "綠能"]
+    theme = data.get('Theme_Name', '一般題材')
+    is_hot = any(hot in theme for hot in hot_themes)
+    if is_hot: theme_score += 10; reasons.append(f"🔥 熱門族群 [{theme}] (+10)")
+    score += theme_score
+
+    # 6. 風險扣分 (-20分)
+    risk_score = 0
+    if bias > 10: risk_score -= 5; reasons.append("⚠️ 乖離過大 (-5)")
+    if j_val > 90: risk_score -= 5; reasons.append("⚠️ KDJ 高檔過熱 (-5)")
+    if close < ma5: risk_score -= 5; reasons.append("⚠️ 跌破5日線 (-5)")
+    vix = fund_data.get('VIX', 0)
+    if vix > 20: risk_score -= 5; reasons.append("🚨 大盤 VIX > 20 (-5)")
+    score += risk_score
+
+    # 7. 爆發開關 (+10分)
+    if close > high_20 and vol > (2 * vol_ma5) and vol > 0:
+        score += 10; reasons.append("🧨 爆發開關：帶量突破20日新高 (+10)")
+
+    # 最終評級
+    if score >= 70: label = "🟢 強勢買進"
+    elif score >= 60: label = "🟡 偏多觀察"
+    else: label = "⚪ 弱勢忽略"
+
+    # 進場特徵
     feature = "一般狀態"
-    if entry_type == "BREAKOUT": feature = "🔥 爆量突破"
-    elif entry_type == "PULLBACK": feature = "💪 回檔有撐"
-    elif entry_type == "REVERSAL": feature = "🔄 底部反轉"
-    elif data.get('紅吞', False): feature = "🔥 紅吞表態"
+    if close > high_20 and vol > vol_ma5 * 1.5: feature = "🔥 爆量突破"
+    elif close > ma60 and close <= ma20 * 1.02: feature = "💪 回檔有撐"
+    elif close < ma20 and red_engulf: feature = "🔄 底部反轉"
+    elif red_engulf: feature = "🔥 紅吞表態"
 
     return score, label, reasons, feature
 
 def get_dynamic_theme(ticker, industry):
-    ind = str(industry).strip() if pd.notna(industry) else "一般產業"
+    ind = str(industry).strip() if pd.notna(industry) and industry != "無" else "一般產業"
     for kw, ic in { "半導體": "⚙️", "電子": "⚡", "綠能": "🌱", "航運": "🚢", "金融": "💰", "AI": "💡", "機器人": "🤖" }.items():
         if kw in ind: return (ind, ic)
     return (ind, "🏷️")
@@ -551,6 +553,14 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
     fund = pre_fund if pre_fund else get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
+    
+    bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
+    fund['BigPlayer'] = bp_ratio
+    fund['MoM'] = mom
+    fund['YoY'] = yoy
+    
+    macro = get_global_macro_data()
+    fund['VIX'] = macro.get('^VIX', {}).get('price', 0)
     
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
@@ -573,8 +583,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
     vwap_dev = (t_close - vwap_approx) / vwap_approx * 100
     est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
-    
-    intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
     flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > vwap_approx else "內外盤拉扯"
 
     data = {
@@ -593,22 +601,21 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "ForeignNet10d": f_net_10d, "TrustNet10d": t_net_10d, "DealerNet10d": d_net_10d, 
         "紅吞": bool(red_mask.iloc[-1]), "黑吞": bool(black_mask.iloc[-1]),
         "Whale_Net": whale_net_buy, "Theme_Name": theme_name, "Theme_Icon": theme_icon,
-        "VWAP_Dev": vwap_dev, "Est_Vol_Ratio": est_vol_ratio, "Flow": flow, "Intraday_Score": intraday_score,
+        "VWAP_Dev": vwap_dev, "Est_Vol_Ratio": est_vol_ratio, "Flow": flow,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    # 🚀 套用 V2 狀態機模型
-    sc, label, rs, feature = get_decision_score_v2(data, fund, inst_data)
+    # 🚀 套用 100 分量化模型
+    sc, label, rs, feature = get_decision_score_100(data, fund, inst_data, df)
     data['Score'] = sc
     data['Reasons'] = rs
     data['評級'] = label
     data['Feature'] = feature
-    data['WinRate'] = 0.0 # 預設，將由快取覆蓋
+    data['WinRate'] = 0.0 
     return data
 
-# 🚀 策略回測實驗室引擎 (動態接收自訂參數)
 def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
     if df_slice is None or len(df_slice) < 14: return 0.0, 0, 0, []
     recent_90 = df_slice.tail(90)
@@ -623,13 +630,14 @@ def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
             
         temp_df = df_slice.iloc[:actual_idx + 1]
         if len(temp_df) >= 14:
-            # 簡化版 V2 進場判斷，加速回測
             t = temp_df.iloc[-1]
+            p = temp_df.iloc[-2]
             sc = 0
-            if t['Close'] > t.get('20MA', 0) > t.get('60MA', 0): sc += 2
-            if t.get('ADX', 0) > 25: sc += 1
-            if t.get('RSI', 50) > 60: sc += 1
-            if sc >= 3: # 模擬 V2 中高分進入
+            if t['Close'] > t.get('20MA', 0): sc += 10
+            if t.get('ADX', 0) > 25: sc += 5
+            if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): sc += 8
+            
+            if sc >= 15: # 模擬 100 分制初篩進入
                 last_buy_idx = actual_idx
                 buy_dates.append(recent_90.index[idx])
                 buy_price = t['Close']
@@ -647,7 +655,6 @@ def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
     win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0.0
     return win_rate, closed_signals, wins, buy_dates
 
-# 🚀 滿血回歸：三大面板解析函數
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
     card_bg = "#f4f6f9" if is_light_mode else "#0f172a"
@@ -657,15 +664,15 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     # --- 1. 技術面 ---
     tech_bullets = []
     for reason in data.get('Reasons', []):
-        if "✅" in reason or "🔥" in reason or "🚀" in reason or "💰" in reason or "📈" in reason or "💪" in reason or "🔄" in reason: 
+        if "✅" in reason or "🔥" in reason or "🚀" in reason or "💰" in reason or "📈" in reason or "💪" in reason or "🔄" in reason or "🧨" in reason or "👑" in reason or "🏦" in reason or "💎" in reason: 
             tech_bullets.append(f"<span style='color:#ef4444; font-weight:bold;'>{reason}</span>")
         elif "⚠️" in reason or "🚨" in reason or "🩸" in reason or "📦" in reason: 
             tech_bullets.append(f"<span style='color:#22c55e;'><b>{reason}</b></span>")
 
-    tech_res = "🔥 股價走勢強勁，具備明確進場動能與型態。" if sc >= 4 else "⚖️ 股價處於震盪或空方弱勢整理，建議觀望。"
+    tech_res = "🔥 總分達標，具備強大波段動能與保護。" if sc >= 60 else "⚖️ 總分偏低，建議維持觀望。"
     
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>📈 V2 狀態機技術分析</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c};'>"
+    tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 100分量化模型解析得分</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c};'>"
     for b in tech_bullets: tech_html += f"<li style='margin-bottom:6px;'>{b}</li>"
     tech_html += f"</ul><div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c};'><b>【結  果】</b>{tech_res}</div></div>"
 
@@ -773,7 +780,6 @@ def draw_professional_chart(df, ticker_name, latest_price, view_days, is_light_m
     fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark", height=850, margin=dict(l=10, r=10, t=10, b=30), paper_bgcolor=bg_c, plot_bgcolor=bg_c, showlegend=False)
     return fig
 
-# 🚀 滿血回歸：華麗版首頁卡片生成函數
 def generate_cards_html(df_disp, is_intraday):
     cards_html = ""
     for _, r in df_disp.iterrows():
@@ -782,15 +788,11 @@ def generate_cards_html(df_disp, is_intraday):
         p_bg = "rgba(239,68,68,0.1)" if p_val >= 0 else "rgba(34,197,94,0.1)"
         change_sign = "+" if p_val > 0 else ""
         
-        score = r.get('Intraday_Score', 50) if is_intraday else r.get('Score', 0)
-        if is_intraday:
-            s_col = "#ef4444" if score >= 80 else ("#facc15" if score >= 60 else "#22c55e")
-            rating = "動能"
-        else:
-            s_col = "#ef4444" if score >= 8 else ("#facc15" if score >= 4 else "#22c55e")
-            rating = r.get('評級', '觀望').replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
+        score = r.get('Score', 0)
+        s_col = "#ef4444" if score >= 70 else ("#facc15" if score >= 60 else "#22c55e")
+        rating = r.get('評級', '觀望').replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
             
-        r_col = "#4ade80" if rating == "S級" else ("#facc15" if rating == "A級" else "#94a3b8")
+        r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         stock_link = f'href="/?stock={r.get("代號", "")}" target="_self"'
         
         cards_html += f"<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
@@ -802,48 +804,34 @@ def generate_cards_html(df_disp, is_intraday):
         
         cards_html += f"<a {stock_link} class='stock-card-link'><div style='display: flex; align-items: center; gap: 6px;'>"
         cards_html += f"<span class='stock-name-hover' style='color: #f8fafc; font-weight: bold; font-size: 1.15rem; transition: color 0.2s;'>{r.get('名稱', '')}</span>"
-        if r.get("Theme_Name", "一般題材") != "一般題材":
-            cards_html += f"<span style='font-size: 0.7rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 600;'>{r.get('Theme_Icon', '🏷️')} {r.get('Theme_Name', '')}</span>"
+        
+        # 顯示真正的產業名稱
+        industry_name = r.get("產業", "一般產業")
+        cards_html += f"<span style='font-size: 0.7rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 600;'>🏷️ {industry_name}</span>"
+        
         cards_html += f"</div><div style='font-size: 0.8rem; color: #64748b; margin-top: 4px; font-family: monospace;'>{r.get('代號', '')} <span style='color:#475569; font-size:0.7rem; margin-left:4px;'>(點擊解析)</span></div></a></div>"
         
         cards_html += f"<div style='text-align: right; flex-shrink: 0;'><div style='color: {p_col}; font-weight: 800; font-size: 1.2rem; font-family: monospace;'>{r.get('收盤價', 0):.1f}</div>"
         cards_html += f"<div style='background-color: {p_bg}; color: {p_col}; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; display: inline-block; font-weight: 800; font-family: monospace; margin-top: 4px;'>{change_sign}{r.get('漲跌幅', 0)}%</div></div></div>"
         
-        if is_intraday:
-            v_dev = r.get('VWAP_Dev', 0)
-            v_col = "#ef4444" if v_dev > 0 else "#22c55e"
-            est_vol = r.get('Est_Vol_Ratio', 1)
-            ev_col = "#facc15" if est_vol > 1.3 else "#e2e8f0"
-            flow_val = r.get('Flow', '內外盤拉扯')
-            flow_col = "#ef4444" if "大單" in flow_val and "敲進" in flow_val else "#e2e8f0"
-            wr_val = r.get('WinRate', 0.0)
-            wr_col = "#ef4444" if wr_val >= 75 else ("#facc15" if wr_val >= 40 else "#22c55e")
-            
-            cards_html += f"<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>VWAP乖離</span><span style='color: {v_col}; font-weight: bold; font-family: monospace;'>{'+' if v_dev>0 else ''}{v_dev:.1f}%</span></div>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>大單淨量</span><span style='color: {flow_col}; font-weight: bold;'>{flow_val}</span></div>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>預估量能</span><span style='color: {ev_col}; font-weight: bold; font-family: monospace;'>{est_vol:.1f}x</span></div>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div></div>"
-            cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>盤中訊號：{r.get('Intraday_Signal', '穩守均價線')}</span></div>"
-        else:
-            wr_val = r.get('WinRate', 0.0)
-            wr_col = "#ef4444" if wr_val >= 75 else ("#facc15" if wr_val >= 40 else "#22c55e")
-            rrr_val = r.get('RRR', 1.5)
-            w_net = r.get('Whale_Net', 0)
-            w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
-            whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
-            
-            cards_html += f"<div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>風報比 RRR</span><span style='color: #e2e8f0; font-weight: bold; font-family: monospace;'>1 : {rrr_val}</span></div>"
-            cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人淨買</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div></div>"
-            cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>進場型態：{r.get('Feature', '一般')}</span></div>"
+        wr_val = r.get('WinRate', 0.0)
+        wr_col = "#ef4444" if wr_val >= 75 else ("#facc15" if wr_val >= 40 else "#22c55e")
+        rrr_val = r.get('RRR', 1.5)
+        w_net = r.get('Whale_Net', 0)
+        w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
+        whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
+        
+        cards_html += f"<div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>風報比 RRR</span><span style='color: #e2e8f0; font-weight: bold; font-family: monospace;'>1 : {rrr_val}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人淨買</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div></div>"
+        cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>進場型態：{r.get('Feature', '一般')}</span></div>"
         
         cards_html += f"</div>"
     return cards_html
 
 # ==========================================
-# 🚀 頁面路由控制中心 (混合動力引擎實裝)
+# 🚀 頁面路由控制中心
 # ==========================================
 if st.session_state.page == "home":
     st.markdown("<h2 style='text-align: center; color: #818cf8; margin-bottom: 20px;'>極致精準：雙引擎量化雷達</h2>", unsafe_allow_html=True)
@@ -860,19 +848,20 @@ if st.session_state.page == "home":
         is_intraday = "盤中" in radar_mode
         st.session_state.is_intraday = is_intraday
         
-        # 🚀 啟動混合動力：如果是盤中快篩，動態重算！
+        # 🚀 解決多執行緒快取閃退問題：將變數抽離至全域範圍
+        cached_scan_results = st.session_state.get('scan_results', [])
+        
         if is_intraday:
-            with st.spinner("⚡ 混合動力引擎啟動：即時運算 V2 狀態機動能 (約需 3-5 秒)..."):
-                # 抓取雲端掃瞄名單前列 + 自選股 作為即時運算池
-                fb_df = pd.DataFrame(st.session_state.scan_results)
+            with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分動能模型 (約需 3-5 秒)..."):
+                fb_df = pd.DataFrame(cached_scan_results)
                 target_tickers = list(set([str(t) for t in fb_df['代號'].tolist()[:80]] + st.session_state.custom_pool))
                 live_data = []
                 
                 def process_live(ticker):
                     df = get_stock_data(ticker)
                     if df is not None:
-                        # 使用 Firebase 快取的基本面/籌碼/勝率數據，極大化盤中運算速度
-                        base_info = [x for x in st.session_state.scan_results if str(x['代號']) == str(ticker)]
+                        # 安全讀取區域變數
+                        base_info = [x for x in cached_scan_results if str(x['代號']) == str(ticker)]
                         if base_info:
                             b = base_info[0]
                             fund = {"Industry": b.get('產業', '一般產業'), "EPS": b.get('EPS', '0'), "MoM": b.get('MoM', 0), "YoY": b.get('YoY', 0)}
@@ -898,17 +887,14 @@ if st.session_state.page == "home":
                 
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
-            # 盤後直接使用 Firebase 的完整數據
-            df_results = pd.DataFrame(st.session_state.scan_results)
+            df_results = pd.DataFrame(cached_scan_results)
         
-        # 題材過濾
         available_themes = ["全部題材"] + sorted(list(set(df_results['Theme_Name'].unique()) - {"一般題材"}))
         selected_theme = st.radio("題材過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         if selected_theme != "全部題材": df_results = df_results[df_results['Theme_Name'] == selected_theme]
             
         if not df_results.empty: 
-            # 盤中依據 Intraday_Score 排序，盤後依據 Score 排序
-            df_disp = df_results.sort_values(by=['Intraday_Score' if is_intraday else 'Score', '漲跌幅'], ascending=[False, False]).head(30)
+            df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
         else: df_disp = df_results
 
         st.session_state.nav_pool = df_disp['ticker_raw'].tolist()
@@ -1044,7 +1030,7 @@ elif st.session_state.page == "analysis":
         p_color = '#ef4444' if data['漲跌'] >= 0 else '#22c55e'
         
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{f_data['Industry']}】</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{data['產業']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}</div>", unsafe_allow_html=True)
         
@@ -1077,11 +1063,11 @@ elif st.session_state.page == "analysis":
             summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，過去 90 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>。" if closed_signals > 0 else "過去 90 日內此策略尚未產生足夠的歷史買進訊號。"
             st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
-        v_c = "#22c55e" if sc < 4 else ("#facc15" if sc < 8 else "#ef4444")
+        v_c = "#22c55e" if sc < 60 else ("#facc15" if sc < 70 else "#ef4444")
         v_t = data['評級'].replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
         st.markdown(f"""
         <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: #0b1120;">
-            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 V2 狀態機大腦：{v_t}</h3>
+            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 100分量化決策大腦：{v_t} ({sc}分)</h3>
             <div style="background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 8px; border-left: 5px solid {v_c}; margin-bottom:20px;">
                 <p style="font-size: 1.05rem; color: #f8fafc; margin: 0; line-height: 1.6;">
                     ✅ <b>自訂策略執行規劃</b><br>合理停利目標：<b style='color:#ef4444;'>{data['ATR_Target']}</b> 元<br>嚴格停損防守：<b style='color:#22c55e;'>{data['ATR_Stop']}</b> 元
