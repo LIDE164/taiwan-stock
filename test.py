@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (模組化 charts 連動修復版 + 解決K線重複索引)
+# 最後修改時間: 2026-07-06 (模組化 charts 連動修復版 + 解決K線重複索引 + 修復 vwap_approx typo)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -583,7 +583,9 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
-    vwap_dev = (t_close - vvwap_approx) / vwap_approx * 100 if vwap_approx>0 else 0
+    
+    # ✅ 修正 vvwap_approx typo -> 改為 vwap_approx
+    vwap_dev = (t_close - vwap_approx) / vwap_approx * 100 if vwap_approx > 0 else 0
     est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
     
     intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
@@ -734,9 +736,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     fund_bullets.append(f"⚪ <b>當季EPS</b>：<b>{eps}</b> 元。 | <b>本益比 (PE)</b>：<b>{pe}</b> 倍。")
     
     try: 
-        eps_f, pe_f = float(eps), float(pe) if pe != "無" else 999
-        if eps_f > 0 and pe_f < 20: fund_res = "🔥 具備實質獲利支撐，且本益比合理，具投資價值。"
-        elif eps_f > 0 and pe_f >= 20: fund_res = "⚠️ 公司雖有獲利，但目前的本益比估值偏高，需留意追高風險。"
+        eps_f, float_pe = float(eps), float(pe) if pe != "無" else 999
+        if eps_f > 0 and float_pe < 20: fund_res = "🔥 具備實質獲利支撐，且本益比合理，具投資價值。"
+        elif eps_f > 0 and float_pe >= 20: fund_res = "⚠️ 公司雖有獲利，但目前的本益比估值偏高，需留意追高風險。"
         else: fund_res = "🩸 暫無明顯獲利支撐，或呈現虧損，需嚴防營運風險。"
     except: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
