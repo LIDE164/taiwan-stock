@@ -1,60 +1,47 @@
-# charts.py - AI強化K線圖 (含AI買點 / 突破 / 假突破 / 支撐壓力)
+# charts.py - AI強化版圖表模組（可直接用）
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-# === 🤖 AI訊號計算 ===
-def compute_ai_signals(df):
+def draw_professional_chart(
+    df,
+    latest_price,
+    view_days=120,
+    is_light_mode=False,
+    show_buy_signal=True,
+    show_sup_res=True,
+    show_signals=True,
+    buy_dates=None
+):
+    if buy_dates is None:
+        buy_dates = []
+
     df = df.copy()
 
-    df['trend_up'] = (df['20MA'] > df['60MA']) & (df['Close'] > df['20MA'])
-    df['momentum'] = df['Close'].pct_change(3)
-    df['vol_strength'] = df['Volume'] > df['Volume'].rolling(5).mean() * 1.3
+    # ===== 防呆：補欄位 =====
+    for col in ['5MA','20MA','60MA']:
+        if col not in df:
+            df[col] = df['Close'].rolling(int(col.replace('MA',''))).mean()
 
-    df['breakout'] = df['Close'] > df['High'].rolling(20).max().shift(1)
+    for col in ['MACD','Signal','MACD_Hist','K','D','J']:
+        if col not in df:
+            df[col] = 0
 
-    df['fake_breakout'] = (
-        (df['High'] > df['High'].rolling(20).max().shift(1)) &
-        (df['Close'] < df['20MA'])
+    df_view = df.tail(view_days)
+
+    x_vals = df_view.index.strftime('%Y-%m-%d')
+
+    colors = ['#ef4444' if c >= o else '#22c55e'
+              for c, o in zip(df_view['Close'], df_view['Open'])]
+
+    fig = make_subplots(
+        rows=4, cols=1, shared_xaxes=True,
+        row_heights=[0.5,0.15,0.15,0.2],
+        vertical_spacing=0.03
     )
 
-    score = (
-        df['trend_up'].astype(int) * 2 +
-        df['breakout'].astype(int) * 3 +
-        df['vol_strength'].astype(int) * 2 +
-        (df['momentum'] > 0).astype(int)
-    )
-
-    df['ai_score'] = score
-    df['ai_buy'] = score >= 5
-
-    return df
-
-
-def draw_professional_chart(df, latest_price, view_days, is_light_mode,
-                           show_buy_signal=False, show_sup_res=False,
-                           show_signals=True, buy_dates=[]):
-
-    # === 🤖 AI加入 ===
-    df = compute_ai_signals(df)
-
-    df_view = df.tail(view_days).copy()
-    df_view = df_view.reset_index()
-
-    x_vals = df_view['index'].dt.strftime('%Y-%m-%d')
-
-    colors = ['#ef4444' if row['Close'] >= row['Open'] else '#22c55e' for _, row in df_view.iterrows()]
-
-    line_k, line_d, line_j = ("#3b82f6", "#f59e0b", "#a855f7") if is_light_mode else ("#60a5fa", "#fbbf24", "#c084fc")
-    grid_c = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(255,255,255,0.05)"
-    bg_c = "#ffffff" if is_light_mode else "#0b1120"
-
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
-                        row_heights=[0.5, 0.15, 0.15, 0.2],
-                        vertical_spacing=0.03)
-
-    # === K線 ===
+    # ===== K線 =====
     fig.add_trace(go.Candlestick(
         x=x_vals,
         open=df_view['Open'],
@@ -65,126 +52,103 @@ def draw_professional_chart(df, latest_price, view_days, is_light_mode,
         decreasing_line_color='#22c55e'
     ), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='#facc15', width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['60MA'], line=dict(color='#a855f7', width=1.5)), row=1, col=1)
+    # ===== 均線 =====
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='#facc15', width=1.5)))
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='cyan', width=1.5)))
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['60MA'], line=dict(color='#a855f7', width=1.5)))
 
-    # === 原始K棒訊號（修正過條件🔥）===
+    # ===== 現價線 =====
+    fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", opacity=0.6)
+
+    # ===== K棒訊號 =====
     re_x, re_y, be_x, be_y = [], [], [], []
-    sup_x, sup_y, res_x, res_y = [], [], [], []
 
     for i in range(1, len(df_view)):
-        row = df_view.iloc[i]
         p = df_view.iloc[i-1]
-        date = x_vals[i]
+        c = df_view.iloc[i]
+
+        date = df_view.index[i].strftime('%Y-%m-%d')
 
         # 紅吞
-        if p['Open'] > p['Close'] and row['Close'] > row['Open'] and row['Close'] > p['Open'] and row['Open'] < p['Close']:
+        if p['Close'] < p['Open'] and c['Close'] > c['Open'] and c['Close'] > p['Open']:
             re_x.append(date)
-            re_y.append(row['Low'] * 0.995)
+            re_y.append(c['Low'] * 0.97)
 
         # 黑吞
-        if p['Close'] > p['Open'] and row['Open'] > row['Close'] and row['Open'] > p['Close'] and row['Close'] < p['Open']:
+        if p['Close'] > p['Open'] and c['Close'] < c['Open'] and c['Open'] > p['Close']:
             be_x.append(date)
-            be_y.append(row['High'] * 1.005)
-
-        total = max(row['High'] - row['Low'], 0.001)
-        body = abs(row['Close'] - row['Open'])
-        lower = min(row['Open'], row['Close']) - row['Low']
-        upper = row['High'] - max(row['Open'], row['Close'])
-
-        if lower > body and lower / total > 0.3:
-            sup_x.append(date)
-            sup_y.append(row['Low'] * 0.995)
-
-        if upper > body and upper / total > 0.3:
-            res_x.append(date)
-            res_y.append(row['High'] * 1.005)
+            be_y.append(c['High'] * 1.03)
 
     if show_signals:
-        if re_x:
-            fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=["紅吞"]*len(re_x), textfont=dict(color="#ef4444")), row=1, col=1)
-        if be_x:
-            fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=["黑吞"]*len(be_x), textfont=dict(color="#22c55e")), row=1, col=1)
-        if sup_x:
-            fig.add_trace(go.Scatter(x=sup_x, y=sup_y, mode='text', text=["撐"]*len(sup_x), textfont=dict(color="#facc15")), row=1, col=1)
-        if res_x:
-            fig.add_trace(go.Scatter(x=res_x, y=res_y, mode='text', text=["壓"]*len(res_x), textfont=dict(color="#60a5fa")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text',
+                                text=['紅吞']*len(re_x),
+                                textfont=dict(color='red', size=10)))
 
-    # === 🤖 AI訊號 ===
-    ai_x, ai_y, ai_text = [], [], []
-    break_x, break_y = [], []
-    fake_x, fake_y = [], []
+        fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text',
+                                text=['黑吞']*len(be_x),
+                                textfont=dict(color='lime', size=10)))
 
-    for i in range(len(df_view)):
-        row = df_view.iloc[i]
-        date = x_vals[i]
+    # ===== 買點 =====
+    if show_buy_signal and buy_dates:
+        bx, by = [], []
+        for d in buy_dates:
+            if d in df_view.index:
+                bx.append(d.strftime('%Y-%m-%d'))
+                by.append(df_view.loc[d]['Low'] * 0.92)
 
-        if row.get('ai_buy', False):
-            ai_x.append(date)
-            ai_y.append(row['Low'] * 0.97)
-            ai_text.append(f"🤖{int(row['ai_score'])}")
-
-        if row.get('breakout', False):
-            break_x.append(date)
-            break_y.append(row['High'] * 1.02)
-
-        if row.get('fake_breakout', False):
-            fake_x.append(date)
-            fake_y.append(row['High'] * 1.02)
-
-    if ai_x:
         fig.add_trace(go.Scatter(
-            x=ai_x, y=ai_y,
+            x=bx,
+            y=by,
             mode='markers+text',
-            marker=dict(symbol='star', size=12, color='#22c55e'),
-            text=ai_text,
+            marker=dict(size=12, color='#00ffcc', symbol='triangle-up'),
+            text=['買']*len(bx),
             textposition="bottom center"
-        ), row=1, col=1)
+        ))
 
-    if break_x:
-        fig.add_trace(go.Scatter(
-            x=break_x, y=break_y,
-            mode='markers',
-            marker=dict(symbol='triangle-up', size=10, color='#f59e0b')
-        ), row=1, col=1)
+    # ===== 支撐壓力 =====
+    if show_sup_res:
+        high = df_view['High'].max()
+        low = df_view['Low'].min()
 
-    if fake_x:
-        fig.add_trace(go.Scatter(
-            x=fake_x, y=fake_y,
-            mode='markers',
-            marker=dict(symbol='x', size=10, color='#ef4444')
-        ), row=1, col=1)
+        fig.add_hline(y=high, line_dash="dot", line_color="red")
+        fig.add_hline(y=low, line_dash="dot", line_color="green")
 
-    # === AI勝率 ===
-    win_rate = df['ai_buy'].mean() * 100
+    # ===== AI 趨勢 =====
+    trend = "盤整"
+    if df['5MA'].iloc[-1] > df['20MA'].iloc[-1] > df['60MA'].iloc[-1]:
+        trend = "多頭🔥"
+    elif df['5MA'].iloc[-1] < df['20MA'].iloc[-1] < df['60MA'].iloc[-1]:
+        trend = "空頭❄️"
 
     fig.add_annotation(
-        x=x_vals.iloc[-1],
-        y=latest_price * 1.05,
-        text=f"🤖勝率 {win_rate:.1f}%",
+        x=x_vals[-1],
+        y=df_view['High'].max(),
+        text=f"AI趨勢: {trend}",
         showarrow=False,
-        bgcolor="rgba(34,197,94,0.2)"
+        font=dict(size=12, color="white"),
+        bgcolor="rgba(0,0,0,0.6)"
     )
 
-    # === 成交量 ===
+    # ===== 成交量 =====
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors), row=2, col=1)
 
-    # === MACD ===
-    fig.add_trace(go.Bar(x=x_vals, y=df_view.get('MACD_Hist', 0)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('MACD', 0)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('Signal', 0)), row=3, col=1)
+    # ===== MACD =====
+    fig.add_trace(go.Bar(x=x_vals, y=df_view['MACD_Hist']), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['MACD']), row=3, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['Signal']), row=3, col=1)
 
-    # === KDJ ===
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('K', 50)), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('D', 50)), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('J', 50)), row=4, col=1)
+    # ===== KDJ =====
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['K']), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['D']), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x_vals, y=df_view['J']), row=4, col=1)
 
+    # ===== 版面 =====
     fig.update_layout(
-        template="plotly_white" if is_light_mode else "plotly_dark",
-        height=800,
+        template="plotly_dark",
+        height=850,
+        showlegend=False,
         hovermode="x unified",
-        showlegend=False
+        dragmode="zoom"
     )
 
     return fig
