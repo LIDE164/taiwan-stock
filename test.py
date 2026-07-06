@@ -201,8 +201,7 @@ def fetch_twse_index_history():
             return df[['Open', 'High', 'Low', 'Close', 'Volume']]
     except: return None
 
-@st.cache_data(ttl=60, show_spinner=False) 
- 
+@st.cache_data(ttl=60, show_spinner=False)  
 def get_stock_data(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
