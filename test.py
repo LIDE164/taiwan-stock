@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (終極不刪減版：修復盤後名單 KeyError + 100分制滿血)
+# 最後修改時間: 2026-07-06 (模組化 charts 連動修復版 + 解決K線重複索引)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -14,6 +14,9 @@ import concurrent.futures
 import numpy as np
 import logging
 from streamlit_autorefresh import st_autorefresh
+
+# ✅ 直接引入外部的 charts 模組
+from charts import draw_professional_chart
 
 # 設定日誌系統
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -63,7 +66,6 @@ css_style = f"""
 """
 st.markdown(css_style, unsafe_allow_html=True)
 
-# 字典先準備基礎，再透過 API 擴充
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "3231": "緯創", "2891": "中信金"}
 
 @st.cache_data(ttl=86400)
@@ -178,6 +180,7 @@ def fetch_twse_index_history():
         df = yf.Ticker("^TWII").history(period="1y")
         if not df.empty:
             df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
+            df = df[~df.index.duplicated(keep='last')]
             return df[['Open', 'High', 'Low', 'Close', 'Volume']]
     except: return None
 
@@ -189,6 +192,8 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y").dropna(subset=['Close'])
             if len(d) >= 20: 
                 d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
+                # 🔥 清理重複時間索引，防止出現兩根 K 棒
+                d = d[~d.index.duplicated(keep='last')]
                 return d
         except: return None
 
@@ -210,10 +215,10 @@ def get_stock_data(ticker_number):
                         new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [float(q.get('total', {}).get('tradeVolume', 0))]}, index=[dt_live])
                         df = pd.concat([df, new_row])
                     else:
-                        df.at[dt_live, 'Close'] = c_price
-                        df.at[dt_live, 'High'] = max(df.at[dt_live, 'High'], float(q.get('highPrice', c_price)))
-                        df.at[dt_live, 'Low'] = min(df.at[dt_live, 'Low'], float(q.get('lowPrice', c_price)))
-                        df.at[dt_live, 'Volume'] = max(df.at[dt_live, 'Volume'], float(q.get('total', {}).get('tradeVolume', 0)))
+                        df.loc[dt_live, 'Close'] = c_price
+                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
+                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
+                        df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), float(q.get('total', {}).get('tradeVolume', 0)))
     except: pass
 
     try:
@@ -236,7 +241,6 @@ def get_stock_data(ticker_number):
         df['D'] = df['K'].ewm(com=2, adjust=False).mean()
         df['J'] = 3 * df['K'] - 2 * df['D']
 
-        # RSI 動能計算
         delta = df['Close'].diff()
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
@@ -439,7 +443,7 @@ def render_index_board():
     except: st.error(f"大盤儀表板加載中...")
 
 # ==========================================
-# 🚀 終極 100 分量化模型引擎 (完美依循你給的參數)
+# 🚀 終極 100 分量化模型引擎
 # ==========================================
 def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     score = 0
@@ -529,12 +533,10 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if close > high_20 and vol > (2 * vol_ma5) and vol > 0:
         score += 10; reasons.append("🧨 爆發開關：帶量突破20日新高 (+10)")
 
-    # 最終評級
     if score >= 60: label = "🟢 強勢買進"
     elif score >= 45: label = "🟡 偏多觀察"
     else: label = "⚪ 忽略"
 
-    # 進場特徵
     feature = "一般狀態"
     if close > high_20 and vol > vol_ma5 * 1.5: feature = "🔥 爆量突破"
     elif close > ma60 and close <= ma20 * 1.02: feature = "💪 回檔有撐"
@@ -581,7 +583,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
-    vwap_dev = (t_close - vwap_approx) / vwap_approx * 100
+    vwap_dev = (t_close - vvwap_approx) / vwap_approx * 100 if vwap_approx>0 else 0
     est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
     
     intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
@@ -609,7 +611,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    # 套用 100 分量化模型
     sc, label, rs, feature = get_decision_score_100(data, fund, inst_data, df)
     data['Score'] = sc
     data['Reasons'] = rs
@@ -639,7 +640,7 @@ def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
             if t.get('ADX', 0) > 25: sc += 5
             if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): sc += 8
             
-            if sc >= 15: # 模擬 100 分制初篩進入
+            if sc >= 15:
                 last_buy_idx = actual_idx
                 buy_dates.append(recent_90.index[idx])
                 buy_price = t['Close']
@@ -658,7 +659,7 @@ def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
     return win_rate, closed_signals, wins, buy_dates
 
 # ==========================================
-# 📊 滿血回歸：三大面板完整 HTML 生成
+# 📊 面板 HTML 生成
 # ==========================================
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
@@ -666,7 +667,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(30,41,59,0.5)"
     b_col = "#ddd" if is_light_mode else "#1e293b"
 
-    # --- 1. 100分技術面與總結 ---
     if sc >= 60: text_desc = "目前系統判定該股具備強大的波段上漲動能，各項技術與資金指標皆已表態，屬於勝率較高之強勢多頭格局，建議可設定好停損後伺機介入。"
     elif sc >= 45: text_desc = "目前該股動能逐漸加溫，但可能有部分指標過熱或尚未完全突破，屬於偏多觀察階段，建議留意後續量能變化。"
     else: text_desc = "目前該股動能偏弱或陷入盤整，風險大於預期報酬，建議維持空手觀望，等待更明確的型態出現。"
@@ -682,7 +682,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
             tech_html += f"<li><span style='color:#22c55e;'><b>{r}</b></span></li>"
     tech_html += f"</ul></details></div>"
 
-    # --- 2. 籌碼面 ---
     chip_res_text = "中立觀望"
     tables_html = ""
     th_color = "#ccc" if not is_light_mode else "#555"
@@ -721,7 +720,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     chip_html += f"<h4 style='color: #facc15; margin-top: 0; font-size: 1.2rem;'>🏦 籌碼面分析</h4>{tables_html}"
     chip_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #facc15; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【結  果】</b>{chip_res_text}</div></div>"
 
-    # --- 3. 基本面 ---
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
@@ -749,72 +747,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
 
     return tech_html + chip_html + fund_html
 
-# ==========================================
-# 📊 內部繪製 K 線圖 (直接內建，保證不會出錯)
-# ==========================================
-def draw_professional_chart(df, latest_price, view_days, is_light_mode, show_buy_signal=False, show_sup_res=False, show_signals=True, buy_dates=[]):
-    df_view = df.tail(view_days).copy()
-    x_vals = df_view.index.strftime('%Y-%m-%d')
-    colors = ['#ef4444' if row['Close'] >= row['Open'] else '#22c55e' for _, row in df_view.iterrows()]
-    
-    line_k, line_d, line_j = ("#3b82f6", "#f59e0b", "#a855f7") if is_light_mode else ("#60a5fa", "#fbbf24", "#c084fc")
-    grid_c = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(255,255,255,0.05)"
-    bg_c = "#ffffff" if is_light_mode else "#0b1120"
-    
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, row_heights=[0.5, 0.15, 0.15, 0.2], vertical_spacing=0.03)
-    
-    fig.add_trace(go.Candlestick(x=x_vals, open=df_view['Open'], high=df_view['High'], low=df_view['Low'], close=df_view['Close'], increasing_line_color='#ef4444', decreasing_line_color='#22c55e', name="K線"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['5MA'], line=dict(color='#facc15', width=1.5), name="5T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['10MA'], line=dict(color='#34d399', width=1.5), name="10T"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view['20MA'], line=dict(color='#60a5fa', width=2), name="20T"), row=1, col=1)
-    fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1, opacity=0.5)
-    
-    re_x, re_y, be_x, be_y = [], [], [], []
-    for date, row in df_view.iterrows():
-        idx = df.index.get_loc(date)
-        if idx > 0:
-            p = df.iloc[idx-1]
-            if p['Open'] > p['Close'] and row['Close'] > row['Open'] and row['Close'] > p['Open'] and row['Open'] < p['Close']:
-                re_x.append(date.strftime('%Y-%m-%d')); re_y.append(row['Low'] * 0.98)
-            if p['Close'] > p['Open'] and row['Open'] > row['Close'] and row['Open'] > p['Close'] and row['Close'] < p['Open']:
-                be_x.append(date.strftime('%Y-%m-%d')); be_y.append(row['High'] * 1.02)
-                
-    if show_signals:
-        if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=["紅吞"]*len(re_x), textposition="bottom center", textfont=dict(color="#ef4444", size=11, weight="bold"), name="紅吞", hoverinfo='skip'), row=1, col=1)
-        if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=["黑吞"]*len(be_x), textposition="top center", textfont=dict(color="#22c55e", size=11, weight="bold"), name="黑吞", hoverinfo='skip'), row=1, col=1)
-
-    if show_buy_signal and buy_dates:
-        buy_x, buy_y = [], []
-        for d in buy_dates:
-            if d in df_view.index:
-                buy_x.append(d.strftime('%Y-%m-%d')); buy_y.append(df_view['Low'].loc[d] * 0.95)
-        if buy_x: fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers+text', marker=dict(symbol='triangle-up', size=12, color='#34d399'), text=["買"]*len(buy_x), textposition="bottom center", textfont=dict(color="#34d399", size=11, weight="bold"), name="歷史買點", hoverinfo='skip'), row=1, col=1)
-
-    if show_sup_res:
-        fig.add_hline(y=df_view['High'].max(), line_dash="dot", line_color="#ef4444", row=1, col=1, annotation_text=f"壓力 {df_view['High'].max():.1f}")
-        fig.add_hline(y=df_view['Low'].min(), line_dash="dot", line_color="#22c55e", row=1, col=1, annotation_text=f"支撐 {df_view['Low'].min():.1f}")
-
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, name="VOL"), row=2, col=1)
-    macd_c = ['#ef4444' if val > 0 else '#22c55e' for val in df_view.get('MACD_Hist', [0]*len(df_view))]
-    fig.add_trace(go.Bar(x=x_vals, y=df_view.get('MACD_Hist', 0), marker_color=macd_c, name="MACD柱"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('MACD', 0), line=dict(color="#3b82f6", width=1), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('Signal', 0), line=dict(color="#f59e0b", width=1), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('K', 50), line=dict(color=line_k, width=1.2), name="K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('D', 50), line=dict(color=line_d, width=1.2), name="D"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=x_vals, y=df_view.get('J', 50), line=dict(color=line_j, width=1.2), name="J"), row=4, col=1)
-
-    fig.update_xaxes(type='category', nticks=15, showgrid=True, gridcolor=grid_c, fixedrange=False) # 解除 X 軸鎖定
-    fig.update_yaxes(showgrid=True, gridcolor=grid_c, fixedrange=False) # 解除 Y 軸鎖定
-    fig.update_layout(
-        xaxis_rangeslider_visible=False, template="plotly_white" if is_light_mode else "plotly_dark",
-        height=800, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor=bg_c, plot_bgcolor=bg_c,
-        hovermode="x unified", dragmode="zoom", showlegend=False, hoverlabel=dict(font_size=12) # 加入 x unified
-    )
-    return fig
-
-# ==========================================
-# 📊 華麗版首頁卡片生成
-# ==========================================
 def generate_cards_html(df_disp, is_intraday=False):
     cards_html = ""
     for _, r in df_disp.iterrows():
@@ -830,7 +762,6 @@ def generate_cards_html(df_disp, is_intraday=False):
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         stock_link = f'href="/?stock={r.get("代號", "")}" target="_self"'
         
-        # 確保顯示名稱 (防呆機制)
         disp_name = r.get('名稱', '')
         if not disp_name or disp_name == "": disp_name = get_stock_name(r.get("代號", ""))
         
@@ -874,7 +805,6 @@ def generate_cards_html(df_disp, is_intraday=False):
 if st.session_state.page == "home":
     st.markdown("<h2 style='text-align: center; color: #818cf8; margin-bottom: 20px;'>極致精準：100分量化雷達</h2>", unsafe_allow_html=True)
     
-    # 📌 完整還原大盤儀表板
     render_index_board()
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -888,13 +818,11 @@ if st.session_state.page == "home":
         is_intraday = "盤中" in radar_mode
         st.session_state.is_intraday = is_intraday
         
-        # 🛡️ 安全讀取全域變數解決多執行緒閃退
         cached_list = list(st.session_state.get('scan_results', []))
         
         if is_intraday:
             with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
                 fb_df = pd.DataFrame(cached_list)
-                # 這裡原本用 '代號' 去抓，確保不會報錯
                 targets = list(set([str(t) for t in fb_df['代號'].tolist()[:80]] + st.session_state.custom_pool))
                 live_data = []
                 
@@ -928,7 +856,6 @@ if st.session_state.page == "home":
         if not df_results.empty: 
             df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
             
-            # 🔥 關鍵修正：將 'ticker_raw' 改為 '代號'，徹底消滅 KeyError！
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
@@ -1070,7 +997,7 @@ elif st.session_state.page == "analysis":
         if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
         st.markdown("---")
         
-        # 📌 策略回測實驗室 (動態設定 ATR)
+        # 📌 策略回測實驗室
         st.markdown("##### 🧪 策略回測實驗室 (自由調配風報比)")
         with st.expander("⚙️ 調整停利/停損參數 (預設風報比 1:1.5)", expanded=True):
             s_col1, s_col2 = st.columns(2)
@@ -1141,7 +1068,8 @@ elif st.session_state.page == "analysis":
         with dc5: current_show_buy = st.toggle("🛒 顯示買進", value=True)
         with dc6: current_show_sup = st.toggle("📏 歷史高低點", value=True)
         with dc7: current_show_signals = st.toggle("🏷️ 顯示符號", value=True)
-            
+        
+        # ✅ 使用獨立的 charts 模組繪製圖表！
         fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
         
@@ -1157,7 +1085,6 @@ elif st.session_state.page == "analysis":
             save_cloud_data("user_settings", "fav_groups", st.session_state.fav_groups)
             st.success("✅ 群組設定已更新！"); st.rerun()
 
-        # 🔥 修正盤後名單導航連動的 KeyError
         st.divider()
         st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;">同步監控雷達清單</div>''', unsafe_allow_html=True)
         if n_pool and 'nav_pool_data' in st.session_state:
