@@ -1074,7 +1074,22 @@ elif st.session_state.page == "analysis":
         # ✅ 使用獨立的 charts 模組繪製圖表！
         fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
-        
+        # 👇👇👇 請把下面這段貼在 plotly_chart 下方 👇👇👇
+        with st.expander("📖 點擊展開：圖表符號與線段對照說明", expanded=False):
+            st.markdown("""
+            **【線段與區域】**
+            * 🟨 **黃線 (5T) / 🟩 綠線 (10T) / 🟦 藍線 (20T)**：短中期移動平均線。
+            * 🟪 **紫色虛線**：AI 運算的主力成本區 (Volume Profile)，代表該價位累積成交量極大，為關鍵支撐/壓力位。
+            * 🟥 **紅色虛線**：歷史最高點壓力區。
+            * 🟩 **綠色虛線**：歷史最低點支撐區。
+            
+            **【交易訊號圖示】**
+            * 🤖 **綠色星星 (帶數字)**：AI 100分量化模型綜合買點，數字代表當日 AI 評分。
+            * 🔼 **綠色正三角形**：突破買點 / 回踩主力成本支撐成功。
+            * 🔽 **紅色倒三角形**：跌破支撐 / 遇到主力成本壓力區。
+            * △ **空心三角形 (5扣/10扣/20扣)**：均線扣抵值，代表均線即將剔除的歷史 K 棒位置，用來預判均線未來的上彎或下彎趨勢。
+            """)
+        # 👆👆👆 貼到這裡為止 👆👆👆
         st.divider()
         st.subheader("⭐ 自選群組管理")
         all_groups = list(st.session_state.fav_groups.keys())
