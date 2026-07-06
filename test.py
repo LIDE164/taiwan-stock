@@ -1095,3 +1095,4 @@ elif st.session_state.page == "analysis":
             if not df_nav.empty: st.markdown(generate_cards_html(df_nav, st.session_state.get('is_intraday', True)), unsafe_allow_html=True)
             else: st.info("目前清單中已無其他符合條件的標的。")
     else: st.error("查無此股票資料。")
+    
