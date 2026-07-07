@@ -166,7 +166,7 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
             if typ == "buy": 
                 buy_x.append(x); buy_y.append(ref_p * 0.96)
             else: 
-                sell_x.append(x); sell_y.append(ref_p * 0.96) 
+                sell_x.append(x); sell_y.append(ref_p * 1.04) 
                 
         if buy_x: fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='text', text=["撐"]*len(buy_x), textfont=dict(color='#22c55e', size=13, weight='bold'), name="支撐買點", hoverinfo='skip'), row=1, col=1)
         if sell_x: fig.add_trace(go.Scatter(x=sell_x, y=sell_y, mode='text', text=["壓"]*len(sell_x), textfont=dict(color='#ef4444', size=13, weight='bold'), name="壓力賣點", hoverinfo='skip'), row=1, col=1)
