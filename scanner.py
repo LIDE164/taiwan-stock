@@ -1,16 +1,17 @@
-# scanner.py - 雲端自動掃描機器人 (上市櫃500檔全市場掃描 + 100分新制決策大腦 100% 同步版)
+# scanner.py - 雲端自動掃描機器人
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
 import pandas as pd
 import requests
-import time
 import concurrent.futures
 import logging
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import streamlit as st
-import re
+
+# 引入共用核心演算法
+from scoring import get_decision_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -23,9 +24,7 @@ db = firestore.client()
 
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 
-# ==========================================
-# 1. 建立產業快取字典
-# ==========================================
+# (省略原本的 ENG_TO_TW_INDUSTRY 字典宣告，與原代碼相同)
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
@@ -148,56 +147,6 @@ def get_stock_data(ticker_number):
         return df
     except: return None
 
-def get_decision_score(data, fund_data):
-    sc = 0
-    adx = data.get('ADX', 0)
-    roc_20 = data.get('ROC_20', 0)
-    is_trending = adx >= 25 
-    
-    if data.get('訊號', False): sc += 3 if is_trending else 1
-    if data['收盤價'] <= data.get('BB_DN', 0) * 1.02: sc += 2
-    if data.get('BIAS', 0) < -5: sc += 1
-    if roc_20 > 10: sc += 2
-    elif roc_20 < -5: sc -= 2
-    
-    if data.get('MoM', 0) > 0 and data.get('YoY', 0) > 0: sc += 3
-    elif data.get('YoY', 0) > 15: sc += 2
-        
-    try: eps_f = float(str(fund_data.get('EPS', '0')).replace(',', ''))
-    except: eps_f = 0.0
-    if eps_f > 0: sc += 2
-    
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc += 2
-    else: sc -= 1
-        
-    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc += 2
-    else: sc -= 3
-
-    if data.get('紅吞', False): sc += 4 if is_trending else 1
-    if data.get('黑吞', False): sc -= 3
-    if data.get('回測有撐', False): sc += 2
-    if data.get('反彈遇壓', False): sc -= 2
-    
-    if data['收盤價'] >= data.get('5MA', 0) and data.get('5日線即將上彎', False): sc += 0
-    if data['收盤價'] < data.get('5MA', 0) and not data.get('5日線即將上彎', False): sc += 0
-
-    if data.get('J值', 50) >= 80: sc -= 3
-    if data['收盤價'] >= data.get('BB_UP', 9999) * 0.98: sc -= 2
-    if data.get('BIAS', 0) > 7: sc -= 2
-    if data['收盤價'] < data.get('20MA', 0): sc -= 2
-    if eps_f < 0: sc -= 1
-
-    final_score = max(5, min(99, int(50 + sc * 3)))
-    if final_score >= 60: label = "🟢 強勢買進"
-    elif final_score >= 45: label = "🟡 偏多觀察"
-    else: label = "⚪ 忽略"
-
-    feature = "一般狀態"
-    if data.get('紅吞', False): feature = "🔥 紅吞表態"
-    elif data.get('回測有撐', False): feature = "💪 回檔有撐"
-
-    return final_score, label, feature
-
 def run_daily_scan():
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
     build_industry_cache()
@@ -213,12 +162,10 @@ def run_daily_scan():
             t_close, t_open, t_high, t_low = t['Close'], t['Open'], t['High'], t['Low']
             p_close, p_open = p['Close'], p['Open']
             
-            # 第一階段初篩 (省 API 次數)
             basic_tech_sc = t_close > t.get('20MA', t_close)
             if not basic_tech_sc and t.get('MACD_Hist', 0) < 0:
                 return None
 
-            # 抓取完整的 EPS/營收 確保分數 100% 一致
             f_data = get_fundamental_and_industry_data(stock, t_close)
             bp, mom, yoy = get_finmind_chip_and_revenue(stock)
             fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy}
@@ -244,15 +191,17 @@ def run_daily_scan():
                 "J值": t.get('J', 50)
             }
             
-            sc, label, feature = get_decision_score(data, fund)
+            # ⭐ 調用共用演算法並取得 Reasons
+            sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
             
             if sc >= 45:
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
-                    "收盤價": round(t_close, 2), "WinRate": 0.0, # 簡化回測節省效能
+                    "收盤價": round(t_close, 2), "WinRate": 0.0,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
-                    "Feature": feature, "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY']
+                    "Feature": feature, "Reasons": rs, # ⭐ 儲存解析結果供前端直接調用
+                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY']
                 }
         return None
 

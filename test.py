@@ -15,7 +15,9 @@ import numpy as np
 import logging
 from streamlit_autorefresh import st_autorefresh
 
+# 引入自訂繪圖函式與共用大腦核心演算法
 from charts import draw_professional_chart
+from scoring import get_decision_score
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -439,79 +441,6 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
-# ==========================================
-# 🚀 深度客製化技術分析分數版
-# ==========================================
-def get_decision_score(data, fund_data, inst_data=None):
-    sc, rs = 0, []
-    
-    adx = data.get('ADX', 0)
-    roc_20 = data.get('ROC_20', 0)
-    is_trending = adx >= 25 
-    
-    if data.get('訊號', False): 
-        if is_trending:
-            sc+=3; rs.append(f"✅ 穩在月線上且動能充沛 (ADX:{adx:.1f} 趨勢明確)")
-        else:
-            sc+=1; rs.append(f"⚠️ 穩在月線上 (但 ADX:{adx:.1f} 盤整區間，動能稍弱)")
-            
-    if data['收盤價'] <= data.get('BB_DN', 0) * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
-    if data.get('BIAS', 0) < -5: sc+=1; rs.append("✅ 負乖離過大")
-    
-    if roc_20 > 10:
-        sc+=2; rs.append(f"🔥 近月漲幅 {roc_20:.2f}% 表現亮眼，具備市場主流強勢股特徵")
-    elif roc_20 < -5:
-        sc-=2; rs.append(f"🩸 近月跌幅 {roc_20:.2f}% 表現弱勢，請避開弱勢接刀陷阱")
-    
-    if data.get('MoM', 0) > 0 and data.get('YoY', 0) > 0:
-        sc+=3; rs.append(f"🔥 月營收雙增 (MoM: {data['MoM']}%, YoY: {data['YoY']}%)，具備長線黑馬特質")
-    elif data.get('YoY', 0) > 15:
-        sc+=2; rs.append(f"✅ 月營收年增達 {data['YoY']}%，營運動能強勁")
-        
-    try: eps_f = float(str(fund_data.get('EPS', '0')).replace(',', ''))
-    except: eps_f = 0.0
-    if eps_f > 0: sc+=2; rs.append("✅ 歷史 EPS 獲利體質")
-    
-    if data.get('成交量', 0) > data.get('5日均量', 0) * 1.1: sc+=2; rs.append("✅ 量能放大 (具備主力進場點火特徵)")
-    else: sc-=1; rs.append("⚠️ 量能未明顯放大 (打底或缺乏點火動能)")
-        
-    if data.get('MACD柱', 0) > data.get('前日MACD柱', -999): sc+=2; rs.append("✅ MACD 綠柱收斂或紅柱放大 (動能防禦過關)")
-    else: sc-=3; rs.append("⚠️ MACD 空方動能持續擴大 (型態脆弱嚴防接刀)")
-
-    if data.get('紅吞', False): 
-        if is_trending:
-            sc+=4; rs.append("🔥 出現「紅吞」反轉型態 (趨勢確認，強烈買訊)")
-        else:
-            sc+=1; rs.append("⚠️ 出現「紅吞」(但 ADX 偏低處於盤整，提防假突破)")
-            
-    if data.get('黑吞', False): sc-=3; rs.append("🩸 出現「黑吞」反轉型態 (強烈空頭逃命訊號)")
-
-    if data.get('回測有撐', False): sc+=2; rs.append("🔥 帶量長下影線 (主力回測支撐成功)")
-    if data.get('反彈遇壓', False): sc-=2; rs.append("🩸 反彈遇均線壓力留長上影線 (空方壓制)")
-    
-    if data['收盤價'] >= data.get('5MA', 0) and data.get('5日線即將上彎', False): 
-        rs.append("🔥 5日線扣低值 (短均線準備上彎發散，短線動能轉強)")
-    if data['收盤價'] < data.get('5MA', 0) and not data.get('5日線即將上彎', False): 
-        rs.append("⚠️ 5日線扣高值 (短均線即將下彎產生蓋頭壓力)")
-
-    if data.get('J值', 50) >= 80: sc-=3; rs.append("⚠️ KDJ高檔過熱")
-    if data['收盤價'] >= data.get('BB_UP', 9999) * 0.98: sc-=2; rs.append("⚠️ 觸及布林上軌壓力")
-    if data.get('BIAS', 0) > 7: sc-=2; rs.append("⚠️ 正乖離過大")
-    if data['收盤價'] < data.get('20MA', 0): sc-=2; rs.append("⚠️ 跌破月線支撐")
-    if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
-
-    final_score = max(5, min(99, int(50 + sc * 3)))
-
-    if final_score >= 60: label = "🟢 強勢買進"
-    elif final_score >= 45: label = "🟡 偏多觀察"
-    else: label = "⚪ 忽略"
-
-    feature = "一般狀態"
-    if data.get('紅吞', False): feature = "🔥 紅吞表態"
-    elif data.get('回測有撐', False): feature = "💪 回檔有撐"
-
-    return final_score, label, rs, feature
-
 def get_dynamic_theme(ticker, industry):
     ind = str(industry).strip() if pd.notna(industry) and industry != "無" else "一般產業"
     for kw, ic in { "半導體": "⚙️", "電子": "⚡", "綠能": "🌱", "航運": "🚢", "金融": "💰", "AI": "💡", "機器人": "🤖" }.items():
@@ -519,11 +448,10 @@ def get_dynamic_theme(ticker, industry):
     return (ind, "🏷️")
 
 @st.cache_data(ttl=5, show_spinner=False) 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None):
+def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None, cached_doc=None, is_intraday=False):
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
     
-    # 完全使用真實基本面，防範即時算與雲端讀取差異
     if pre_fund:
         fund = pre_fund
     else:
@@ -593,12 +521,19 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    sc, label, rs, feature = get_decision_score(data, fund, inst_data)
-    data['Score'] = sc
-    data['Reasons'] = rs
-    data['評級'] = label
-    data['Feature'] = feature
-    data['WinRate'] = 0.0 
+    if cached_doc and not is_intraday:
+        data['Score'] = cached_doc.get('Score', cached_doc.get('score', 50))
+        data['評級'] = cached_doc.get('評級', cached_doc.get('label', '⚪ 忽略'))
+        data['Reasons'] = cached_doc.get('Reasons', cached_doc.get('reasons', []))
+        data['Feature'] = cached_doc.get('Feature', cached_doc.get('feature', '一般狀態'))
+        data['WinRate'] = cached_doc.get('WinRate', 0.0)
+    else:
+        sc, label, rs, feature = get_decision_score(data, fund, inst_data, mode="realtime", with_reason=True)
+        data['Score'] = sc
+        data['評級'] = label
+        data['Reasons'] = rs
+        data['Feature'] = feature
+        data['WinRate'] = cached_doc.get('WinRate', 0.0) if cached_doc else 0.0
     return data
 
 def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
@@ -699,7 +634,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
             tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{row['日期']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['外資(張)'])}; font-weight: 500;'>{row['外資(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['投信(張)'])}; font-weight: 500;'>{row['投信(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['自營商(張)'])}; font-weight: 500;'>{row['自營商(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['單日合計(張)'])}; font-weight: 500;'>{row['單日合計(張)']}</td></tr>"
         tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: FinMind API</div></div></div>"
     else:
-        tables_html = f"<div style='color: {sub_text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
+        tables_html = f"<div style='color: {text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
 
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #facc15; margin-top: 0; font-size: 1.2rem;'>🏦 籌碼面分析</h4>{tables_html}"
@@ -824,7 +759,7 @@ if st.session_state.page == "home":
                         else:
                             fund = {"Industry": "一般產業", "BigPlayer": 0, "EPS": "0", "MoM": 0, "YoY": 0}
                             wr = 0.0
-                        res = analyze_today(df, ticker, None, False, fund)
+                        res = analyze_today(df, ticker, None, False, fund, cached_doc=base, is_intraday=True)
                         if res:
                             res['WinRate'] = wr
                             return res
@@ -980,7 +915,12 @@ elif st.session_state.page == "analysis":
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
         inst_data = get_institutional_trading(target)
         f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
-        data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data)
+        
+        cached_list = st.session_state.get('scan_results', [])
+        cached_doc = next((x for x in cached_list if str(x['代號']) == str(target)), None)
+        is_intra = st.session_state.get('is_intraday', False)
+        
+        data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
         sc = data['Score']
         
         display_time = get_stock_live_time(target)
@@ -1077,7 +1017,7 @@ elif st.session_state.page == "analysis":
             **【交易訊號圖示】**
             * 🔼 **藍色三角 (帶數字)**：AI 100分量化模型綜合買點，下方數字為當日結算滿分 100 的得分。
             * **撐 / 壓**：帶量突破買點或回踩主力成本支撐成功 / 跌破或遇到主力成本壓力區留上影線。
-            * **5↗️ / 5↘️**：單一 5 日短均線扣抵值趨勢。代表均線即將剔除的歷史 K 棒位置，箭頭為預判 5 日均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
+            * **5↗️ / 5↘️**：單一 5 日短均線扣抵值趨勢。代表均線即直剔除的歷史 K 棒位置，箭頭為預判 5 日均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
             * **紅吞 / 黑吞**：K線型態出現紅K吞噬黑K (主力拉抬轉強) 或 黑K吞噬紅K (主力倒貨轉弱)。
             """)
 
