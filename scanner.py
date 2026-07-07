@@ -1,4 +1,4 @@
-# scanner.py - 雲端自動掃描機器人 (上市櫃500檔全市場掃描 + 100分新制決策大腦同步版)
+# scanner.py - 雲端自動掃描機器人 (上市櫃500檔全市場掃描 + 100分新制決策大腦 100% 同步版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -7,14 +7,13 @@ import requests
 import time
 import concurrent.futures
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import numpy as np
 import streamlit as st
 import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# 初始化 Firebase
 if not firebase_admin._apps:
     try:
         firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
@@ -22,8 +21,10 @@ if not firebase_admin._apps:
         logging.error(f"Firebase 初始化失敗: {e}")
 db = firestore.client()
 
+FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
+
 # ==========================================
-# 1. 建立產業快取字典 (全市場中文對應)
+# 1. 建立產業快取字典
 # ==========================================
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
@@ -51,18 +52,39 @@ def build_industry_cache():
             for item in res2.json(): INDUSTRY_CACHE[item['SecuritiesCompanyCode']] = item.get('CompanyName', '')
     except: pass
 
-def get_real_industry(ticker):
+def get_fundamental_and_industry_data(ticker_number, current_price=0):
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    eps_val, ind = "0", "一般產業"
     try:
-        info = yf.Ticker(f"{ticker}.TW").info
-        sector = info.get("sector", "")
-        if sector in ENG_TO_TW_INDUSTRY: return ENG_TO_TW_INDUSTRY[sector]
-        if sector: return sector
+        info = yf.Ticker(f"{base_ticker}.TW").info
+        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        raw_sector = info.get("sector", "")
+        if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
+        elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
+        if ind == "一般產業":
+            res_cnyes = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3).json()
+            if 'data' in res_cnyes and 'categoryName' in res_cnyes['data']: ind = res_cnyes['data']['categoryName']
+        if 'trailingEps' in info and info['trailingEps'] is not None: eps_val = str(round(info['trailingEps'], 2))
     except: pass
-    return "一般產業"
+    return {"EPS": eps_val, "Industry": ind}
 
-# ==========================================
-# 2. 獲取全市場成交量 Top 500 (合併上市與上櫃)
-# ==========================================
+def get_finmind_chip_and_revenue(ticker):
+    big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
+    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    try:
+        start_date_rev = (datetime.now() - timedelta(days=500)).strftime('%Y-%m-%d')
+        url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
+        res_rev = requests.get(url_rev, timeout=5).json()
+        if 'data' in res_rev and len(res_rev['data']) > 0:
+            df_rev = pd.DataFrame(res_rev['data']).sort_values(by='date').reset_index(drop=True)
+            df_rev['revenue'] = pd.to_numeric(df_rev['revenue'], errors='coerce').fillna(0)
+            if len(df_rev) >= 2 and df_rev['revenue'].iloc[-2] > 0:
+                mom = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-2]) / df_rev['revenue'].iloc[-2] * 100
+            if len(df_rev) >= 13 and df_rev['revenue'].iloc[-13] > 0:
+                yoy = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-13]) / df_rev['revenue'].iloc[-13] * 100
+    except: pass
+    return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
+
 def fetch_top_500():
     all_stocks = []
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
@@ -84,12 +106,8 @@ def fetch_top_500():
         df_all = pd.concat(all_stocks, ignore_index=True)
         df_all = df_all[df_all['Code'].str.match(r'^\d{4}$')]
         return df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
-    else:
-        return ["2330", "2317", "2454", "3231", "2382"]
+    else: return ["2330", "2317", "2454", "3231", "2382"]
 
-# ==========================================
-# 3. 核心運算與指標
-# ==========================================
 def get_stock_data(ticker_number):
     try:
         df = yf.Ticker(f"{ticker_number}.TW").history(period="1y").dropna(subset=['Close'])
@@ -130,7 +148,6 @@ def get_stock_data(ticker_number):
         return df
     except: return None
 
-# 同步 test.py 的決策大腦
 def get_decision_score(data, fund_data):
     sc = 0
     adx = data.get('ADX', 0)
@@ -140,7 +157,6 @@ def get_decision_score(data, fund_data):
     if data.get('訊號', False): sc += 3 if is_trending else 1
     if data['收盤價'] <= data.get('BB_DN', 0) * 1.02: sc += 2
     if data.get('BIAS', 0) < -5: sc += 1
-    
     if roc_20 > 10: sc += 2
     elif roc_20 < -5: sc -= 2
     
@@ -162,6 +178,9 @@ def get_decision_score(data, fund_data):
     if data.get('回測有撐', False): sc += 2
     if data.get('反彈遇壓', False): sc -= 2
     
+    if data['收盤價'] >= data.get('5MA', 0) and data.get('5日線即將上彎', False): sc += 0
+    if data['收盤價'] < data.get('5MA', 0) and not data.get('5日線即將上彎', False): sc += 0
+
     if data.get('J值', 50) >= 80: sc -= 3
     if data['收盤價'] >= data.get('BB_UP', 9999) * 0.98: sc -= 2
     if data.get('BIAS', 0) > 7: sc -= 2
@@ -172,11 +191,13 @@ def get_decision_score(data, fund_data):
     if final_score >= 60: label = "🟢 強勢買進"
     elif final_score >= 45: label = "🟡 偏多觀察"
     else: label = "⚪ 忽略"
-    return final_score, label
 
-# ==========================================
-# 4. 執行主迴圈
-# ==========================================
+    feature = "一般狀態"
+    if data.get('紅吞', False): feature = "🔥 紅吞表態"
+    elif data.get('回測有撐', False): feature = "💪 回檔有撐"
+
+    return final_score, label, feature
+
 def run_daily_scan():
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
     build_industry_cache()
@@ -187,27 +208,27 @@ def run_daily_scan():
     def process_stock(stock):
         df = get_stock_data(stock)
         if df is not None:
-            ind = get_real_industry(stock)
             t = df.iloc[-1]
             p = df.iloc[-2]
             t_close, t_open, t_high, t_low = t['Close'], t['Open'], t['High'], t['Low']
             p_close, p_open = p['Close'], p['Open']
             
-            # 基本面預設為0 (盤後掃描只抓技術面分數與粗略基本面)
-            fund = {"EPS": "0", "MoM": 0, "YoY": 0} 
-            try:
-                info = yf.Ticker(f"{stock}.TW").info
-                if 'trailingEps' in info: fund['EPS'] = str(info['trailingEps'])
-            except: pass
+            # 第一階段初篩 (省 API 次數)
+            basic_tech_sc = t_close > t.get('20MA', t_close)
+            if not basic_tech_sc and t.get('MACD_Hist', 0) < 0:
+                return None
+
+            # 抓取完整的 EPS/營收 確保分數 100% 一致
+            f_data = get_fundamental_and_industry_data(stock, t_close)
+            bp, mom, yoy = get_finmind_chip_and_revenue(stock)
+            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy}
 
             red_mask = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
             black_mask = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
 
             body_len = abs(t_close - t_open)
-            lower_shadow = min(t_close, t_open) - t_low
-            upper_shadow = t_high - max(t_close, t_open)
-            has_support = (lower_shadow > body_len * 1.5) and (t['Volume'] > df['Volume'].tail(5).mean())
-            hit_pressure = (upper_shadow > body_len * 1.5)
+            has_support = (min(t_close, t_open) - t_low > body_len * 1.5) and (t['Volume'] > df['Volume'].tail(5).mean())
+            hit_pressure = (t_high - max(t_close, t_open) > body_len * 1.5)
 
             data = {
                 "ADX": t.get('ADX', 0),
@@ -223,35 +244,15 @@ def run_daily_scan():
                 "J值": t.get('J', 50)
             }
             
-            sc, label = get_decision_score(data, fund)
+            sc, label, feature = get_decision_score(data, fund)
             
             if sc >= 45:
-                # 簡單計算勝率
-                wins, closed_signals, last_buy_idx = 0, 0, -999
-                recent_90 = df.tail(90)
-                start_idx = len(df) - len(recent_90)
-                for idx in range(len(recent_90)):
-                    actual_idx = start_idx + idx
-                    if actual_idx - last_buy_idx < 5: continue
-                    temp_df = df.iloc[:actual_idx + 1]
-                    if len(temp_df) >= 20:
-                        t_t = temp_df.iloc[-1]
-                        if t_t['Close'] > t_t.get('20MA', 0) and t_t.get('MACD_Hist', 0) > temp_df.iloc[-2].get('MACD_Hist', 0):
-                            last_buy_idx = actual_idx
-                            atr_val = temp_df['ATR'].iloc[-1] if 'ATR' in temp_df.columns else t_t['Close'] * 0.03
-                            target_p, stop_p = t_t['Close'] + (atr_val * 1.5), t_t['Close'] - (atr_val * 1.0)
-                            future_df = df.iloc[actual_idx + 1 : actual_idx + 10]
-                            if len(future_df) > 0:
-                                closed_signals += 1
-                                if future_df['High'].max() >= target_p and future_df['Low'].min() > stop_p: wins += 1
-                                elif future_df['Close'].iloc[-1] > t_t['Close'] and future_df['Low'].min() > stop_p: wins += 1
-                win_rate = round((wins / closed_signals * 100), 1) if closed_signals > 0 else 0.0
-
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
-                    "Score": sc, "評級": label, "產業": ind, 
-                    "收盤價": round(t_close, 2), "WinRate": win_rate,
-                    "漲跌幅": round((t_close - p_close)/p_close*100, 2)
+                    "Score": sc, "評級": label, "產業": f_data['Industry'], 
+                    "收盤價": round(t_close, 2), "WinRate": 0.0, # 簡化回測節省效能
+                    "漲跌幅": round((t_close - p_close)/p_close*100, 2),
+                    "Feature": feature, "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY']
                 }
         return None
 
