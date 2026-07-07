@@ -80,6 +80,23 @@ def get_stock_name(ticker):
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
 
+def normalize_ticker(ticker):
+    return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+
+def render_sidebar_favorites(container):
+    with container.container():
+        st.title("⭐ 我的自選群組")
+        fav_groups = st.session_state.get('fav_groups', {})
+        if fav_groups:
+            for g_name, g_stocks in fav_groups.items():
+                stocks = [normalize_ticker(s) for s in g_stocks]
+                with st.expander(f"📁 {g_name} ({len(stocks)} 檔)"):
+                    for s in stocks:
+                        s_name = get_stock_name(s)
+                        st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{text_col}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
+        else:
+            st.info("尚未加入任何標的")
+
 st.sidebar.title("🔍 快速搜尋")
 with st.sidebar.form(key="search_form"):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
@@ -109,16 +126,7 @@ if st.sidebar.button("📋 經理人績效儀表板", use_container_width=True):
     st.session_state.page = "simulated_orders"; st.rerun()
 
 st.sidebar.divider()
-st.sidebar.title("⭐ 我的自選群組")
-fav_groups = st.session_state.get('fav_groups', {})
-if fav_groups:
-    for g_name, g_stocks in fav_groups.items():
-        with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)} 檔)"):
-            for s in g_stocks:
-                s_name = get_stock_name(s)
-                st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{text_col}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
-else:
-    st.sidebar.info("尚未加入任何標的")
+fav_sidebar_slot = st.sidebar.empty()
 
 if not firebase_admin._apps:
     try:
@@ -143,6 +151,31 @@ def save_cloud_data(collection_name, document_name, data):
     try: db.collection(collection_name).document(document_name).set({'data': data})
     except: pass
 
+def hydrate_scan_results(force=False):
+    if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
+        data = load_cloud_data("market_data", "daily_scan", [])
+        st.session_state.scan_results = data if isinstance(data, list) else []
+    return st.session_state.get("scan_results", [])
+
+def restore_nav_pool(min_score=45):
+    records = hydrate_scan_results()
+    if not records:
+        return []
+    valid_results = [x for x in records if x.get('Score', 0) >= min_score]
+    if not valid_results:
+        valid_results = records
+    df_nav = pd.DataFrame(valid_results)
+    if df_nav.empty or '代號' not in df_nav.columns:
+        return []
+    sort_cols = [c for c in ['Score', '漲跌幅'] if c in df_nav.columns]
+    if sort_cols:
+        df_nav = df_nav.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
+    df_nav = df_nav.head(100).copy()
+    df_nav['代號'] = df_nav['代號'].astype(str).map(normalize_ticker)
+    st.session_state.nav_pool_data = df_nav.to_dict('records')
+    st.session_state.nav_pool = df_nav['代號'].tolist()
+    return st.session_state.nav_pool_data
+
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
@@ -153,6 +186,11 @@ if 'simulated_orders' not in st.session_state:
     st.session_state.simulated_orders = load_cloud_data("user_data", "simulated_orders", [])
 if 'fav_groups' not in st.session_state:
     st.session_state.fav_groups = load_cloud_data("user_settings", "fav_groups", {"預設群組": ["1802", "2330", "1785"]})
+st.session_state.fav_groups = {
+    name: [normalize_ticker(s) for s in stocks]
+    for name, stocks in st.session_state.fav_groups.items()
+}
+render_sidebar_favorites(fav_sidebar_slot)
 
 if 'stock' in st.query_params:
     q_stock = st.query_params['stock']
@@ -660,7 +698,7 @@ if st.session_state.page == "home":
     
     if "scan_results" not in st.session_state or not st.session_state.scan_results:
         with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."): 
-            st.session_state.scan_results = load_cloud_data("market_data", "daily_scan", [])
+            hydrate_scan_results(force=True)
             
     if st.session_state.scan_results:
         fetch_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
@@ -815,21 +853,15 @@ elif st.session_state.page == "simulated_orders":
 # 🚀 進入單一個股解析頁面 
 # ==========================================
 elif st.session_state.page == "analysis":
-    target = st.session_state.current_stock
+    target = normalize_ticker(st.session_state.current_stock)
+    st.session_state.current_stock = target
     c_name = get_stock_name(target)
-    
+
+    if not st.session_state.get('nav_pool_data'):
+        restore_nav_pool()
     n_pool = st.session_state.get('nav_pool', [])
     p_stk = n_pool[n_pool.index(target) - 1] if target in n_pool and n_pool.index(target) > 0 else None
     n_stk = n_pool[n_pool.index(target) + 1] if target in n_pool and n_pool.index(target) < len(n_pool) - 1 else None
-
-    # 📌 防呆機制：若重整網頁導致雷達清單遺失，則從 scan_results 秒速還原
-    if not st.session_state.get('nav_pool_data') and st.session_state.get('scan_results'):
-        valid_results = [x for x in st.session_state['scan_results'] if x.get('Score', 0) >= 45]
-        if valid_results:
-            df_nav_init = pd.DataFrame(valid_results).sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(100)
-            st.session_state.nav_pool_data = df_nav_init.to_dict('records')
-            st.session_state.nav_pool = df_nav_init['代號'].tolist()
-            n_pool = st.session_state.nav_pool
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
@@ -959,14 +991,31 @@ elif st.session_state.page == "analysis":
         st.divider()
         st.subheader("⭐ 自選群組管理")
         all_groups = list(st.session_state.fav_groups.keys())
-        current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
+        current_groups = [g for g, s in st.session_state.fav_groups.items() if target in [normalize_ticker(x) for x in s]]
+        if current_groups:
+            st.caption("目前所在群組：" + "、".join(current_groups))
+        else:
+            st.caption("目前尚未加入任何自選群組")
+        new_group_name = st.text_input("新增群組名稱", placeholder="例如：短線觀察、波段核心", key=f"new_group_{target}")
         selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
         
         if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
             new_fav = {k: list(v) for k, v in st.session_state.fav_groups.items()}
+            if new_group_name.strip():
+                group_name = new_group_name.strip()
+                if group_name not in new_fav:
+                    new_fav[group_name] = []
+                if group_name not in selected_groups:
+                    selected_groups.append(group_name)
             for g in all_groups:
-                if g in selected_groups and target not in new_fav[g]: new_fav[g].append(target)
-                elif g not in selected_groups and target in new_fav[g]: new_fav[g].remove(target)
+                normalized_members = [normalize_ticker(x) for x in new_fav[g]]
+                if g in selected_groups and target not in normalized_members: new_fav[g].append(target)
+                elif g not in selected_groups and target in normalized_members: new_fav[g] = [x for x in new_fav[g] if normalize_ticker(x) != target]
+            for g in selected_groups:
+                if g not in new_fav:
+                    new_fav[g] = []
+                if target not in [normalize_ticker(x) for x in new_fav[g]]:
+                    new_fav[g].append(target)
             st.session_state.fav_groups = new_fav
             save_cloud_data("user_settings", "fav_groups", new_fav)
             st.success("✅ 群組設定已成功寫入雲端！")
@@ -975,7 +1024,9 @@ elif st.session_state.page == "analysis":
 
         st.divider()
         st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;">同步監控雷達清單</div>''', unsafe_allow_html=True)
-        
+
+        if not st.session_state.get('nav_pool_data'):
+            restore_nav_pool()
         if 'nav_pool_data' in st.session_state and len(st.session_state.nav_pool_data) > 0:
             df_nav = pd.DataFrame(st.session_state.nav_pool_data)
             df_nav = df_nav[df_nav['代號'] != target]

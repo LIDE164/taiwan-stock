@@ -151,30 +151,57 @@ def build_score_input(
     }
 
 
-def is_strategy_signal(df_slice: pd.DataFrame, fund: Optional[Dict[str, Any]] = None, mode: str = "post") -> Tuple[bool, int]:
+def is_strategy_signal(
+    df_slice: pd.DataFrame,
+    fund: Optional[Dict[str, Any]] = None,
+    mode: str = "post",
+    score_threshold: int = 60,
+) -> Tuple[bool, int]:
     if df_slice is None or len(df_slice) < 20:
         return False, 0
     from scoring import get_decision_score
 
     data = build_score_input(df_slice, fund or {})
     score, _, _, _ = get_decision_score(data, fund or {}, mode=mode, with_reason=False)
-    return score >= 60, score
+    return score >= score_threshold, score
 
 
-def _trade_outcome(future_df: pd.DataFrame, target_price: float, stop_price: float, buy_price: float) -> Optional[bool]:
+def _trade_outcome(
+    future_df: pd.DataFrame,
+    target_price: float,
+    stop_price: float,
+    entry_price: float,
+    *,
+    fee_rate: float,
+) -> Optional[bool]:
+    last_close = entry_price
     for _, row in future_df.iterrows():
+        open_price = safe_float(row.get("Open"), last_close)
         low = safe_float(row.get("Low"))
         high = safe_float(row.get("High"))
         close = safe_float(row.get("Close"))
-        if low <= stop_price:
+
+        if open_price <= stop_price:
             return False
-        if high >= target_price:
+        if open_price >= target_price:
             return True
+
+        hit_stop = low <= stop_price
+        hit_target = high >= target_price
+        if hit_stop and hit_target:
+            return False
+        if hit_stop:
+            return False
+        if hit_target:
+            return True
+
         last_close = close
 
     if future_df.empty:
         return None
-    return last_close > buy_price
+
+    breakeven_price = entry_price * (1 + fee_rate * 2)
+    return last_close > breakeven_price
 
 
 def calculate_historical_winrate(
@@ -186,8 +213,11 @@ def calculate_historical_winrate(
     hold_days: int = 9,
     min_gap_days: int = 5,
     fund: Optional[Dict[str, Any]] = None,
+    score_threshold: int = 60,
+    fee_rate: float = 0.001425,
+    slippage_rate: float = 0.0005,
 ) -> Tuple[float, int, int, List[Any]]:
-    if df_slice is None or len(df_slice) < 20:
+    if df_slice is None or len(df_slice) < 21:
         return 0.0, 0, 0, []
 
     recent = df_slice.tail(lookback_days)
@@ -201,27 +231,38 @@ def calculate_historical_winrate(
         actual_idx = start_idx + idx
         if actual_idx - last_buy_idx < min_gap_days:
             continue
+        if actual_idx + 1 >= len(df_slice):
+            continue
 
         temp_df = df_slice.iloc[: actual_idx + 1]
-        signal, _ = is_strategy_signal(temp_df, fund or {})
+        signal, _ = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
         if not signal:
             continue
 
-        buy_row = temp_df.iloc[-1]
-        buy_price = safe_float(buy_row.get("Close"))
-        atr_val = safe_float(buy_row.get("ATR"), buy_price * 0.03)
-        if buy_price <= 0 or atr_val <= 0:
+        signal_row = temp_df.iloc[-1]
+        entry_idx = actual_idx + 1
+        entry_row = df_slice.iloc[entry_idx]
+        raw_entry_price = safe_float(entry_row.get("Open"), safe_float(entry_row.get("Close")))
+        entry_price = raw_entry_price * (1 + slippage_rate)
+        atr_val = safe_float(signal_row.get("ATR"), entry_price * 0.03)
+        if entry_price <= 0 or atr_val <= 0:
             continue
 
-        target_price = buy_price + atr_val * target_mult
-        stop_price = buy_price - atr_val * stop_mult
-        future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 1 + hold_days]
-        outcome = _trade_outcome(future_df, target_price, stop_price, buy_price)
+        target_price = entry_price + atr_val * target_mult
+        stop_price = entry_price - atr_val * stop_mult
+        future_df = df_slice.iloc[entry_idx : entry_idx + hold_days]
+        outcome = _trade_outcome(
+            future_df,
+            target_price,
+            stop_price,
+            entry_price,
+            fee_rate=fee_rate,
+        )
         if outcome is None:
             continue
 
-        last_buy_idx = actual_idx
-        buy_dates.append(recent.index[idx])
+        last_buy_idx = entry_idx
+        buy_dates.append(df_slice.index[entry_idx])
         closed_signals += 1
         if outcome:
             wins += 1
