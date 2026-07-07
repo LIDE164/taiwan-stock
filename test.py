@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單還原防呆版)
+# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單與營收籌碼回補防呆版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -107,7 +107,6 @@ st.sidebar.title("🛒 模擬交易中心")
 if st.sidebar.button("📋 經理人績效儀表板", use_container_width=True):
     st.session_state.page = "simulated_orders"; st.rerun()
 
-# 📌 修復：側邊欄顯示自選群組
 st.sidebar.divider()
 st.sidebar.title("⭐ 我的自選群組")
 fav_groups = st.session_state.get('fav_groups', {})
@@ -470,6 +469,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     whale_tag, whale_net_buy = "主力觀望", 0
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
+    # ⭐ 防呆優化：若盤中速掃沒有法人資料，就自動繼承資料庫算好的 Whale_Net，避免顯示為 0
     if inst_data and len(inst_data) >= 3:
         f_net_10d = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data])
         t_net_10d = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data])
@@ -478,6 +478,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3]])
         d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:3]])
         whale_net_buy = f_net + t_net + d_net
+    elif cached_doc:
+        whale_net_buy = cached_doc.get('Whale_Net', 0)
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
@@ -521,7 +523,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    # ⭐ 完美優化：徹底移除舊 cached_doc 分數干擾，永遠重新計算分數，並自動根據環境給予對應的 mode 權重
     run_mode = "realtime" if is_intraday else "post"
     
     sc, label, rs, feature = get_decision_score(
@@ -765,6 +766,7 @@ if st.session_state.page == "home":
                         res = analyze_today(df, ticker, None, False, fund, cached_doc=base, is_intraday=True)
                         if res:
                             res['WinRate'] = wr
+                            res['Whale_Net'] = base.get('Whale_Net', 0) if base else 0
                             return res
                     return None
                     
@@ -918,6 +920,10 @@ elif st.session_state.page == "analysis":
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
         inst_data = get_institutional_trading(target)
         f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
+        
+        # ⭐ 防呆優化：手動補足 MoM 和 YoY，確保解析頁面能算出跟雷達一樣的滿血 89 分！
+        bp_ratio, mom, yoy = get_finmind_chip_and_revenue(target)
+        f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
         
         cached_list = st.session_state.get('scan_results', [])
         cached_doc = next((x for x in cached_list if str(x['代號']) == str(target)), None)

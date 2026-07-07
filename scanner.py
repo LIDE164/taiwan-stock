@@ -146,6 +146,62 @@ def get_stock_data(ticker_number):
         return df
     except: return None
 
+# ⭐ 補上法人籌碼抓取功能
+def get_institutional_trading(ticker):
+    try:
+        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={(datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')}&token={FINMIND_TOKEN}"
+        res = requests.get(url, timeout=5).json()
+        if res.get('msg') == 'success' and len(res.get('data', [])) > 0:
+            df = pd.DataFrame(res['data'])
+            df['net'] = (df['buy'] - df['sell']) / 1000  
+            df['type'] = '其他'
+            df.loc[df['name'].str.contains('Foreign|外資', case=False, na=False), 'type'] = '外資'
+            df.loc[df['name'].str.contains('Trust|投信', case=False, na=False), 'type'] = '投信'
+            df.loc[df['name'].str.contains('Dealer|自營', case=False, na=False), 'type'] = '自營商'
+            pivot = df.groupby(['date', 'type'])['net'].sum().unstack(fill_value=0).reset_index()
+            for col in ['外資', '投信', '自營商']:
+                if col not in pivot.columns: pivot[col] = 0
+            pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
+            return [{"單日合計(張)": int(r['單日合計'])} for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()]
+    except: pass
+    return []
+
+# ⭐ 補上歷史勝率簡易精算器
+def calc_winrate(df_slice):
+    if df_slice is None or len(df_slice) < 14: return 0.0
+    recent_90 = df_slice.tail(90)
+    wins, closed_signals = 0, 0
+    last_buy_idx = -999
+    start_idx = len(df_slice) - len(recent_90)
+    
+    for idx in range(len(recent_90)):
+        actual_idx = start_idx + idx
+        if actual_idx - last_buy_idx < 5: continue
+            
+        temp_df = df_slice.iloc[:actual_idx + 1]
+        if len(temp_df) >= 20:
+            t = temp_df.iloc[-1]
+            p = temp_df.iloc[-2]
+            sc = 0
+            if t['Close'] > t.get('20MA', 0): sc += 10
+            if t.get('ADX', 0) > 25: sc += 5
+            if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): sc += 8
+            
+            if sc >= 15:
+                last_buy_idx = actual_idx
+                buy_price = t['Close']
+                atr_val = temp_df['ATR'].iloc[-1] if 'ATR' in temp_df.columns else buy_price * 0.03
+                target_p = buy_price + (atr_val * 1.5)
+                stop_p = buy_price - (atr_val * 1.0)
+                
+                future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 10]
+                if len(future_df) > 0:
+                    closed_signals += 1
+                    if future_df['High'].max() >= target_p and future_df['Low'].min() > stop_p: wins += 1
+                    elif future_df['Close'].iloc[-1] > buy_price and future_df['Low'].min() > stop_p: wins += 1
+                    
+    return round((wins / closed_signals * 100) if closed_signals > 0 else 0.0, 1)
+
 def run_daily_scan():
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
     build_industry_cache()
@@ -190,16 +246,20 @@ def run_daily_scan():
                 "J值": t.get('J', 50)
             }
             
-            # ⭐ 調用共用演算法並取得 Reasons，嚴格帶入 mode="post"
             sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
             
             if sc >= 45:
+                # ⭐ 同步將 WinRate 和 Whale_Net 存入資料庫
+                wr = calc_winrate(df)
+                inst = get_institutional_trading(stock)
+                whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3]]) if inst else 0
+
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
-                    "收盤價": round(t_close, 2), "WinRate": 0.0,
+                    "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
-                    "Feature": feature, "Reasons": rs, # ⭐ 儲存解析結果供前端直接調用
+                    "Feature": feature, "Reasons": rs,
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY']
                 }
         return None
