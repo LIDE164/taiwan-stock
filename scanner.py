@@ -191,7 +191,7 @@ def run_daily_scan():
             }
             
             # ⭐ 調用共用演算法並取得 Reasons，嚴格帶入 mode="post"
-            sc, label, rs, feature = get_decision_score(data, fund, inst_data=None, mode="post", with_reason=True)
+            sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
             
             if sc >= 45:
                 return {

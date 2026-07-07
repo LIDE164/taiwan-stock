@@ -521,7 +521,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    # ⭐ 完全移除舊有 cached_doc 污染，永遠重新計算
+    # ⭐ 完美優化：徹底移除舊 cached_doc 分數干擾，永遠重新計算分數，並自動根據環境給予對應的 mode 權重
     run_mode = "realtime" if is_intraday else "post"
     
     sc, label, rs, feature = get_decision_score(
@@ -532,7 +532,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         with_reason=True
     )
     
-    # ⭐ 將最新結果寫回 data
     data['Score'] = sc
     data['評級'] = label
     data['Reasons'] = rs
@@ -590,7 +589,6 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     elif sc >= 45: text_desc = "目前該股動能逐漸加溫，但可能有部分指標過熱或尚未完全突破，屬於偏多觀察階段，建議留意後續量能變化。"
     else: text_desc = "目前該股動能偏弱或陷入盤整，風險大於預期報酬，建議維持空手觀望，等待更明確的型態出現。"
     
-    # 📌 UI 排版優化：展開並隱藏不需折疊的說明
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
     
