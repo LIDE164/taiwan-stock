@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-07 (UI排版優化、中文產業補齊)
+# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單還原防呆版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -73,6 +73,10 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
+def get_stock_name(ticker):
+    ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
+
 st.sidebar.title("🔍 快速搜尋")
 with st.sidebar.form(key="search_form"):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
@@ -101,9 +105,18 @@ st.sidebar.title("🛒 模擬交易中心")
 if st.sidebar.button("📋 經理人績效儀表板", use_container_width=True):
     st.session_state.page = "simulated_orders"; st.rerun()
 
-def get_stock_name(ticker):
-    ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
+# 📌 修復：側邊欄顯示自選群組
+st.sidebar.divider()
+st.sidebar.title("⭐ 我的自選群組")
+fav_groups = st.session_state.get('fav_groups', {})
+if fav_groups:
+    for g_name, g_stocks in fav_groups.items():
+        with st.sidebar.expander(f"📁 {g_name} ({len(g_stocks)} 檔)"):
+            for s in g_stocks:
+                s_name = get_stock_name(s)
+                st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{text_col}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
+else:
+    st.sidebar.info("尚未加入任何標的")
 
 if not firebase_admin._apps:
     try:
@@ -260,7 +273,6 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
         
-        # 修正英轉中產業判定
         raw_sector = info.get("sector", "")
         if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
         elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
@@ -427,6 +439,9 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
+# ==========================================
+# 🚀 深度客製化技術分析分數版
+# ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     
@@ -507,14 +522,17 @@ def get_dynamic_theme(ticker, industry):
 def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None):
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
-    fund = pre_fund if pre_fund else get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
     
-    if 'BigPlayer' not in fund:
+    # 完全使用真實基本面，防範即時算與雲端讀取差異
+    if pre_fund:
+        fund = pre_fund
+    else:
+        fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
         bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
         fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
-    if 'VIX' not in fund:
-        macro = get_global_macro_data()
-        fund['VIX'] = macro.get('^VIX', {}).get('price', 0)
+        
+    macro = get_global_macro_data()
+    fund['VIX'] = macro.get('^VIX', {}).get('price', 0)
         
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
@@ -632,21 +650,21 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     elif sc >= 45: text_desc = "目前該股動能逐漸加溫，但可能有部分指標過熱或尚未完全突破，屬於偏多觀察階段，建議留意後續量能變化。"
     else: text_desc = "目前該股動能偏弱或陷入盤整，風險大於預期報酬，建議維持空手觀望，等待更明確的型態出現。"
     
-    # 優化 UI：直接攤開項目，將總結移到最底部
+    # 📌 UI 排版優化：展開並隱藏不需折疊的說明
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
     
-    tech_html += f"<ul style='line-height: 1.6; margin-top: 10px; font-size: 0.95rem; color: {t_text_c};'>"
+    tech_html += f"<ul style='line-height: 1.6; margin-top: 10px; font-size: 0.95rem; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
     for r in data.get('Reasons', []):
         if "✅" in r or "🔥" in r or "🚀" in r or "💰" in r or "📈" in r or "🏦" in r or "👑" in r or "🧨" in r: 
-            tech_html += f"<li><span style='color:#ef4444; font-weight:bold;'>{r}</span></li>"
+            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#ef4444; font-weight:bold;'>{r}</span></li>"
         elif "⚠️" in r or "🚨" in r or "🩸" in r or "📦" in r: 
-            tech_html += f"<li><span style='color:#22c55e;'><b>{r}</b></span></li>"
+            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#22c55e;'><b>{r}</b></span></li>"
         else:
-            tech_html += f"<li>{r}</li>"
+            tech_html += f"<li style='margin-bottom: 5px;'>{r}</li>"
     tech_html += f"</ul>"
     
-    tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【結  果】</b>{text_desc}</div>"
+    tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【總結】</b>{text_desc}</div>"
     tech_html += f"</div>"
 
     chip_res_text = "中立觀望"
@@ -685,7 +703,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
 
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #facc15; margin-top: 0; font-size: 1.2rem;'>🏦 籌碼面分析</h4>{tables_html}"
-    chip_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #facc15; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【結  果】</b>{chip_res_text}</div></div>"
+    chip_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #facc15; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【總結】</b>{chip_res_text}</div></div>"
 
     fund_bullets = []
     eps = f_data.get('EPS', '無')
@@ -708,9 +726,9 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     except: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    fund_html += f"<h4 style='color: #c084fc; margin-top: 0; font-size: 1.2rem;'>📑 基本面分析</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c};'>"
-    for b in fund_bullets: fund_html += f"<li style='margin-bottom:6px;'>{b}</li>"
-    fund_html += f"</ul><div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #c084fc; font-size: 0.95rem; color: {t_text_c};'><b>【結  果】</b>{fund_res}</div></div>"
+    fund_html += f"<h4 style='color: #c084fc; margin-top: 0; font-size: 1.2rem;'>📑 基本面分析</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
+    for b in fund_bullets: fund_html += f"<li style='margin-bottom:5px;'>{b}</li>"
+    fund_html += f"</ul><div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #c084fc; font-size: 0.95rem; color: {t_text_c};'><b>【總結】</b>{fund_res}</div></div>"
 
     return tech_html + chip_html + fund_html
 
@@ -938,6 +956,15 @@ elif st.session_state.page == "analysis":
     p_stk = n_pool[n_pool.index(target) - 1] if target in n_pool and n_pool.index(target) > 0 else None
     n_stk = n_pool[n_pool.index(target) + 1] if target in n_pool and n_pool.index(target) < len(n_pool) - 1 else None
 
+    # 📌 防呆機制：若重整網頁導致雷達清單遺失，則從 scan_results 秒速還原
+    if not st.session_state.get('nav_pool_data') and st.session_state.get('scan_results'):
+        valid_results = [x for x in st.session_state['scan_results'] if x.get('Score', 0) >= 45]
+        if valid_results:
+            df_nav_init = pd.DataFrame(valid_results).sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(100)
+            st.session_state.nav_pool_data = df_nav_init.to_dict('records')
+            st.session_state.nav_pool = df_nav_init['代號'].tolist()
+            n_pool = st.session_state.nav_pool
+
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
@@ -968,7 +995,6 @@ elif st.session_state.page == "analysis":
         if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
         st.markdown("---")
         
-        # 📌 策略回測實驗室
         st.markdown("##### 🧪 策略回測實驗室 (自由調配風報比)")
         with st.expander("⚙️ 調整停利/停損參數 (預設風報比 1:1.5)", expanded=True):
             s_col1, s_col2 = st.columns(2)
