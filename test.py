@@ -521,19 +521,24 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
-    if cached_doc and not is_intraday:
-        data['Score'] = cached_doc.get('Score', cached_doc.get('score', 50))
-        data['評級'] = cached_doc.get('評級', cached_doc.get('label', '⚪ 忽略'))
-        data['Reasons'] = cached_doc.get('Reasons', cached_doc.get('reasons', []))
-        data['Feature'] = cached_doc.get('Feature', cached_doc.get('feature', '一般狀態'))
-        data['WinRate'] = cached_doc.get('WinRate', 0.0)
-    else:
-        sc, label, rs, feature = get_decision_score(data, fund, inst_data, mode="realtime", with_reason=True)
-        data['Score'] = sc
-        data['評級'] = label
-        data['Reasons'] = rs
-        data['Feature'] = feature
-        data['WinRate'] = cached_doc.get('WinRate', 0.0) if cached_doc else 0.0
+    # ⭐ 完全移除舊有 cached_doc 污染，永遠重新計算
+    run_mode = "realtime" if is_intraday else "post"
+    
+    sc, label, rs, feature = get_decision_score(
+        data, 
+        fund, 
+        inst_data, 
+        mode=run_mode, 
+        with_reason=True
+    )
+    
+    # ⭐ 將最新結果寫回 data
+    data['Score'] = sc
+    data['評級'] = label
+    data['Reasons'] = rs
+    data['Feature'] = feature
+    data['WinRate'] = cached_doc.get('WinRate', 0.0) if cached_doc else 0.0
+
     return data
 
 def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):

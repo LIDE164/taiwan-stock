@@ -24,7 +24,6 @@ db = firestore.client()
 
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 
-# (省略原本的 ENG_TO_TW_INDUSTRY 字典宣告，與原代碼相同)
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
@@ -191,8 +190,8 @@ def run_daily_scan():
                 "J值": t.get('J', 50)
             }
             
-            # ⭐ 調用共用演算法並取得 Reasons
-            sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
+            # ⭐ 調用共用演算法並取得 Reasons，嚴格帶入 mode="post"
+            sc, label, rs, feature = get_decision_score(data, fund, inst_data=None, mode="post", with_reason=True)
             
             if sc >= 45:
                 return {
