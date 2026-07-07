@@ -11,18 +11,30 @@ import numpy as np
 import streamlit as st
 
 # 引入共用核心演算法
+from analysis_core import apply_technical_indicators, build_score_input, calculate_historical_winrate
 from scoring import get_decision_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-if not firebase_admin._apps:
+def get_secret(name, default=""):
     try:
-        firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
-    except Exception as e:
-        logging.error(f"Firebase 初始化失敗: {e}")
-db = firestore.client()
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
 
-FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
+
+def init_firestore():
+    try:
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
+        return firestore.client()
+    except Exception as e:
+        logging.error("Firebase 初始化失敗: %s", e)
+        return None
+
+
+db = init_firestore()
+FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
@@ -69,7 +81,19 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
 def get_finmind_chip_and_revenue(ticker):
     big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    if not FINMIND_TOKEN:
+        logging.warning("FINMIND_TOKEN 未設定，略過 %s 的 FinMind 資料", base_ticker)
+        return big_player_ratio, mom, yoy
     try:
+        start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
+        res_chip = requests.get(url_chip, timeout=5).json()
+        if 'data' in res_chip and len(res_chip['data']) > 0:
+            latest_date = max([x.get('date', '') for x in res_chip['data']])
+            for x in res_chip['data']:
+                if x.get('date') == latest_date and int(x.get('HoldingSharesLevel', 0)) >= 12:
+                    big_player_ratio += float(str(x.get('percent', 0)).replace(',', ''))
+
         start_date_rev = (datetime.now() - timedelta(days=500)).strftime('%Y-%m-%d')
         url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
         res_rev = requests.get(url_rev, timeout=5).json()
@@ -80,7 +104,8 @@ def get_finmind_chip_and_revenue(ticker):
                 mom = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-2]) / df_rev['revenue'].iloc[-2] * 100
             if len(df_rev) >= 13 and df_rev['revenue'].iloc[-13] > 0:
                 yoy = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-13]) / df_rev['revenue'].iloc[-13] * 100
-    except: pass
+    except Exception as e:
+        logging.warning("FinMind 資料取得失敗 %s: %s", base_ticker, e)
     return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
 
 def fetch_top_500():
@@ -114,37 +139,10 @@ def get_stock_data(ticker_number):
         
         df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
         df = df[~df.index.duplicated(keep='last')]
-        
-        df['5MA'] = df['Close'].rolling(5).mean()
-        df['10MA'] = df['Close'].rolling(10).mean()
-        df['20MA'] = df['Close'].rolling(20).mean()
-        df['60MA'] = df['Close'].rolling(60).mean()
-        df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
-        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['Signal']
-        
-        df['STD20'] = df['Close'].rolling(20).std()
-        df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
-        df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
-        df['BIAS'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
-        
-        low_9, high_9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
-        rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
-        df['K'] = rsv.ewm(com=2, adjust=False).mean()
-        df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-        df['J'] = 3 * df['K'] - 2 * df['D']
-
-        tr1, tr2, tr3 = df['High'] - df['Low'], (df['High'] - df['Close'].shift(1)).abs(), (df['Low'] - df['Close'].shift(1)).abs()
-        df['ATR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1).rolling(14).mean().bfill()
-        
-        up_m, dn_m = df['High'] - df['High'].shift(1), df['Low'].shift(1) - df['Low']
-        p_dm = np.where((up_m > dn_m) & (up_m > 0), up_m, 0.0)
-        n_dm = np.where((dn_m > up_m) & (dn_m > 0), dn_m, 0.0)
-        p_di = 100 * (pd.Series(p_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
-        n_di = 100 * (pd.Series(n_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
-        df['ADX'] = (100 * (p_di - n_di).abs() / (p_di + n_di).replace(0, 1)).ewm(span=14, adjust=False).mean().bfill()
-        return df
-    except: return None
+        return apply_technical_indicators(df)
+    except Exception as e:
+        logging.warning("股價資料處理失敗 %s: %s", ticker_number, e)
+        return None
 
 # ⭐ 補上法人籌碼抓取功能
 def get_institutional_trading(ticker):
@@ -168,39 +166,8 @@ def get_institutional_trading(ticker):
 
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
-    if df_slice is None or len(df_slice) < 14: return 0.0
-    recent_90 = df_slice.tail(90)
-    wins, closed_signals = 0, 0
-    last_buy_idx = -999
-    start_idx = len(df_slice) - len(recent_90)
-    
-    for idx in range(len(recent_90)):
-        actual_idx = start_idx + idx
-        if actual_idx - last_buy_idx < 5: continue
-            
-        temp_df = df_slice.iloc[:actual_idx + 1]
-        if len(temp_df) >= 20:
-            t = temp_df.iloc[-1]
-            p = temp_df.iloc[-2]
-            sc = 0
-            if t['Close'] > t.get('20MA', 0): sc += 10
-            if t.get('ADX', 0) > 25: sc += 5
-            if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): sc += 8
-            
-            if sc >= 15:
-                last_buy_idx = actual_idx
-                buy_price = t['Close']
-                atr_val = temp_df['ATR'].iloc[-1] if 'ATR' in temp_df.columns else buy_price * 0.03
-                target_p = buy_price + (atr_val * 1.5)
-                stop_p = buy_price - (atr_val * 1.0)
-                
-                future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 10]
-                if len(future_df) > 0:
-                    closed_signals += 1
-                    if future_df['High'].max() >= target_p and future_df['Low'].min() > stop_p: wins += 1
-                    elif future_df['Close'].iloc[-1] > buy_price and future_df['Low'].min() > stop_p: wins += 1
-                    
-    return round((wins / closed_signals * 100) if closed_signals > 0 else 0.0, 1)
+    win_rate, _, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0)
+    return win_rate
 
 def run_daily_scan():
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
@@ -223,28 +190,8 @@ def run_daily_scan():
 
             f_data = get_fundamental_and_industry_data(stock, t_close)
             bp, mom, yoy = get_finmind_chip_and_revenue(stock)
-            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy}
-
-            red_mask = (p_open > p_close) and (t_close > t_open) and (t_close > p_open) and (t_open < p_close)
-            black_mask = (p_close > p_open) and (t_open > t_close) and (t_open > p_close) and (t_close < p_open)
-
-            body_len = abs(t_close - t_open)
-            has_support = (min(t_close, t_open) - t_low > body_len * 1.5) and (t['Volume'] > df['Volume'].tail(5).mean())
-            hit_pressure = (t_high - max(t_close, t_open) > body_len * 1.5)
-
-            data = {
-                "ADX": t.get('ADX', 0),
-                "ROC_20": (t_close - df['Close'].iloc[-20])/df['Close'].iloc[-20]*100 if len(df)>=20 else 0,
-                "訊號": t_close > t.get('20MA', t_close),
-                "收盤價": t_close, "BB_DN": t.get('BB_DN', t_close), "BB_UP": t.get('BB_UP', t_close),
-                "BIAS": t.get('BIAS', 0), "MoM": fund['MoM'], "YoY": fund['YoY'],
-                "成交量": t['Volume'], "5日均量": df['Volume'].tail(5).mean(),
-                "MACD柱": t.get('MACD_Hist', 0), "前日MACD柱": p.get('MACD_Hist', 0),
-                "紅吞": red_mask, "黑吞": black_mask, "回測有撐": has_support, "反彈遇壓": hit_pressure,
-                "5MA": t.get('5MA', t_close), "20MA": t.get('20MA', t_close),
-                "5日線即將上彎": t_close >= df['Close'].iloc[-5] if len(df)>=5 else False,
-                "J值": t.get('J', 50)
-            }
+            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy, "BigPlayer": bp}
+            data = build_score_input(df, fund)
             
             sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
             
@@ -260,7 +207,7 @@ def run_daily_scan():
                     "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs,
-                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY']
+                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp
                 }
         return None
 
@@ -270,8 +217,13 @@ def run_daily_scan():
             
     scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
             
+    if db is None:
+        logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
+        return scan_results
+
     db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
+    return scan_results
 
 if __name__ == "__main__":
     run_daily_scan()

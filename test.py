@@ -16,6 +16,7 @@ import logging
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
+from analysis_core import apply_technical_indicators, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
 
@@ -219,52 +220,13 @@ def get_stock_data(ticker_number):
     except: pass
 
     try:
-        df['5MA'] = df['Close'].rolling(5).mean()
-        df['10MA'] = df['Close'].rolling(10).mean()
-        df['20MA'] = df['Close'].rolling(20).mean()
-        df['60MA'] = df['Close'].rolling(60).mean()
-        df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
-        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['Signal']
-
-        df['STD20'] = df['Close'].rolling(20).std()
-        df['BB_UP'] = df['20MA'] + (2 * df['STD20'])
-        df['BB_DN'] = df['20MA'] - (2 * df['STD20'])
-        df['BIAS_20'] = (df['Close'] - df['20MA']) / df['20MA'] * 100
-        
-        low_9, high_9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
-        rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
-        df['K'] = rsv.ewm(com=2, adjust=False).mean()
-        df['D'] = df['K'].ewm(com=2, adjust=False).mean()
-        df['J'] = 3 * df['K'] - 2 * df['D']
-
-        delta = df['Close'].diff()
-        up = delta.clip(lower=0)
-        down = -1 * delta.clip(upper=0)
-        ema_up = up.ewm(com=13, adjust=False).mean()
-        ema_down = down.ewm(com=13, adjust=False).mean()
-        rs = ema_up / ema_down
-        df['RSI'] = 100 - (100 / (1 + rs))
-        df['RSI'] = df['RSI'].fillna(50)
-
-        tr1 = df['High'] - df['Low']
-        tr2 = (df['High'] - df['Close'].shift(1)).abs()
-        tr3 = (df['Low'] - df['Close'].shift(1)).abs()
-        df['TR'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df['ATR'] = df['TR'].rolling(14).mean().bfill()
-        
-        up_move = df['High'] - df['High'].shift(1)
-        down_move = df['Low'].shift(1) - df['Low']
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
-        minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(span=14, adjust=False).mean() / df['ATR'])
-        df['ADX'] = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1)).ewm(span=14, adjust=False).mean().bfill()
-    except:
+        return apply_technical_indicators(df)
+    except Exception as e:
+        logging.warning(f"技術指標計算失敗 {ticker_number}: {e}")
         df['ATR'] = df['Close'] * 0.03
         df['ADX'] = 20
         df['RSI'] = 50
-    return df
+        return df
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
@@ -542,43 +504,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     return data
 
 def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
-    if df_slice is None or len(df_slice) < 14: return 0.0, 0, 0, []
-    recent_90 = df_slice.tail(90)
-    wins, closed_signals = 0, 0
-    last_buy_idx = -999
-    buy_dates = []
-    start_idx = len(df_slice) - len(recent_90)
-    
-    for idx in range(len(recent_90)):
-        actual_idx = start_idx + idx
-        if actual_idx - last_buy_idx < 5: continue
-            
-        temp_df = df_slice.iloc[:actual_idx + 1]
-        if len(temp_df) >= 20:
-            t = temp_df.iloc[-1]
-            p = temp_df.iloc[-2]
-            sc = 0
-            if t['Close'] > t.get('20MA', 0): sc += 10
-            if t.get('ADX', 0) > 25: sc += 5
-            if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): sc += 8
-            
-            if sc >= 15:
-                last_buy_idx = actual_idx
-                buy_dates.append(recent_90.index[idx])
-                buy_price = t['Close']
-                atr_val = temp_df['ATR'].iloc[-1] if 'ATR' in temp_df.columns else buy_price * 0.03
-                
-                target_p = buy_price + (atr_val * target_mult)
-                stop_p = buy_price - (atr_val * stop_mult)
-                
-                future_df = df_slice.iloc[actual_idx + 1 : actual_idx + 10]
-                if len(future_df) > 0:
-                    closed_signals += 1
-                    if future_df['High'].max() >= target_p and future_df['Low'].min() > stop_p: wins += 1
-                    elif future_df['Close'].iloc[-1] > buy_price and future_df['Low'].min() > stop_p: wins += 1
-                    
-    win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0.0
-    return win_rate, closed_signals, wins, buy_dates
+    return calculate_historical_winrate(df_slice, target_mult, stop_mult)
 
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"

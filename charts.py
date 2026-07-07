@@ -3,6 +3,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+from analysis_core import build_score_input
+from scoring import get_decision_score
 
 def find_levels(df, bins=60):
     price = (df['High'] + df['Low'] + df['Close']) / 3
@@ -45,20 +47,20 @@ def compute_ai_signals(df):
     if '20MA' not in df.columns: df['20MA'] = df['Close'].rolling(20).mean()
     if '60MA' not in df.columns: df['60MA'] = df['Close'].rolling(60).mean()
 
-    df['trend_up'] = (df['20MA'] > df['60MA']) & (df['Close'] > df['20MA'])
-    df['momentum'] = df['Close'].pct_change(3)
-    df['vol_strength'] = df['Volume'] > df['Volume'].rolling(5).mean() * 1.3
-    df['breakout'] = df['Close'] > df['High'].rolling(20).max().shift(1)
+    scores = []
+    buys = []
+    for i in range(len(df)):
+        if i < 20:
+            scores.append(0)
+            buys.append(False)
+            continue
+        score_data = build_score_input(df.iloc[:i + 1], {})
+        score, _, _, _ = get_decision_score(score_data, {}, mode="post", with_reason=False)
+        scores.append(score)
+        buys.append(score >= 60)
 
-    # 將 AI 分數嚴格映射到 100 分制
-    score = (
-        df['trend_up'].astype(int) * 30 +
-        df['breakout'].astype(int) * 30 +
-        df['vol_strength'].astype(int) * 20 +
-        (df['momentum'] > 0).astype(int) * 20
-    )
-    df['ai_score'] = score
-    df['ai_buy'] = (score >= 60) # 60分以上及格視為強勢買點
+    df['ai_score'] = scores
+    df['ai_buy'] = buys
     return df
 
 def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False, show_buy_signal=True, show_sup_res=True, show_signals=True, buy_dates=None):
