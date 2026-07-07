@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (深度客製化技術分析分數版)
+# 最後修改時間: 2026-07-07 (修復雷達漏掉高分股限制，擴大運算池與顯示上限版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -566,7 +566,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "MoM": fund.get('MoM', 0), "YoY": fund.get('YoY', 0), 
         "ForeignNet10d": f_net_10d, "TrustNet10d": t_net_10d, "DealerNet10d": d_net_10d, 
         "紅吞": bool(red_mask.iloc[-1]), "黑吞": bool(black_mask.iloc[-1]),
-        "訊號": t_close > t.get('20MA', t_close), # 穩在月線上
+        "訊號": t_close > t.get('20MA', t_close), 
         "回測有撐": has_support,
         "反彈遇壓": hit_pressure,
         "5日線即將上彎": t_close >= df['Close'].iloc[-5] if len(df) >= 5 else False,
@@ -776,7 +776,6 @@ if st.session_state.page == "home":
             st.session_state.scan_results = load_cloud_data("market_data", "daily_scan", [])
             
     if st.session_state.scan_results:
-        # 首頁顯示即時資料更新時間
         fetch_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
         st.markdown(f"<div style='font-size:0.85rem; color:#64748b; margin-bottom:15px; font-weight:bold;'>☁️ 最新雲端資料庫讀取時間：{fetch_time}</div>", unsafe_allow_html=True)
 
@@ -790,7 +789,7 @@ if st.session_state.page == "home":
         if is_intraday:
             with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
                 fb_df = pd.DataFrame(cached_list)
-                targets = list(set([str(t) for t in fb_df['代號'].tolist()[:80]] + st.session_state.custom_pool))
+                targets = list(set([str(t) for t in fb_df['代號'].tolist()[:200]] + st.session_state.custom_pool))
                 live_data = []
                 
                 def process_live(ticker):
@@ -821,7 +820,8 @@ if st.session_state.page == "home":
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
             
         if not df_results.empty: 
-            df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(30)
+            df_results = df_results[df_results['Score'] >= 45]
+            df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(100)
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -1046,9 +1046,9 @@ elif st.session_state.page == "analysis":
             * 🟪 **紫色虛線**：AI 運算的主力成本區 (Volume Profile)，代表該價位累積成交量極大，為關鍵支撐/壓力位。
             
             **【交易訊號圖示】**
-            * 🔼 **藍色三角 (帶數字)**：AI 100分量化模型綜合買進訊號，數字代表當日 AI 評分 (滿分100)。
-            * **撐 / 壓**：回踩主力成本支撐成功 / 跌破或遇到主力成本壓力區。
-            * **5↗️ / 5↘️**：5日均線扣抵值，代表均線即將剔除的歷史 K 棒位置。箭頭代表「今日收盤價」與「扣抵價」對比後，預判 5 日均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
+            * 🔼 **藍色三角 (帶數字)**：AI 100分量化模型綜合買點，下方數字為當日結算滿分 100 的得分。
+            * **撐 / 壓**：帶量突破買點或回踩主力成本支撐成功 / 跌破或遇到主力成本壓力區留上影線。
+            * **5↗️ / 5↘️**：單一 5 日短均線扣抵值趨勢。代表均線即將剔除的歷史 K 棒位置，箭頭為預判 5 日均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
             * **紅吞 / 黑吞**：K線型態出現紅K吞噬黑K (主力拉抬轉強) 或 黑K吞噬紅K (主力倒貨轉弱)。
             """)
 
@@ -1058,7 +1058,6 @@ elif st.session_state.page == "analysis":
         current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
         selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
         
-        # 修復群組管理同步寫入
         if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
             new_fav = {k: list(v) for k, v in st.session_state.fav_groups.items()}
             for g in all_groups:
@@ -1073,7 +1072,6 @@ elif st.session_state.page == "analysis":
         st.divider()
         st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;">同步監控雷達清單</div>''', unsafe_allow_html=True)
         
-        # 修復雷達清單無效與清單顯示邏輯
         if 'nav_pool_data' in st.session_state and len(st.session_state.nav_pool_data) > 0:
             df_nav = pd.DataFrame(st.session_state.nav_pool_data)
             df_nav = df_nav[df_nav['代號'] != target]
