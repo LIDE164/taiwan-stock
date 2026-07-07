@@ -115,19 +115,49 @@ def get_market_progress(now_tpe=None):
         return 1.0
     return max(0.0, min(1.0, (now_tpe - start).total_seconds() / (end - start).total_seconds()))
 
-def is_regular_market_open(now_tpe=None):
+def get_market_state(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
     if now_tpe.weekday() >= 5:
-        return False
+        return "holiday"
+    preopen = now_tpe.replace(hour=8, minute=30, second=0, microsecond=0)
     start = now_tpe.replace(hour=9, minute=0, second=0, microsecond=0)
     end = now_tpe.replace(hour=13, minute=30, second=0, microsecond=0)
-    return start <= now_tpe <= end
+    if now_tpe < preopen:
+        return "closed"
+    if now_tpe < start:
+        return "preopen"
+    if now_tpe <= end:
+        return "open"
+    return "closed"
+
+def is_regular_market_open(now_tpe=None):
+    return get_market_state(now_tpe) == "open"
 
 def resolve_score_mode(request_intraday=False):
-    market_open = is_regular_market_open()
-    if request_intraday and market_open:
+    market_state = get_market_state()
+    if request_intraday and market_state == "open":
         return "realtime", "盤中參考分數", True
     return "post", "盤後正式分數", False
+
+def build_data_quality(price_status="ok", volume_status="ok", institutional_days=0, revenue_status="ok", macro_status=None, txf_status="ok"):
+    macro_status = macro_status or {}
+    quality = {
+        "price": price_status,
+        "volume": volume_status,
+        "institutional": f"{institutional_days}日" if institutional_days else "cached_or_missing",
+        "revenue": revenue_status,
+        "macro": "ok" if macro_status and all(v == "ok" for v in macro_status.values()) else "partial",
+        "txf": txf_status,
+    }
+    missing_count = 0
+    for status in [price_status, volume_status, revenue_status, txf_status]:
+        if status not in ("ok", "realtime", "confirmed", "estimated"):
+            missing_count += 1
+    missing_count += sum(1 for v in macro_status.values() if v != "ok")
+    if institutional_days == 0:
+        missing_count += 1
+    confidence = max(20, 100 - missing_count * 12)
+    return quality, confidence
 
 def adjust_intraday_volume(volume, avg_volume_5d, is_intraday=False):
     volume = safe_num(volume)
@@ -317,23 +347,31 @@ def get_stock_data(ticker_number):
     if df is None: return None
     
     try:
-        if base_ticker != "^TWII":
+        market_state = get_market_state()
+        if base_ticker != "^TWII" and market_state == "open":
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
             res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
             if res.status_code == 200:
                 q = res.json()
                 c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
                 now_tpe = datetime.now(timezone(timedelta(hours=8)))
-                if now_tpe.weekday() < 5: 
-                    dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d'))
-                    if dt_live not in df.index:
-                        new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [float(q.get('total', {}).get('tradeVolume', 0))]}, index=[dt_live])
-                        df = pd.concat([df, new_row])
-                    else:
-                        df.loc[dt_live, 'Close'] = c_price
-                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
-                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
-                        df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), float(q.get('total', {}).get('tradeVolume', 0)))
+                total = q.get('total', {}) or {}
+                live_volume = float(total.get('tradeVolume', 0) or 0)
+                live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
+                real_vwap = live_value / live_volume if live_volume > 0 and live_value > 0 else 0
+                dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d'))
+                if dt_live not in df.index:
+                    new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
+                    if 0 < real_vwap < c_price * 2:
+                        new_row['VWAP'] = real_vwap
+                    df = pd.concat([df, new_row])
+                else:
+                    df.loc[dt_live, 'Close'] = c_price
+                    df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
+                    df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
+                    df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
+                    if 0 < real_vwap < c_price * 2:
+                        df.loc[dt_live, 'VWAP'] = real_vwap
     except: pass
 
     try:
@@ -427,7 +465,8 @@ def get_txf_quote():
             if len(df) >= 2:
                 curr = float(df['Close'].iloc[-1])
                 prev = float(df['Close'].iloc[-2])
-                return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
+                if 10000 < curr < 100000 and 10000 < prev < 100000:
+                    return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
         except Exception:
             pass
     try:
@@ -441,6 +480,7 @@ def get_txf_quote():
             if close_col and len(df) >= 2:
                 df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
                 df = df.dropna(subset=[close_col])
+                df = df[(df[close_col] > 10000) & (df[close_col] < 100000)]
                 if len(df) >= 2:
                     curr = float(df[close_col].iloc[-1])
                     prev = float(df[close_col].iloc[-2])
@@ -474,14 +514,20 @@ def get_institutional_trading(ticker):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_global_macro_data():
-    data = {"global_time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')}
+    data = {"global_time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S'), "status": {}}
     for t, url in {"^SOX": "https://finance.yahoo.com/quote/^SOX", "^VIX": "https://finance.yahoo.com/quote/^VIX", "TWD=X": "https://finance.yahoo.com/quote/TWD=X", "TX=F": "https://finance.yahoo.com/quote/TX=F"}.items():
         try:
             df = yf.Ticker(t).history(period="5d").dropna(subset=['Close'])
             if len(df) >= 2:
                 c, p = float(df['Close'].iloc[-1]), float(df['Close'].iloc[-2])
-                data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": df.index[-1].strftime('%Y/%m/%d'), "url": url}
-        except: data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
+                data[t] = {"price": c, "pct": (c-p)/p*100 if p != 0 else 0, "time": df.index[-1].strftime('%Y/%m/%d'), "url": url, "status": "ok"}
+                data["status"][t] = "ok"
+            else:
+                data[t] = {"price": None, "pct": None, "time": "暫無資料", "url": url, "status": "missing"}
+                data["status"][t] = "missing"
+        except:
+            data[t] = {"price": None, "pct": None, "time": "暫無資料", "url": url, "status": "missing"}
+            data["status"][t] = "missing"
     return data
 
 def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
@@ -507,13 +553,21 @@ def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     risk_score = 50 
     if t_close < (twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else t_close): risk_score += 15
     else: risk_score -= 10
-    if macro_data.get('^SOX', {}).get('pct', 0) < -2.0: risk_score += 20
-    if macro_data.get('^VIX', {}).get('price', 0) > 20: risk_score += 20
+    sox_pct = macro_data.get('^SOX', {}).get('pct')
+    vix_price = macro_data.get('^VIX', {}).get('price')
+    twd_pct = macro_data.get('TWD=X', {}).get('pct')
+    txf_pct = macro_data.get('TX=F', {}).get('pct')
+    if sox_pct is not None and sox_pct < -2.0: risk_score += 20
+    if vix_price is not None and vix_price > 20: risk_score += 20
+    if twd_pct is not None and twd_pct > 0.4: risk_score += 8
+    if txf_pct is not None and txf_pct < -0.5: risk_score += 10
+    missing_macro = sum(1 for v in macro_data.get("status", {}).values() if v != "ok")
+    risk_score += missing_macro * 3
     risk_score = max(5, min(95, int(risk_score))) 
     
-    if risk_score < 40: tmr_title, tmr_desc = "🚀 安全偏多", f"總經環境穩定，預估次一交易日有極高機率開平高盤。"
-    elif risk_score < 70: tmr_title, tmr_desc = "⚠️ 偏空震盪", f"國際變數增加或跌破短均線，預防回測下檔支撐。"
-    else: tmr_title, tmr_desc = "🚨 極度警戒", f"全球風險飆高，強烈建議減碼防範系統性風險。"
+    if risk_score < 40: tmr_title, tmr_desc = "偏多風險傾向", f"台股短均仍有支撐，外部風險未明顯升高；留意台指期與匯率是否延續。"
+    elif risk_score < 70: tmr_title, tmr_desc = "中性震盪風險", f"外部變數或短線位置未完全同步，建議用支撐/壓力區間觀察，不用單點預測開盤。"
+    else: tmr_title, tmr_desc = "偏空警戒風險", f"短線或外部風險因子偏弱，隔日先觀察支撐是否守住，避免追高。"
     return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt.strftime('%Y/%m/%d'), risk_score, macro_data
 
 def render_index_board():
@@ -546,16 +600,26 @@ def render_index_board():
         st.markdown(f"<div style='width:100%; height:12px; background-color:#1e293b; border-radius:6px; overflow:hidden; margin: 10px 0;'><div style='width: {risk_score}%; height:100%; background-color: {bar_color}; transition: width 0.5s;'></div></div>", unsafe_allow_html=True)
         
         mc1, mc2, mc3, mc4 = st.columns(4)
-        sox = macro.get('^SOX', {"price": 0, "pct": 0})
-        vix = macro.get('^VIX', {"price": 0, "pct": 0})
-        twd = macro.get('TWD=X', {"price": 0, "pct": 0})
+        sox = macro.get('^SOX', {"price": None, "pct": None})
+        vix = macro.get('^VIX', {"price": None, "pct": None})
+        twd = macro.get('TWD=X', {"price": None, "pct": None})
+        def fmt_macro(item, digits=2):
+            price, pct = item.get("price"), item.get("pct")
+            if price is None or pct is None:
+                return "資料缺失", "資料缺失", "#94a3b8"
+            return f"{price:,.{digits}f}", f"{'+' if pct > 0 else ''}{pct:.2f}%", "#ef4444" if pct >= 0 else "#22c55e"
         
         with mc1.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{'#ef4444' if sox.get('pct',0)>=0 else '#22c55e'};'>{sox.get('price',0):,.1f}<br>{'+' if sox.get('pct',0)>0 else ''}{sox.get('pct',0):.2f}%</div>", unsafe_allow_html=True)
+            sox_price, sox_pct_text, sox_col = fmt_macro(sox, 1)
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_col};'>{sox_price}<br>{sox_pct_text}</div>", unsafe_allow_html=True)
         with mc2.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{'#22c55e' if vix.get('pct',0)<=0 else '#ef4444'};'>{vix.get('price',0):,.2f}<br>{'+' if vix.get('pct',0)>0 else ''}{vix.get('pct',0):.2f}%</div>", unsafe_allow_html=True)
+            vix_price, vix_pct_text, vix_col_raw = fmt_macro(vix, 2)
+            vix_col = "#22c55e" if vix.get("pct") is not None and vix.get("pct") <= 0 else vix_col_raw
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_col};'>{vix_price}<br>{vix_pct_text}</div>", unsafe_allow_html=True)
         with mc3.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
+            twd_price, _, _ = fmt_macro(twd, 3)
+            twd_text = "資料缺失" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值")
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd_price}<br>{twd_text}</div>", unsafe_allow_html=True)
         with mc4.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{txf_color};'>{txf_price_text}<br>{('+' if txf_available and txf_change>0 else '') + (f'{txf_change:.0f}' if txf_available else '受限')}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
@@ -570,6 +634,7 @@ def get_dynamic_theme(ticker, industry):
 def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None, cached_doc=None, is_intraday=False):
     if df is None or len(df) < 5: return None
     t, p = df.iloc[-1], df.iloc[-2]
+    score_mode, score_mode_label, effective_intraday = resolve_score_mode(is_intraday)
     
     if pre_fund:
         fund = pre_fund
@@ -589,28 +654,35 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     whale_tag, whale_net_buy = "主力觀望", 0
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
-    # ⭐ 防呆優化：若盤中速掃沒有法人資料，就自動繼承資料庫算好的 Whale_Net，避免顯示為 0
-    if inst_data and len(inst_data) >= 3:
+    inst_days = len(inst_data) if inst_data else 0
+    # 法人資料有幾天算幾天，避免少於 3 天時把籌碼歸零
+    if inst_data:
         f_net_10d = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data])
         t_net_10d = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data])
         d_net_10d = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data])
-        f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3]])
-        t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3]])
-        d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:3]])
+        sample_days = min(3, inst_days)
+        f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:sample_days]])
+        t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:sample_days]])
+        d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:sample_days]])
         whale_net_buy = f_net + t_net + d_net
     elif cached_doc:
         whale_net_buy = cached_doc.get('Whale_Net', 0)
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
-    vwap_approx = (t_open + t_high + t_low + t_close) / 4
-    
-    vwap_dev = (t_close - vwap_approx) / vwap_approx * 100 if vwap_approx > 0 else 0
-    avg_vol_5 = df['Volume'].tail(5).mean()
-    score_mode, score_mode_label, effective_intraday = resolve_score_mode(is_intraday)
+    ohlc_avg = (t_open + t_high + t_low + t_close) / 4
+    price_anchor = safe_num(t.get('VWAP'), 0)
+    price_dev_source = "real_vwap" if price_anchor > 0 else "ohlc_avg"
+    if price_anchor <= 0:
+        price_anchor = ohlc_avg
+    price_dev = (t_close - price_anchor) / price_anchor * 100 if price_anchor > 0 else 0
+    if effective_intraday and len(df) >= 6:
+        avg_vol_5 = df['Volume'].iloc[-6:-1].mean()
+    else:
+        avg_vol_5 = df['Volume'].tail(5).mean()
     effective_volume, est_vol_ratio, volume_confirmed = adjust_intraday_volume(t['Volume'], avg_vol_5, effective_intraday)
     
-    intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
-    flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > vwap_approx else "內外盤拉扯"
+    intraday_score = max(10, min(99, int(40 + (price_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
+    flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > price_anchor else "內外盤拉扯"
 
     body_len = abs(t_close - t_open)
     lower_shadow = min(t_close, t_open) - t_low
@@ -625,6 +697,16 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     has_support = (lower_shadow > body_len * 1.5) and (effective_volume > avg_vol_5) and volume_confirmed
     hit_pressure = (upper_shadow > body_len * 1.5)
+    ma5_up_today = bool(len(df) >= 6 and float(df['Close'].iloc[-1]) > float(df['Close'].iloc[-6]))
+    tomorrow_turn_price = float(df['Close'].iloc[-4]) if len(df) >= 4 else t_close
+    data_quality, confidence = build_data_quality(
+        price_status="realtime" if effective_intraday else "ok",
+        volume_status="confirmed" if volume_confirmed else "estimated",
+        institutional_days=inst_days,
+        revenue_status="ok" if "MoM" in fund and "YoY" in fund else "missing",
+        macro_status=macro.get("status", {}),
+        txf_status=macro.get("status", {}).get("TX=F", "missing")
+    )
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -644,12 +726,15 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "訊號": t_close > t.get('20MA', t_close), 
         "回測有撐": has_support,
         "反彈遇壓": hit_pressure,
-        "5日線即將上彎": t_close >= df['Close'].iloc[-5] if len(df) >= 5 else False,
+        "5MA已上彎": ma5_up_today, "明日5MA扣抵價": round(tomorrow_turn_price, 2),
+        "5日線即將上彎": ma5_up_today,
         "Whale_Net": whale_net_buy, "Theme_Name": theme_name, "Theme_Icon": theme_icon,
-        "VWAP_Dev": vwap_dev, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
+        "Price_Dev": price_dev, "Price_Dev_Source": price_dev_source, "Ohlc_Avg_Dev": price_dev if price_dev_source == "ohlc_avg" else 0,
+        "VWAP_Dev": price_dev if price_dev_source == "real_vwap" else 0, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
+        "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
-        "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
+        "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > price_anchor else "跌破均價線")
     }
     
     sc, label, rs, feature = get_decision_score(
@@ -686,6 +771,14 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
+    quality = data.get("Data_Quality", {})
+    confidence = data.get("Confidence", 100)
+    missing_quality = [k for k, v in quality.items() if v not in ("ok", "realtime", "confirmed") and not str(v).endswith("日")]
+    quality_text = "資料完整" if not missing_quality else "需留意：" + "、".join(missing_quality)
+    tech_html += f"<div style='display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; font-size:0.82rem;'>"
+    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>信心 {confidence}%</span>"
+    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>{quality_text}</span>"
+    tech_html += f"</div>"
     
     tech_html += f"<ul style='line-height: 1.6; margin-top: 10px; font-size: 0.95rem; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
     for r in data.get('Reasons', []):
@@ -709,9 +802,10 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     t_net = data.get('TrustNet10d', 0)
     d_net = data.get('DealerNet10d', 0)
     
-    if inst_data and len(inst_data) >= 3:
-        f_net_today = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:3]])
-        t_net_today = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:3]])
+    if inst_data:
+        sample_days = min(3, len(inst_data))
+        f_net_today = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:sample_days]])
+        t_net_today = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:sample_days]])
         if f_net_today > 0 and t_net_today > 0: chip_res_text = "🔥 外資跟投信都在買，籌碼正集中到大戶法人手上，走勢穩定。"
         elif f_net_today < 0 and t_net_today < 0: chip_res_text = "⚠️ 外資跟投信同步倒貨，籌碼有鬆動流向散戶的疑慮。"
         else: chip_res_text = "⚖️ 法人多空步調不一，一方買一方賣，籌碼處於換手震盪階段。"
@@ -719,12 +813,12 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: wrap; margin-top: 15px; width: 100%;'>"
         tables_html += f"<div style='flex: 1; min-width: 260px; border: 1px solid {b_col}; border-radius: 6px; padding: 15px; background-color: {sum_bg};'>"
         tables_html += f"<div style='font-weight: bold; color: {t_text_c}; font-size: 1rem; margin-bottom: 15px;'>🎯 進階籌碼監控 (真實數據)</div>"
-        tables_html += f"<div style='font-size: 0.9rem; font-weight: bold; margin-bottom: 10px; color: {t_text_c};'>⚖️ 三大法人 10 日累積買賣超</div>"
+        tables_html += f"<div style='font-size: 0.9rem; font-weight: bold; margin-bottom: 10px; color: {t_text_c};'>⚖️ 法人資料近 {len(inst_data)} 日可用，累積買賣超</div>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 8px;'><span>外資及陸資</span><span style='color: {get_c(f_net)}; font-weight: bold;'>{'+' if f_net>0 else ''}{f_net:,} 張</span></div>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 8px;'><span>投信</span><span style='color: {get_c(t_net)}; font-weight: bold;'>{'+' if t_net>0 else ''}{t_net:,} 張</span></div>"
         tables_html += f"<div style='display: flex; justify-content: space-between; font-size: 0.85rem;'><span>自營商</span><span style='color: {get_c(d_net)}; font-weight: bold;'>{'+' if d_net>0 else ''}{d_net:,} 張</span></div></div>"
         
-        tables_html += f"<div style='flex: 1.5; min-width: 320px;'><div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 10px;'>⏳ 近五日三大法人逐日買賣超明細 (張)</div>"
+        tables_html += f"<div style='flex: 1.5; min-width: 320px;'><div style='font-weight: bold; color: {t_text_c}; font-size: 0.95rem; margin-bottom: 10px;'>⏳ 近 {min(5, len(inst_data))} 日三大法人逐日買賣超明細 (張)</div>"
         tables_html += f"<table style='width: 100%; text-align: center; border-collapse: collapse; font-size: 0.9rem; border: 1px solid {b_col}; color: {t_text_c};'>"
         tables_html += f"<tr style='background-color: {sum_bg}; color: {th_color};'><th style='border: 1px solid {b_col}; padding: 8px 4px;'>日期</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>外資</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>投信</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>自營商</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>合計</th></tr>"
         
@@ -732,7 +826,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
             tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{row['日期']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['外資(張)'])}; font-weight: 500;'>{row['外資(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['投信(張)'])}; font-weight: 500;'>{row['投信(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['自營商(張)'])}; font-weight: 500;'>{row['自營商(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['單日合計(張)'])}; font-weight: 500;'>{row['單日合計(張)']}</td></tr>"
         tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: FinMind API</div></div></div>"
     else:
-        tables_html = f"<div style='color: {text_col}; font-size: 0.9rem; padding: 10px; border: 1px dashed {border_col}; border-radius: 6px;'>目前暫無籌碼資料可供分析。</div>"
+        tables_html = f"<div style='color: {t_text_c}; font-size: 0.9rem; padding: 10px; border: 1px dashed {b_col}; border-radius: 6px;'>目前暫無籌碼資料，籌碼信心偏低，請以技術與基本面交叉確認。</div>"
 
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #facc15; margin-top: 0; font-size: 1.2rem;'>🏦 籌碼面分析</h4>{tables_html}"
@@ -753,9 +847,19 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     
     try: 
         eps_f, float_pe = float(eps), float(pe) if pe != "無" else 999
-        if eps_f > 0 and float_pe < 20: fund_res = "🔥 具備實質獲利支撐，且本益比合理，具投資價值。"
-        elif eps_f > 0 and float_pe >= 20: fund_res = "⚠️ 公司雖有獲利，但目前的本益比估值偏高，需留意追高風險。"
-        else: fund_res = "🩸 暫無明顯獲利支撐，或呈現虧損，需嚴防營運風險。"
+        pe_low, pe_high = 10, 20
+        if any(k in ind for k in ["半導體", "電子", "AI", "軟體"]): pe_low, pe_high = 15, 30
+        elif any(k in ind for k in ["金融", "銀行", "保險"]): pe_low, pe_high = 8, 16
+        elif any(k in ind for k in ["航運", "鋼鐵", "營建"]): pe_low, pe_high = 6, 14
+        valuation = "偏低" if float_pe < pe_low else ("合理" if float_pe <= pe_high else "偏高")
+        growth = "轉強" if data.get('YoY', 0) > 10 and data.get('MoM', 0) > 0 else ("持平" if data.get('YoY', 0) >= 0 else "衰退")
+        profit = "穩定" if eps_f > 0 else "虧損/不足"
+        if eps_f <= 0:
+            fund_res = f"🩸 估值：資料不足｜成長：{growth}｜獲利：{profit}，需嚴防營運風險。"
+        elif valuation == "偏高":
+            fund_res = f"⚠️ 估值：{valuation}（產業參考 {pe_low}-{pe_high} 倍）｜成長：{growth}｜獲利：{profit}，需留意追高風險。"
+        else:
+            fund_res = f"🔥 估值：{valuation}（產業參考 {pe_low}-{pe_high} 倍）｜成長：{growth}｜獲利：{profit}，基本面支撐較完整。"
     except: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
@@ -1067,7 +1171,8 @@ elif st.session_state.page == "analysis":
             dynamic_rrr = round(atr_target_mult / atr_stop_mult, 1) if atr_stop_mult > 0 else 0
             st.markdown(f"<div style='text-align:right; color:#34d399; font-weight:bold; font-size:0.9rem;'>當前配置風報比 (RRR) = 1 : {dynamic_rrr}</div>", unsafe_allow_html=True)
 
-        win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(df_slice, atr_target_mult, atr_stop_mult)
+        backtest_df = df_slice.tail(st.session_state.view_days)
+        win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
         
         curr_atr = df_slice['ATR'].iloc[-1] if 'ATR' in df_slice.columns else data['收盤價'] * 0.03
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
@@ -1093,14 +1198,16 @@ elif st.session_state.page == "analysis":
                 unsafe_allow_html=True
             )
             
-            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，過去 90 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。" if closed_signals > 0 else "過去 90 日內此策略尚未產生足夠的歷史買進訊號。"
+            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，目前圖表區間 {len(backtest_df)} 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。" if closed_signals > 0 else f"目前圖表區間 {len(backtest_df)} 日內此策略尚未產生足夠的歷史買進訊號。"
             st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
         v_t = data['評級'].replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
+        confidence = data.get("Confidence", 100)
         st.markdown(f"""
         <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: #0b1120;">
-            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 20px;">🤖 100分量化決策大腦：{v_t} ({sc}分)</h3>
+            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 8px;">🤖 100分量化決策大腦：{v_t} ({sc}分)</h3>
+            <div style="text-align:center; color:#94a3b8; font-weight:700; margin-bottom:16px;">資料信心：{confidence}%｜口徑：{data.get('Score_Mode', '盤後正式分數')}</div>
             <div style="background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 8px; border-left: 5px solid {v_c}; margin-bottom:20px;">
                 <p style="font-size: 1.05rem; color: #f8fafc; margin: 0; line-height: 1.6;">
                     ✅ <b>自訂策略執行規劃</b><br>合理停利目標：<b style='color:#ef4444;'>{data['ATR_Target']}</b> 元<br>嚴格停損防守：<b style='color:#22c55e;'>{data['ATR_Stop']}</b> 元

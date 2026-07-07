@@ -42,6 +42,9 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     rsi = _num(data.get("RSI"), 50)
     momentum_score = _num(data.get("Momentum_Score"), 50)
     whale_net = _num(data.get("Whale_Net"), 0)
+    confidence = _num(data.get("Confidence"), 100)
+    tomorrow_turn_price = _num(data.get("明日5MA扣抵價"), 0)
+    ma5_up = bool(data.get("5MA已上彎", data.get("5日線即將上彎", False)))
     vix = _num(fund_data.get("VIX"), 0)
     mom = _num(data.get("MoM"))
     yoy = _num(data.get("YoY"))
@@ -94,10 +97,12 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     if data.get("反彈遇壓", False):
         add(-2, "🩸 反彈遇壓，留意上方賣壓")
 
-    if close >= ma5 and data.get("5日線即將上彎", False):
-        add(1, "🔥 短均線準備上彎")
-    if close < ma5 and not data.get("5日線即將上彎", False):
+    if close >= ma5 and ma5_up:
+        add(1, "🔥 5MA 已上彎，短線結構轉強")
+    if close < ma5 and not ma5_up:
         add(-1, "⚠️ 短均線仍有壓力")
+    if tomorrow_turn_price > 0 and close < tomorrow_turn_price:
+        add(-1, f"⚠️ 明日 5MA 扣抵價 {tomorrow_turn_price:.2f}，短線轉強門檻仍高")
 
     if momentum_score >= 75:
         add(2, f"✅ 趨勢品質佳 ({momentum_score:.0f}/100)")
@@ -125,6 +130,10 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-2, "⚠️ 跌破月線支撐")
     if vix >= 25:
         add(-2, f"⚠️ VIX {vix:.1f} 偏高，系統性風險升溫")
+    if confidence < 60:
+        add(-2, f"⚠️ 資料信心偏低 ({confidence:.0f}%)，分數僅供保守參考")
+    elif confidence < 80:
+        add(-1, f"⚠️ 資料信心中等 ({confidence:.0f}%)，需留意缺失資料")
 
     final_score = max(5, min(99, int(50 + sc * 3)))
 
