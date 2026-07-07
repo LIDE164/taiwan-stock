@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-07 (修復雷達漏掉高分股限制，擴大運算池與顯示上限版)
+# 最後修改時間: 2026-07-07 (UI排版優化、中文產業補齊)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -15,7 +15,6 @@ import numpy as np
 import logging
 from streamlit_autorefresh import st_autorefresh
 
-# ✅ 引入外部的 charts 模組
 from charts import draw_professional_chart
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,7 +29,6 @@ st.markdown('''
     <link rel="manifest" href="/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="交易雷達">
 </head>
 ''', unsafe_allow_html=True)
 
@@ -49,7 +47,7 @@ app_bg = "#f4f6f9" if is_light_mode else "#0b1120"
 
 css_style = f"""
 <style>
-    .stApp {{ background-color: {app_bg}; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }}
+    .stApp {{ background-color: {app_bg}; overflow-x: hidden; }}
     #MainMenu {{visibility: hidden;}} footer {{visibility: hidden;}}
     [data-testid="collapsedControl"] {{ border: 1px solid {border_col} !important; border-radius: 8px !important; background-color: {bg_col} !important; padding: 5px 12px !important; display: flex !important; align-items: center !important; width: auto !important; transition: 0.3s; z-index: 1000; }}
     [data-testid="collapsedControl"]::after {{ content: " ⭐ 我的群組"; font-size: 1.1rem; font-weight: bold; color: #ffcc00; margin-left: 8px; }}
@@ -157,7 +155,7 @@ ENG_TO_TW_INDUSTRY = {
     "Healthcare": "生技醫療", "Real Estate": "建材營造", "Utilities": "公用事業", "Energy": "能源", 
     "Communication Services": "通信網路", "Auto Parts": "汽車工業", "Chemicals": "化學工業", 
     "Textile Manufacturing": "紡織纖維", "Food": "食品工業", "Steel": "鋼鐵工業", "Rubber": "橡膠工業", 
-    "Plastics": "塑膠工業", "Biotechnology": "生技醫療", "Specialty Retail": "貿易百貨"
+    "Plastics": "塑膠工業", "Biotechnology": "生技醫療", "Specialty Retail": "貿易百貨", "Consumer Defensive": "核心消費品"
 }
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -261,11 +259,16 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
-        ind_temp = ENG_TO_TW_INDUSTRY.get(info.get("sector", ""), info.get("industry", "一般產業"))
-        if re.search(r'[a-zA-Z]', ind_temp) or ind_temp == "一般產業":
+        
+        # 修正英轉中產業判定
+        raw_sector = info.get("sector", "")
+        if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
+        elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
+        
+        if ind == "一般產業":
             res_cnyes = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3).json()
             if 'data' in res_cnyes and 'categoryName' in res_cnyes['data']: ind = res_cnyes['data']['categoryName']
-        else: ind = ind_temp
+            
         if 'trailingEps' in info and info['trailingEps'] is not None: eps_val = str(round(info['trailingEps'], 2))
     except: pass
     
@@ -424,9 +427,6 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
-# ==========================================
-# 🚀 深度客製化技術分析分數版
-# ==========================================
 def get_decision_score(data, fund_data, inst_data=None):
     sc, rs = 0, []
     
@@ -436,17 +436,17 @@ def get_decision_score(data, fund_data, inst_data=None):
     
     if data.get('訊號', False): 
         if is_trending:
-            sc+=3; rs.append(f"✅ 穩在月線上且動能充沛 (ADX:{adx} 趨勢明確)")
+            sc+=3; rs.append(f"✅ 穩在月線上且動能充沛 (ADX:{adx:.1f} 趨勢明確)")
         else:
-            sc+=1; rs.append(f"⚠️ 穩在月線上 (但 ADX:{adx} 盤整區間，動能稍弱)")
+            sc+=1; rs.append(f"⚠️ 穩在月線上 (但 ADX:{adx:.1f} 盤整區間，動能稍弱)")
             
     if data['收盤價'] <= data.get('BB_DN', 0) * 1.02: sc+=2; rs.append("✅ 觸及布林下軌支撐")
     if data.get('BIAS', 0) < -5: sc+=1; rs.append("✅ 負乖離過大")
     
     if roc_20 > 10:
-        sc+=2; rs.append(f"🔥 近月漲幅 {roc_20}% 表現亮眼，具備市場主流強勢股特徵")
+        sc+=2; rs.append(f"🔥 近月漲幅 {roc_20:.2f}% 表現亮眼，具備市場主流強勢股特徵")
     elif roc_20 < -5:
-        sc-=2; rs.append(f"🩸 近月跌幅 {roc_20}% 表現弱勢，請避開弱勢接刀陷阱")
+        sc-=2; rs.append(f"🩸 近月跌幅 {roc_20:.2f}% 表現弱勢，請避開弱勢接刀陷阱")
     
     if data.get('MoM', 0) > 0 and data.get('YoY', 0) > 0:
         sc+=3; rs.append(f"🔥 月營收雙增 (MoM: {data['MoM']}%, YoY: {data['YoY']}%)，具備長線黑馬特質")
@@ -485,7 +485,6 @@ def get_decision_score(data, fund_data, inst_data=None):
     if data['收盤價'] < data.get('20MA', 0): sc-=2; rs.append("⚠️ 跌破月線支撐")
     if eps_f < 0: sc-=1; rs.append("⚠️ 基本面虧損")
 
-    # 將加扣分邏輯嚴謹映射到 100 分制 (基礎分數 50)
     final_score = max(5, min(99, int(50 + sc * 3)))
 
     if final_score >= 60: label = "🟢 強勢買進"
@@ -543,7 +542,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
     flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > vwap_approx else "內外盤拉扯"
 
-    # 新增回測支撐與壓力判斷
     body_len = abs(t_close - t_open)
     lower_shadow = min(t_close, t_open) - t_low
     upper_shadow = t_high - max(t_close, t_open)
@@ -634,16 +632,22 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     elif sc >= 45: text_desc = "目前該股動能逐漸加溫，但可能有部分指標過熱或尚未完全突破，屬於偏多觀察階段，建議留意後續量能變化。"
     else: text_desc = "目前該股動能偏弱或陷入盤整，風險大於預期報酬，建議維持空手觀望，等待更明確的型態出現。"
     
+    # 優化 UI：直接攤開項目，將總結移到最底部
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
-    tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 量化技術與籌碼分析明細</h4>"
-    tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c}; margin-bottom: 15px;'><b>【結  果】</b>{text_desc}</div>"
-    tech_html += f"<details style='cursor: pointer; color: {t_text_c}; font-size: 0.95rem;'><summary style='font-weight: bold;'>📝 點此展開各項加扣分明細</summary><ul style='line-height: 1.6; margin-top: 10px;'>"
+    tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
+    
+    tech_html += f"<ul style='line-height: 1.6; margin-top: 10px; font-size: 0.95rem; color: {t_text_c};'>"
     for r in data.get('Reasons', []):
         if "✅" in r or "🔥" in r or "🚀" in r or "💰" in r or "📈" in r or "🏦" in r or "👑" in r or "🧨" in r: 
             tech_html += f"<li><span style='color:#ef4444; font-weight:bold;'>{r}</span></li>"
         elif "⚠️" in r or "🚨" in r or "🩸" in r or "📦" in r: 
             tech_html += f"<li><span style='color:#22c55e;'><b>{r}</b></span></li>"
-    tech_html += f"</ul></details></div>"
+        else:
+            tech_html += f"<li>{r}</li>"
+    tech_html += f"</ul>"
+    
+    tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【結  果】</b>{text_desc}</div>"
+    tech_html += f"</div>"
 
     chip_res_text = "中立觀望"
     tables_html = ""
@@ -1038,7 +1042,6 @@ elif st.session_state.page == "analysis":
         fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
         
-        # 📌 圖表符號與線段對照說明
         with st.expander("📖 點擊展開：圖表符號與線段對照說明", expanded=False):
             st.markdown("""
             **【線段與區域】**
