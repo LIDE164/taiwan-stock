@@ -92,8 +92,14 @@ def build_score_input(
     if df is None or len(df) < 2:
         return {}
 
-    t = df.iloc[index]
-    p = df.iloc[index - 1]
+    end_pos = len(df) + index + 1 if index < 0 else index + 1
+    end_pos = max(0, min(len(df), end_pos))
+    work_df = df.iloc[:end_pos]
+    if len(work_df) < 2:
+        return {}
+
+    t = work_df.iloc[-1]
+    p = work_df.iloc[-2]
     t_close = safe_float(t.get("Close"))
     t_open = safe_float(t.get("Open"), t_close)
     t_high = safe_float(t.get("High"), t_close)
@@ -101,7 +107,7 @@ def build_score_input(
     p_close = safe_float(p.get("Close"), t_close)
     p_open = safe_float(p.get("Open"), p_close)
     body_len = abs(t_close - t_open)
-    volume_avg_5 = safe_float(df["Volume"].tail(5).mean()) if "Volume" in df else 0.0
+    volume_avg_5 = safe_float(work_df["Volume"].tail(5).mean()) if "Volume" in work_df else 0.0
 
     red_engulfing = (
         p_open > p_close
@@ -121,10 +127,61 @@ def build_score_input(
     )
     hit_pressure = t_high - max(t_close, t_open) > body_len * 1.5
     roc_20 = 0.0
-    if len(df) >= 20:
-        base = safe_float(df["Close"].iloc[-20])
+    if len(work_df) >= 20:
+        base = safe_float(work_df["Close"].iloc[-20])
         if base:
             roc_20 = (t_close - base) / base * 100
+    ma5_up_today = bool(len(work_df) >= 6 and t_close > safe_float(work_df["Close"].iloc[-6], t_close))
+    tomorrow_turn_price = safe_float(work_df["Close"].iloc[-4], t_close) if len(work_df) >= 4 else t_close
+
+    trend_quality = 0
+    if t_close > safe_float(t.get("20MA"), t_close):
+        trend_quality += 1
+    if safe_float(t.get("20MA"), t_close) > safe_float(t.get("60MA"), t_close):
+        trend_quality += 1
+    if safe_float(t.get("MACD_Hist")) > safe_float(p.get("MACD_Hist")):
+        trend_quality += 1
+    if safe_float(t.get("ADX")) >= 25:
+        trend_quality += 1
+    momentum_score = round((trend_quality / 4) * 100, 1)
+
+    bullish_count = sum([
+        t_close > safe_float(t.get("20MA"), t_close),
+        safe_float(t.get("MACD_Hist")) > safe_float(p.get("MACD_Hist")),
+        safe_float(t.get("Volume")) > volume_avg_5 * 1.1 if volume_avg_5 > 0 else False,
+        red_engulfing,
+        has_support,
+        ma5_up_today,
+    ])
+    bearish_count = sum([
+        t_close < safe_float(t.get("20MA"), t_close),
+        safe_float(t.get("MACD_Hist")) <= safe_float(p.get("MACD_Hist")),
+        safe_float(t.get("RSI"), 50) >= 75,
+        black_engulfing,
+        hit_pressure,
+        t_close < tomorrow_turn_price if tomorrow_turn_price > 0 else False,
+    ])
+    conflict_score = min(bullish_count, bearish_count) / max(bullish_count, bearish_count, 1)
+    if conflict_score >= 0.55:
+        signal_conflict = "高"
+    elif conflict_score >= 0.3:
+        signal_conflict = "中"
+    else:
+        signal_conflict = "低"
+
+    if hit_pressure and safe_float(t.get("RSI"), 50) >= 75:
+        entry_pattern = "過熱追高型"
+    elif t_close > safe_float(t.get("20MA"), t_close) and safe_float(t.get("Volume")) > volume_avg_5 * 1.5 and safe_float(t.get("MACD_Hist")) > safe_float(p.get("MACD_Hist")):
+        entry_pattern = "趨勢突破型"
+    elif has_support and t_close > safe_float(t.get("20MA"), t_close):
+        entry_pattern = "回測支撐型"
+    elif safe_float(t.get("RSI"), 50) <= 35 and t_close > p_close:
+        entry_pattern = "低檔反彈型"
+    elif t_close > safe_float(t.get("20MA"), t_close) and hit_pressure:
+        entry_pattern = "假突破風險型"
+    else:
+        entry_pattern = "一般觀察型"
+    confidence = max(45, int(100 - conflict_score * 30 - (10 if entry_pattern in ["過熱追高型", "假突破風險型"] else 0)))
 
     return {
         "ADX": safe_float(t.get("ADX")),
@@ -146,8 +203,20 @@ def build_score_input(
         "反彈遇壓": hit_pressure,
         "5MA": safe_float(t.get("5MA"), t_close),
         "20MA": safe_float(t.get("20MA"), t_close),
-        "5日線即將上彎": t_close >= safe_float(df["Close"].iloc[-5], t_close) if len(df) >= 5 else False,
+        "5MA已上彎": ma5_up_today,
+        "明日5MA扣抵價": round(tomorrow_turn_price, 2),
+        "5日線即將上彎": ma5_up_today,
         "J值": safe_float(t.get("J"), 50),
+        "RSI": safe_float(t.get("RSI"), 50),
+        "Momentum_Score": momentum_score,
+        "Volume_Confirmed": True,
+        "Bullish_Count": bullish_count,
+        "Bearish_Count": bearish_count,
+        "Signal_Conflict": signal_conflict,
+        "Conflict_Score": round(conflict_score, 2),
+        "Entry_Pattern": entry_pattern,
+        "Confidence": confidence,
+        "Data_Quality": {"price": "ok", "volume": "confirmed", "source": "chart_history"},
     }
 
 

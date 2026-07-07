@@ -49,18 +49,40 @@ def compute_ai_signals(df):
 
     scores = []
     buys = []
+    confidences = []
+    patterns = []
+    conflicts = []
+    hover_texts = []
     for i in range(len(df)):
         if i < 20:
             scores.append(0)
             buys.append(False)
+            confidences.append(0)
+            patterns.append("資料不足")
+            conflicts.append("低")
+            hover_texts.append("資料不足")
             continue
         score_data = build_score_input(df.iloc[:i + 1], {})
-        score, _, _, _ = get_decision_score(score_data, {}, mode="post", with_reason=False)
+        score, _, reasons, _ = get_decision_score(score_data, {}, mode="post", with_reason=True)
+        confidence = int(score_data.get("Confidence", 100))
+        pattern = score_data.get("Entry_Pattern", "一般觀察型")
+        conflict = score_data.get("Signal_Conflict", "低")
         scores.append(score)
         buys.append(score >= 60)
+        confidences.append(confidence)
+        patterns.append(pattern)
+        conflicts.append(conflict)
+        reason_preview = "<br>".join(reasons[:4]) if reasons else "無主要理由"
+        hover_texts.append(
+            f"AI分數: {score}<br>信心: {confidence}%<br>型態: {pattern}<br>衝突: {conflict}<br>{reason_preview}"
+        )
 
     df['ai_score'] = scores
     df['ai_buy'] = buys
+    df['ai_confidence'] = confidences
+    df['ai_pattern'] = patterns
+    df['ai_conflict'] = conflicts
+    df['ai_hover'] = hover_texts
     return df
 
 def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False, show_buy_signal=True, show_sup_res=True, show_signals=True, buy_dates=None):
@@ -106,24 +128,31 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         showarrow=False, xanchor='right', yanchor='top',
         bgcolor="rgba(0,0,0,0.6)", font=dict(color="white", size=12, weight="bold"), row=1, col=1
     )
+    latest_ai = df_view.iloc[-1]
+    ai_status_text = f"AI型態: {latest_ai.get('ai_pattern', '一般觀察型')} | 信心 {int(latest_ai.get('ai_confidence', 0))}% | 衝突 {latest_ai.get('ai_conflict', '低')}"
+    fig.add_annotation(
+        xref="x domain", yref="y domain", x=0.99, y=0.9, text=ai_status_text,
+        showarrow=False, xanchor='right', yanchor='top',
+        bgcolor="rgba(15,23,42,0.75)", font=dict(color="#cbd5e1", size=11, weight="bold"), row=1, col=1
+    )
 
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1, opacity=0.5)
 
-    # 📌 5日均線單一扣抵值趨勢 (加上 ↗️ ↘️)
-    if len(df_view) >= 5:
-        idx = -5
+    # 5MA 扣抵價與今日上彎狀態
+    if len(df_view) >= 6:
+        idx = -6
         d_date = df_view.index[idx].strftime('%Y-%m-%d')
-        # 距離拉開避免重疊
         d_price = df_view['Low'].iloc[idx] * 0.85 
         
         deduct_close = df_view['Close'].iloc[idx]
+        tomorrow_deduct = df_view['Close'].iloc[-4] if len(df_view) >= 4 else deduct_close
         curr_close = df_view['Close'].iloc[-1]
-        trend_dir = "↗️" if curr_close >= deduct_close else "↘️"
+        trend_dir = "↗" if curr_close > deduct_close else "↘"
         
         fig.add_trace(go.Scatter(
             x=[d_date], y=[d_price], mode='text',
-            text=[f"5{trend_dir}"], textposition="bottom center", textfont=dict(size=12, color='#facc15', weight='bold'),
-            name="5扣抵", hoverinfo='skip'
+            text=[f"5MA{trend_dir}<br>扣抵 {tomorrow_deduct:.1f}"], textposition="bottom center", textfont=dict(size=11, color='#facc15', weight='bold'),
+            name="5MA扣抵", hoverinfo='skip'
         ), row=1, col=1)
 
     # ===== 訊號與 AI 標示 (智能間距防重疊) =====
@@ -166,21 +195,28 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
 
     # AI 滿分 100 模型與藍色箭頭標示
     if show_buy_signal:
-        ai_x, ai_y, ai_text = [], [], []
+        ai_x, ai_y, ai_text, ai_colors, ai_hover = [], [], [], [], []
         for i in range(len(df_view)):
             row = df_view.iloc[i]
             if row.get('ai_buy', False):
                 ai_x.append(x_vals[i])
                 ai_y.append(row['Low'] * 0.91) # 第三層偏移，保證絕對不會重疊
-                ai_text.append(f"{int(row['ai_score'])}")
+                ai_text.append(f"{int(row['ai_score'])}<br>{str(row.get('ai_pattern', ''))[:2]}")
+                if row.get('ai_conflict') == "高":
+                    ai_colors.append("#facc15")
+                elif row.get('ai_confidence', 100) < 70:
+                    ai_colors.append("#94a3b8")
+                else:
+                    ai_colors.append("#3b82f6")
+                ai_hover.append(row.get('ai_hover', ''))
 
         if ai_x:
             fig.add_trace(go.Scatter(
                 x=ai_x, y=ai_y, mode='markers+text', 
-                marker=dict(symbol='triangle-up', size=12, color='#3b82f6'), # 藍色🔼
+                marker=dict(symbol='triangle-up', size=12, color=ai_colors),
                 text=ai_text, textposition="bottom center", 
                 textfont=dict(color="#3b82f6", size=10, weight="bold"), 
-                name="AI買點", hoverinfo='skip'
+                name="AI買點", hovertext=ai_hover, hoverinfo='text'
             ), row=1, col=1)
 
     fig.update_yaxes(range=[lowest * 0.8, highest * 1.15], row=1, col=1) # 拉開Y軸範圍確保底部的字顯示得出來
