@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-06 (模組化 charts 連動修復版 + 解決K線重複索引 + 修復 vwap_approx typo)
+# 最後修改時間: 2026-07-06 (修復首頁時間、群組狀態、雷達清單與圖表說明)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -15,19 +15,14 @@ import numpy as np
 import logging
 from streamlit_autorefresh import st_autorefresh
 
-# ✅ 直接引入外部的 charts 模組
+# ✅ 引入外部的 charts 模組
 from charts import draw_professional_chart
 
-# 設定日誌系統
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# === 雙引擎 API 憑證 ===
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
 
-# ==========================================
-# 0. 系統初始化與風格設定
-# ==========================================
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown('''
@@ -51,9 +46,6 @@ bg_col = "#ffffff" if is_light_mode else "#0b1120"
 border_col = "#ddd" if is_light_mode else "#1e293b"
 text_col = "#333" if is_light_mode else "#e2e8f0"
 app_bg = "#f4f6f9" if is_light_mode else "#0b1120"
-pill_bg = "#ffffff" if is_light_mode else "#1e293b"
-pill_border = "#d1d5db" if is_light_mode else "#334155"
-pill_text = "#374151" if is_light_mode else "#94a3b8"
 
 css_style = f"""
 <style>
@@ -115,9 +107,6 @@ def get_stock_name(ticker):
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
 
-# ==========================================
-# ☁️ Firebase 雲端資料庫初始化與讀寫
-# ==========================================
 if not firebase_admin._apps:
     try:
         cert_dict = dict(st.secrets["firebase"])
@@ -160,9 +149,6 @@ if 'stock' in st.query_params:
         st.session_state.date_offset = 0
         st.session_state.last_q_stock = q_stock
 
-# ==========================================
-# 🚀 核心計算與抓取模組
-# ==========================================
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
@@ -192,7 +178,6 @@ def get_stock_data(ticker_number):
             d = yf.Ticker(sym).history(period="1y").dropna(subset=['Close'])
             if len(d) >= 20: 
                 d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
-                # 🔥 清理重複時間索引，防止出現兩根 K 棒
                 d = d[~d.index.duplicated(keep='last')]
                 return d
         except: return None
@@ -374,9 +359,6 @@ def get_global_macro_data():
         except: data[t] = {"price": 0, "pct": 0, "time": "暫無資料", "url": url}
     return data
 
-# ==========================================
-# 📊 儀表板與卡片 UI
-# ==========================================
 def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     macro_data = get_global_macro_data()
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, macro_data
@@ -442,9 +424,6 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
-# ==========================================
-# 🚀 終極 100 分量化模型引擎
-# ==========================================
 def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     score = 0
     reasons = []
@@ -465,7 +444,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
 
     high_20 = df['High'].tail(20).max() if df is not None and len(df) >= 20 else close
 
-    # 1. 趨勢成立 (25分)
     trend_score = 0
     if close > ma20: trend_score += 10; reasons.append("✅ 股價站上月線 (+10)")
     if ma20 > ma60: trend_score += 5; reasons.append("✅ 月季線多頭排列 (+5)")
@@ -474,7 +452,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if close >= high_20 * 0.99: trend_score += 5; reasons.append("🚀 突破或逼近20日新高 (+5)")
     score += trend_score
 
-    # 2. 資金進場 (20分)
     mom_score = 0
     if macd_h > 0 and macd_h > macd_h_prev: mom_score += 8; reasons.append("📈 MACD紅柱放大 (+8)")
     if roc > 5: mom_score += 6; reasons.append("🔥 近月漲幅強勢 (>5%) (+6)")
@@ -482,7 +459,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if red_engulf or (close > high_20): mom_score += 3; reasons.append("🧨 紅吞或突破 (+3)")
     score += mom_score
 
-    # 3. 基本面支撐 (20分)
     money_score = 0
     if vol > vol_ma5 * 1.2: money_score += 8; reasons.append("💰 爆量攻擊 (>均量1.2倍) (+8)")
 
@@ -497,7 +473,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if big_player_ratio > 30: money_score += 6; reasons.append(f"👑 大戶持股>30% ({big_player_ratio}%) (+6)")
     score += money_score
 
-    # 4. 族群題材 (15分)
     fund_score = 0
     yoy = float(data.get('YoY', 0))
     mom = float(data.get('MoM', 0))
@@ -512,7 +487,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if pe < 30 and eps > 0: fund_score += 2; reasons.append("💎 估值合理 PE<30 (+2)")
     score += fund_score
 
-    # 5. 動能剛啟動 (10分)
     theme_score = 0
     hot_themes = ["AI伺服器", "半導體", "重電", "機器人", "航運", "綠能"]
     theme = data.get('Theme_Name', '一般題材')
@@ -520,7 +494,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if is_hot: theme_score += 10; reasons.append(f"🔥 熱門族群 [{theme}] (+10)")
     score += theme_score
 
-    # 6. 風險扣分 (-20分)
     risk_score = 0
     if bias > 10: risk_score -= 3; reasons.append("⚠️ 乖離>10過熱 (-3)")
     if j_val > 90: risk_score -= 3; reasons.append("⚠️ KDJ 高檔過熱 (-3)")
@@ -529,7 +502,6 @@ def get_decision_score_100(data, fund_data, inst_data=None, df=None):
     if vix > 20: risk_score -= 3; reasons.append("🚨 大盤 VIX > 20 (-3)")
     score += risk_score
 
-    # 7. 爆發開關 (+10分)
     if close > high_20 and vol > (2 * vol_ma5) and vol > 0:
         score += 10; reasons.append("🧨 爆發開關：帶量突破20日新高 (+10)")
 
@@ -584,7 +556,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
     
-    # ✅ 修正 vvwap_approx typo -> 改為 vwap_approx
     vwap_dev = (t_close - vwap_approx) / vwap_approx * 100 if vwap_approx > 0 else 0
     est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
     
@@ -660,9 +631,6 @@ def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
     win_rate = (wins / closed_signals * 100) if closed_signals > 0 else 0.0
     return win_rate, closed_signals, wins, buy_dates
 
-# ==========================================
-# 📊 面板 HTML 生成
-# ==========================================
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
     card_bg = "#f4f6f9" if is_light_mode else "#0f172a"
@@ -815,6 +783,10 @@ if st.session_state.page == "home":
             st.session_state.scan_results = load_cloud_data("market_data", "daily_scan", [])
             
     if st.session_state.scan_results:
+        # 首頁顯示同步時間
+        fetch_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+        st.markdown(f"<div style='font-size:0.85rem; color:#64748b; margin-bottom:15px;'>☁️ 雲端資料庫最後同步時間：{fetch_time} (即時讀取)</div>", unsafe_allow_html=True)
+
         col_m1, col_m2 = st.columns([1, 1])
         with col_m1: radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
         is_intraday = "盤中" in radar_mode
@@ -914,7 +886,7 @@ elif st.session_state.page == "simulated_orders":
 
         total_pl = total_value - total_cost
         total_pl_pct = (total_pl / total_cost) * 100 if total_cost > 0 else 0
-        win_rate = (wins / len(orders)) * 100
+        win_rate = (wins / len(orders)) * 100 if len(orders) > 0 else 0
         
         st.markdown(f"""
         <div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 25px;'>
@@ -1038,7 +1010,6 @@ elif st.session_state.page == "analysis":
             {generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode)}
         </div>""", unsafe_allow_html=True)
 
-        # 🧮 資金控管與零股計算器
         st.markdown("---")
         st.markdown("### 🧮 資金控管與零股計算器")
         c1_c, c2_c, c3_c = st.columns(3)
@@ -1071,42 +1042,53 @@ elif st.session_state.page == "analysis":
         with dc6: current_show_sup = st.toggle("📏 歷史高低點", value=True)
         with dc7: current_show_signals = st.toggle("🏷️ 顯示符號", value=True)
         
-        # ✅ 使用獨立的 charts 模組繪製圖表！
         fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
-        # 👇👇👇 請把下面這段貼在 plotly_chart 下方 👇👇👇
+        
+        # 📌 圖表符號與線段對照說明
         with st.expander("📖 點擊展開：圖表符號與線段對照說明", expanded=False):
             st.markdown("""
             **【線段與區域】**
             * 🟨 **黃線 (5T) / 🟩 綠線 (10T) / 🟦 藍線 (20T)**：短中期移動平均線。
             * 🟪 **紫色虛線**：AI 運算的主力成本區 (Volume Profile)，代表該價位累積成交量極大，為關鍵支撐/壓力位。
-            * 🟥 **紅色虛線**：歷史最高點壓力區。
-            * 🟩 **綠色虛線**：歷史最低點支撐區。
             
             **【交易訊號圖示】**
-            * 🤖 **綠色星星 (帶數字)**：AI 100分量化模型綜合買點，數字代表當日 AI 評分。
-            * 🔼 **綠色正三角形**：突破買點 / 回踩主力成本支撐成功。
-            * 🔽 **紅色倒三角形**：跌破支撐 / 遇到主力成本壓力區。
-            * △ **空心三角形 (5扣/10扣/20扣)**：均線扣抵值，代表均線即將剔除的歷史 K 棒位置，用來預判均線未來的上彎或下彎趨勢。
+            * 🔼 **(帶數字)**：AI 100分量化模型綜合買點，數字代表當日 AI 評分 (滿分100)。
+            * **撐 / 壓**：回踩主力成本支撐成功 / 跌破或遇到主力成本壓力區。
+            * **5↗️ / 10↘️ / 20↗️**：均線扣抵值，代表均線即將剔除的歷史 K 棒位置。箭頭代表「今日收盤價」與「扣抵價」對比後，判斷該均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
+            * **紅吞 / 黑吞**：K線型態出現紅K吞噬黑K (轉強) 或 黑K吞噬紅K (轉弱)。
             """)
-        # 👆👆👆 貼到這裡為止 👆👆👆
+
         st.divider()
         st.subheader("⭐ 自選群組管理")
         all_groups = list(st.session_state.fav_groups.keys())
         current_groups = [g for g, s in st.session_state.fav_groups.items() if target in s]
         selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
+        
+        # 修復群組管理同步寫入
         if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
+            new_fav = {k: list(v) for k, v in st.session_state.fav_groups.items()}
             for g in all_groups:
-                if g in selected_groups and target not in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].append(target)
-                elif g not in selected_groups and target in st.session_state.fav_groups[g]: st.session_state.fav_groups[g].remove(target)
-            save_cloud_data("user_settings", "fav_groups", st.session_state.fav_groups)
-            st.success("✅ 群組設定已更新！"); st.rerun()
+                if g in selected_groups and target not in new_fav[g]: new_fav[g].append(target)
+                elif g not in selected_groups and target in new_fav[g]: new_fav[g].remove(target)
+            st.session_state.fav_groups = new_fav
+            save_cloud_data("user_settings", "fav_groups", new_fav)
+            st.success("✅ 群組設定已更新！")
+            time.sleep(1) # 讓使用者看見成功訊息
+            st.rerun()
 
         st.divider()
         st.markdown(f'''<div style="font-size: 1.4rem; font-weight: bold; color: #facc15; margin-bottom: 16px;">同步監控雷達清單</div>''', unsafe_allow_html=True)
-        if n_pool and 'nav_pool_data' in st.session_state:
+        
+        # 修復雷達清單為空的顯示邏輯
+        if n_pool and 'nav_pool_data' in st.session_state and len(st.session_state.nav_pool_data) > 0:
             df_nav = pd.DataFrame(st.session_state.nav_pool_data)
             df_nav = df_nav[df_nav['代號'] != target]
-            if not df_nav.empty: st.markdown(generate_cards_html(df_nav, st.session_state.get('is_intraday', True)), unsafe_allow_html=True)
-            else: st.info("目前清單中已無其他符合條件的標的。")
-    else: st.error("查無此股票資料。")
+            if not df_nav.empty: 
+                st.markdown(generate_cards_html(df_nav, st.session_state.get('is_intraday', True)), unsafe_allow_html=True)
+            else: 
+                st.info("目前清單中已無其他符合條件的標的。")
+        else:
+            st.info("💡 請先至「首頁」執行雷達掃描，即可在此查看並快速切換同步清單。")
+    else: 
+        st.error("查無此股票資料。")
