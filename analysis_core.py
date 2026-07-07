@@ -166,6 +166,68 @@ def is_strategy_signal(
     return score >= score_threshold, score
 
 
+def _trade_result(
+    future_df: pd.DataFrame,
+    target_price: float,
+    stop_price: float,
+    entry_price: float,
+    *,
+    fee_rate: float,
+) -> Optional[Dict[str, Any]]:
+    last_close = entry_price
+    exit_price = entry_price
+    exit_reason = "未出場"
+    holding_days = 0
+    for _, row in future_df.iterrows():
+        holding_days += 1
+        open_price = safe_float(row.get("Open"), last_close)
+        low = safe_float(row.get("Low"))
+        high = safe_float(row.get("High"))
+        close = safe_float(row.get("Close"))
+
+        if open_price <= stop_price:
+            exit_price = open_price
+            exit_reason = "跳空停損"
+            break
+        if open_price >= target_price:
+            exit_price = open_price
+            exit_reason = "跳空停利"
+            break
+
+        hit_stop = low <= stop_price
+        hit_target = high >= target_price
+        if hit_stop and hit_target:
+            exit_price = stop_price
+            exit_reason = "同日先算停損"
+            break
+        if hit_stop:
+            exit_price = stop_price
+            exit_reason = "停損"
+            break
+        if hit_target:
+            exit_price = target_price
+            exit_reason = "停利"
+            break
+
+        last_close = close
+        exit_price = close
+
+    if future_df.empty:
+        return None
+
+    net_return = ((exit_price * (1 - fee_rate)) - (entry_price * (1 + fee_rate))) / (entry_price * (1 + fee_rate)) * 100
+    return {
+        "win": net_return > 0,
+        "return_pct": round(net_return, 2),
+        "entry_price": round(entry_price, 2),
+        "exit_price": round(exit_price, 2),
+        "target_price": round(target_price, 2),
+        "stop_price": round(stop_price, 2),
+        "exit_reason": exit_reason,
+        "holding_days": holding_days,
+    }
+
+
 def _trade_outcome(
     future_df: pd.DataFrame,
     target_price: float,
@@ -174,37 +236,17 @@ def _trade_outcome(
     *,
     fee_rate: float,
 ) -> Optional[bool]:
-    last_close = entry_price
-    for _, row in future_df.iterrows():
-        open_price = safe_float(row.get("Open"), last_close)
-        low = safe_float(row.get("Low"))
-        high = safe_float(row.get("High"))
-        close = safe_float(row.get("Close"))
-
-        if open_price <= stop_price:
-            return False
-        if open_price >= target_price:
-            return True
-
-        hit_stop = low <= stop_price
-        hit_target = high >= target_price
-        if hit_stop and hit_target:
-            return False
-        if hit_stop:
-            return False
-        if hit_target:
-            return True
-
-        last_close = close
-
-    if future_df.empty:
-        return None
-
-    breakeven_price = entry_price * (1 + fee_rate * 2)
-    return last_close > breakeven_price
+    result = _trade_result(
+        future_df,
+        target_price,
+        stop_price,
+        entry_price,
+        fee_rate=fee_rate,
+    )
+    return None if result is None else bool(result["win"])
 
 
-def calculate_historical_winrate(
+def calculate_historical_performance(
     df_slice: pd.DataFrame,
     target_mult: float = 1.5,
     stop_mult: float = 1.0,
@@ -216,16 +258,26 @@ def calculate_historical_winrate(
     score_threshold: int = 60,
     fee_rate: float = 0.001425,
     slippage_rate: float = 0.0005,
-) -> Tuple[float, int, int, List[Any]]:
+) -> Dict[str, Any]:
+    empty = {
+        "win_rate": 0.0,
+        "closed_signals": 0,
+        "wins": 0,
+        "losses": 0,
+        "buy_dates": [],
+        "avg_return": 0.0,
+        "max_drawdown": 0.0,
+        "max_consecutive_losses": 0,
+        "trades": [],
+    }
     if df_slice is None or len(df_slice) < 21:
-        return 0.0, 0, 0, []
+        return empty
 
     recent = df_slice.tail(lookback_days)
-    wins = 0
-    closed_signals = 0
     last_buy_idx = -999
-    buy_dates: List[Any] = []
     start_idx = len(df_slice) - len(recent)
+    trades: List[Dict[str, Any]] = []
+    buy_dates: List[Any] = []
 
     for idx in range(len(recent)):
         actual_idx = start_idx + idx
@@ -235,7 +287,7 @@ def calculate_historical_winrate(
             continue
 
         temp_df = df_slice.iloc[: actual_idx + 1]
-        signal, _ = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
+        signal, score = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
         if not signal:
             continue
 
@@ -251,21 +303,81 @@ def calculate_historical_winrate(
         target_price = entry_price + atr_val * target_mult
         stop_price = entry_price - atr_val * stop_mult
         future_df = df_slice.iloc[entry_idx : entry_idx + hold_days]
-        outcome = _trade_outcome(
+        result = _trade_result(
             future_df,
             target_price,
             stop_price,
             entry_price,
             fee_rate=fee_rate,
         )
-        if outcome is None:
+        if result is None:
             continue
 
         last_buy_idx = entry_idx
+        result["signal_date"] = df_slice.index[actual_idx]
+        result["entry_date"] = df_slice.index[entry_idx]
+        result["score"] = score
+        trades.append(result)
         buy_dates.append(df_slice.index[entry_idx])
-        closed_signals += 1
-        if outcome:
-            wins += 1
 
-    win_rate = round(wins / closed_signals * 100, 1) if closed_signals else 0.0
-    return win_rate, closed_signals, wins, buy_dates
+    if not trades:
+        return empty
+
+    wins = sum(1 for t in trades if t["win"])
+    losses = len(trades) - wins
+    returns = [safe_float(t.get("return_pct")) for t in trades]
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    max_consecutive_losses = 0
+    current_losses = 0
+    for ret in returns:
+        equity *= 1 + ret / 100
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - equity) / peak * 100)
+        if ret <= 0:
+            current_losses += 1
+            max_consecutive_losses = max(max_consecutive_losses, current_losses)
+        else:
+            current_losses = 0
+
+    return {
+        "win_rate": round(wins / len(trades) * 100, 1),
+        "closed_signals": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "buy_dates": buy_dates,
+        "avg_return": round(float(np.mean(returns)), 2),
+        "max_drawdown": round(max_drawdown, 2),
+        "max_consecutive_losses": max_consecutive_losses,
+        "trades": trades,
+    }
+
+
+def calculate_historical_winrate(
+    df_slice: pd.DataFrame,
+    target_mult: float = 1.5,
+    stop_mult: float = 1.0,
+    *,
+    lookback_days: int = 90,
+    hold_days: int = 9,
+    min_gap_days: int = 5,
+    fund: Optional[Dict[str, Any]] = None,
+    score_threshold: int = 60,
+    fee_rate: float = 0.001425,
+    slippage_rate: float = 0.0005,
+) -> Tuple[float, int, int, List[Any]]:
+    result = calculate_historical_performance(
+        df_slice,
+        target_mult,
+        stop_mult,
+        lookback_days=lookback_days,
+        hold_days=hold_days,
+        min_gap_days=min_gap_days,
+        fund=fund,
+        score_threshold=score_threshold,
+        fee_rate=fee_rate,
+        slippage_rate=slippage_rate,
+    )
+    return result["win_rate"], result["closed_signals"], result["wins"], result["buy_dates"]

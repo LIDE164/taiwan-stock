@@ -39,6 +39,10 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     macd_hist = _num(data.get("MACD柱"))
     prev_macd_hist = _num(data.get("前日MACD柱"), -999)
     j_value = _num(data.get("J值"), 50)
+    rsi = _num(data.get("RSI"), 50)
+    momentum_score = _num(data.get("Momentum_Score"), 50)
+    whale_net = _num(data.get("Whale_Net"), 0)
+    vix = _num(fund_data.get("VIX"), 0)
     mom = _num(data.get("MoM"))
     yoy = _num(data.get("YoY"))
 
@@ -69,7 +73,9 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif eps_f < 0:
         add(-1, "⚠️ 基本面虧損")
 
-    if volume_5d > 0 and volume > volume_5d * 1.1:
+    if data.get("Volume_Confirmed") is False:
+        add(-1, "⚠️ 盤中量能尚未確認，避免假量追高")
+    elif volume_5d > 0 and volume > volume_5d * 1.1:
         add(2, "✅ 量能放大，具主力進場特徵")
     else:
         add(-1, "⚠️ 量能未明顯放大")
@@ -93,14 +99,32 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     if close < ma5 and not data.get("5日線即將上彎", False):
         add(-1, "⚠️ 短均線仍有壓力")
 
+    if momentum_score >= 75:
+        add(2, f"✅ 趨勢品質佳 ({momentum_score:.0f}/100)")
+    elif momentum_score <= 35:
+        add(-2, f"⚠️ 趨勢品質偏弱 ({momentum_score:.0f}/100)")
+
+    if whale_net > 1000:
+        add(2, f"✅ 法人三日淨買 {whale_net:,.0f} 張")
+    elif whale_net < -1000:
+        add(-2, f"⚠️ 法人三日淨賣 {abs(whale_net):,.0f} 張")
+
     if j_value >= 80:
         add(-3, "⚠️ KDJ 高檔過熱")
+    elif j_value <= 20 and close >= ma20:
+        add(1, "✅ KDJ 低檔但仍守月線")
+    if rsi >= 75:
+        add(-2, "⚠️ RSI 過熱")
+    elif 45 <= rsi <= 65 and close >= ma20:
+        add(1, "✅ RSI 位於健康動能區")
     if close and bb_up and close >= bb_up * 0.98:
         add(-2, "⚠️ 接近布林上軌壓力")
     if bias > 7:
         add(-2, "⚠️ 正乖離過大")
     if close and ma20 and close < ma20:
         add(-2, "⚠️ 跌破月線支撐")
+    if vix >= 25:
+        add(-2, f"⚠️ VIX {vix:.1f} 偏高，系統性風險升溫")
 
     final_score = max(5, min(99, int(50 + sc * 3)))
 

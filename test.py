@@ -16,7 +16,7 @@ import logging
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
-from analysis_core import apply_technical_indicators, calculate_historical_winrate
+from analysis_core import apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
 
@@ -82,6 +82,41 @@ def get_stock_name(ticker):
 
 def normalize_ticker(ticker):
     return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+
+def safe_num(value, default=0.0):
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return default
+
+def get_favorite_stock_set():
+    favs = set()
+    for stocks in st.session_state.get('fav_groups', {}).values():
+        favs.update(normalize_ticker(s) for s in stocks)
+    return favs
+
+def get_market_progress(now_tpe=None):
+    now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
+    start = now_tpe.replace(hour=9, minute=0, second=0, microsecond=0)
+    end = now_tpe.replace(hour=13, minute=30, second=0, microsecond=0)
+    if now_tpe <= start:
+        return 0.0
+    if now_tpe >= end:
+        return 1.0
+    return max(0.0, min(1.0, (now_tpe - start).total_seconds() / (end - start).total_seconds()))
+
+def adjust_intraday_volume(volume, avg_volume_5d, is_intraday=False):
+    volume = safe_num(volume)
+    avg_volume_5d = safe_num(avg_volume_5d)
+    progress = get_market_progress()
+    if not is_intraday or avg_volume_5d <= 0:
+        return volume, volume / avg_volume_5d if avg_volume_5d > 0 else 1.0, True
+    projected = volume / max(progress, 0.18)
+    confirmed = progress >= 0.82 or volume >= avg_volume_5d * 1.1
+    effective_volume = volume if confirmed else min(projected, avg_volume_5d * 1.05)
+    return effective_volume, effective_volume / avg_volume_5d, confirmed
 
 def render_sidebar_favorites(container):
     with container.container():
@@ -150,6 +185,28 @@ def save_cloud_data(collection_name, document_name, data):
     if db is None: return
     try: db.collection(collection_name).document(document_name).set({'data': data})
     except: pass
+
+def load_analysis_cache(ticker, max_age_seconds=900):
+    cached = load_cloud_data("analysis_cache", normalize_ticker(ticker), None)
+    if not isinstance(cached, dict):
+        return None
+    try:
+        saved_at = datetime.fromisoformat(cached.get("saved_at", ""))
+        if saved_at.tzinfo is None:
+            saved_at = saved_at.replace(tzinfo=timezone(timedelta(hours=8)))
+        age = (datetime.now(timezone(timedelta(hours=8))) - saved_at).total_seconds()
+        if age <= max_age_seconds:
+            return cached
+    except Exception:
+        return None
+    return None
+
+def save_analysis_cache(ticker, payload):
+    if db is None or not isinstance(payload, dict):
+        return
+    compact = dict(payload)
+    compact["saved_at"] = datetime.now(timezone(timedelta(hours=8))).isoformat()
+    save_cloud_data("analysis_cache", normalize_ticker(ticker), compact)
 
 def hydrate_scan_results(force=False):
     if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
@@ -340,6 +397,19 @@ def get_twii_quote():
     except: pass
     return fallback_curr, fallback_change, update_time_str
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_txf_quote():
+    for symbol in ["TXF.TW", "FITX.TW", "TX=F"]:
+        try:
+            df = yf.Ticker(symbol).history(period="5d").dropna(subset=['Close'])
+            if len(df) >= 2:
+                curr = float(df['Close'].iloc[-1])
+                prev = float(df['Close'].iloc[-2])
+                return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
+        except Exception:
+            pass
+    return 0, 0, "TXF", "暫無資料"
+
 @st.cache_data(ttl=5, show_spinner=False)
 def get_stock_live_time(ticker): return datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
 
@@ -366,7 +436,7 @@ def get_institutional_trading(ticker):
 @st.cache_data(ttl=300, show_spinner=False)
 def get_global_macro_data():
     data = {"global_time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')}
-    for t, url in {"^SOX": "https://finance.yahoo.com/quote/^SOX", "^VIX": "https://finance.yahoo.com/quote/^VIX", "TWD=X": "https://finance.yahoo.com/quote/TWD=X"}.items():
+    for t, url in {"^SOX": "https://finance.yahoo.com/quote/^SOX", "^VIX": "https://finance.yahoo.com/quote/^VIX", "TWD=X": "https://finance.yahoo.com/quote/TWD=X", "TX=F": "https://finance.yahoo.com/quote/TX=F"}.items():
         try:
             df = yf.Ticker(t).history(period="5d").dropna(subset=['Close'])
             if len(df) >= 2:
@@ -410,27 +480,34 @@ def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
 def render_index_board():
     try:
         twii_close, twii_change, twii_time_str = get_twii_quote()
+        txf_close, txf_change, txf_symbol, txf_time = get_txf_quote()
         twii_color = '#ef4444' if twii_change >= 0 else '#22c55e'
+        txf_color = '#ef4444' if txf_change >= 0 else '#22c55e'
         twii_df_for_pred = get_stock_data("^TWII")
         today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
         
-        with st.container(border=True):
-            col1, col3 = st.columns([1, 1.5])
+        with st.container(border=False):
+            st.markdown("<div style='background-color:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:16px; margin-bottom:14px;'>", unsafe_allow_html=True)
+            col1, col2, col3 = st.columns([1, 1, 1.7])
             with col1:
-                st.markdown(f"<div style='text-align: center; font-size: 1.1rem; font-weight: bold;'>台灣加權指數</div><div style='text-align: center; font-size: 2.1rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div><div style='text-align: center; font-size: 1.1rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color:#94a3b8; font-weight: bold;'>台灣加權指數</div><div style='text-align: center; font-size: 2rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div><div style='text-align: center; font-size: 0.95rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
+            with col2:
+                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color:#94a3b8; font-weight: bold;'>台指期 ({txf_symbol})</div><div style='text-align: center; font-size: 2rem; font-weight: 900; color: {txf_color}; margin: 0;'>{txf_close:,.0f}</div><div style='text-align: center; font-size: 0.95rem; font-weight: bold; color: {txf_color};'>{'↑' if txf_change > 0 else '↓'} {abs(txf_change):.0f}</div>", unsafe_allow_html=True)
             with col3:
                 st.markdown(f"<div style='text-align: left; color: #facc15; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div><div style='font-size: 1.1rem; font-weight: bold;'>{today_title}</div><div style='font-size: 0.85rem; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='text-align: left; color: #60a5fa; font-size: 1.05rem; font-weight: bold; margin-top:8px;'>🔮 次日開盤預測 ({next_dt_str})</div><div style='font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div><div style='font-size: 0.85rem; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
             if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
         
         bar_color = "#22c55e" if risk_score < 40 else ("#facc15" if risk_score < 70 else "#ef4444")
         st.markdown(f"<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日風險：<span style='color:{bar_color};'>{risk_score}%</span></h4>", unsafe_allow_html=True)
         st.markdown(f"<div style='width:100%; height:12px; background-color:#1e293b; border-radius:6px; overflow:hidden; margin: 10px 0;'><div style='width: {risk_score}%; height:100%; background-color: {bar_color}; transition: width 0.5s;'></div></div>", unsafe_allow_html=True)
         
-        mc1, mc2, mc3 = st.columns(3)
+        mc1, mc2, mc3, mc4 = st.columns(4)
         sox = macro.get('^SOX', {"price": 0, "pct": 0})
         vix = macro.get('^VIX', {"price": 0, "pct": 0})
         twd = macro.get('TWD=X', {"price": 0, "pct": 0})
+        txf = macro.get('TX=F', {"price": txf_close, "pct": 0})
         
         with mc1.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{'#ef4444' if sox.get('pct',0)>=0 else '#22c55e'};'>{sox.get('price',0):,.1f}<br>{'+' if sox.get('pct',0)>0 else ''}{sox.get('pct',0):.2f}%</div>", unsafe_allow_html=True)
@@ -438,6 +515,8 @@ def render_index_board():
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{'#22c55e' if vix.get('pct',0)<=0 else '#ef4444'};'>{vix.get('price',0):,.2f}<br>{'+' if vix.get('pct',0)>0 else ''}{vix.get('pct',0):.2f}%</div>", unsafe_allow_html=True)
         with mc3.container(border=True):
             st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd.get('price',0):,.3f}<br>{'台幣貶值' if twd.get('pct',0)>0 else '台幣升值'}</div>", unsafe_allow_html=True)
+        with mc4.container(border=True):
+            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{'#ef4444' if txf_change>=0 else '#22c55e'};'>{txf_close:,.0f}<br>{'+' if txf_change>0 else ''}{txf_change:.0f}</div>", unsafe_allow_html=True)
     except: st.error(f"大盤儀表板加載中...")
 
 def get_dynamic_theme(ticker, industry):
@@ -485,7 +564,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     vwap_approx = (t_open + t_high + t_low + t_close) / 4
     
     vwap_dev = (t_close - vwap_approx) / vwap_approx * 100 if vwap_approx > 0 else 0
-    est_vol_ratio = t['Volume'] / df['Volume'].tail(5).mean() if df['Volume'].tail(5).mean() > 0 else 1
+    avg_vol_5 = df['Volume'].tail(5).mean()
+    effective_volume, est_vol_ratio, volume_confirmed = adjust_intraday_volume(t['Volume'], avg_vol_5, is_intraday)
     
     intraday_score = max(10, min(99, int(40 + (vwap_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
     flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > vwap_approx else "內外盤拉扯"
@@ -494,14 +574,21 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     lower_shadow = min(t_close, t_open) - t_low
     upper_shadow = t_high - max(t_close, t_open)
     
-    has_support = (lower_shadow > body_len * 1.5) and (t['Volume'] > df['Volume'].tail(5).mean())
+    trend_quality = 0
+    if t_close > t.get('20MA', t_close): trend_quality += 1
+    if t.get('20MA', t_close) > t.get('60MA', t_close): trend_quality += 1
+    if t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0): trend_quality += 1
+    if t.get('ADX', 0) >= 25: trend_quality += 1
+    momentum_score = round((trend_quality / 4) * 100, 1)
+
+    has_support = (lower_shadow > body_len * 1.5) and (effective_volume > avg_vol_5) and volume_confirmed
     hit_pressure = (upper_shadow > body_len * 1.5)
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
         "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
-        "成交量": int(t['Volume']), "5日均量": int(df['Volume'].tail(5).mean()),
+        "成交量": int(effective_volume), "原始成交量": int(t['Volume']), "5日均量": int(avg_vol_5),
         "5MA": round(t.get('5MA', t_close), 2), "10MA": round(t.get('10MA', t_close), 2), 
         "20MA": round(t.get('20MA', t_close), 2), "60MA": round(t.get('60MA', t_close), 2),
         "BB_UP": round(t.get('BB_UP', t_close), 2), "BB_DN": round(t.get('BB_DN', t_close), 2), 
@@ -517,10 +604,10 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "反彈遇壓": hit_pressure,
         "5日線即將上彎": t_close >= df['Close'].iloc[-5] if len(df) >= 5 else False,
         "Whale_Net": whale_net_buy, "Theme_Name": theme_name, "Theme_Icon": theme_icon,
-        "VWAP_Dev": vwap_dev, "Est_Vol_Ratio": est_vol_ratio, "Flow": flow, "Intraday_Score": intraday_score,
+        "VWAP_Dev": vwap_dev, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
-        "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
+        "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > vwap_approx and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > vwap_approx else "跌破均價線")
     }
     
     run_mode = "realtime" if is_intraday else "post"
@@ -542,7 +629,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     return data
 
 def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
-    return calculate_historical_winrate(df_slice, target_mult, stop_mult)
+    result = calculate_historical_performance(df_slice, target_mult, stop_mult)
+    return result["win_rate"], result["closed_signals"], result["wins"], result["buy_dates"], result
 
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
@@ -706,6 +794,7 @@ if st.session_state.page == "home":
 
         col_m1, col_m2 = st.columns([1, 1])
         with col_m1: radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
+        with col_m2: only_favorites = st.toggle("⭐ 只看自選群組", value=False)
         is_intraday = "盤中" in radar_mode
         st.session_state.is_intraday = is_intraday
         
@@ -740,8 +829,17 @@ if st.session_state.page == "home":
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
             df_results = pd.DataFrame(cached_list)
+
+        if only_favorites:
+            favorite_set = get_favorite_stock_set()
+            if favorite_set and '代號' in df_results.columns:
+                df_results = df_results[df_results['代號'].astype(str).map(normalize_ticker).isin(favorite_set)]
+            else:
+                df_results = df_results.iloc[0:0]
         
-        available_themes = ["全部產業"] + sorted(list(set(df_results['產業'].unique()) - {"一般產業"}))
+        if '產業' not in df_results.columns:
+            df_results['產業'] = "一般產業"
+        available_themes = ["全部產業"] + sorted(list(set(df_results['產業'].dropna().unique()) - {"一般產業"}))
         selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
             
@@ -876,18 +974,25 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     if df_chart is not None and len(df_chart) >= 14:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
-        inst_data = get_institutional_trading(target)
-        f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
-        
-        # ⭐ 防呆優化：手動補足 MoM 和 YoY，確保解析頁面能算出跟雷達一樣的滿血 89 分！
-        bp_ratio, mom, yoy = get_finmind_chip_and_revenue(target)
-        f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
-        
         cached_list = st.session_state.get('scan_results', [])
         cached_doc = next((x for x in cached_list if str(x['代號']) == str(target)), None)
         is_intra = st.session_state.get('is_intraday', False)
-        
-        data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+        force_key = f"force_analysis_refresh_{target}"
+        force_analysis_refresh = st.session_state.pop(force_key, False)
+        cached_analysis = None if force_analysis_refresh else load_analysis_cache(target, 900 if is_intra else 21600)
+
+        if cached_analysis:
+            inst_data = cached_analysis.get("inst_data", [])
+            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
+            data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+        else:
+            inst_data = get_institutional_trading(target)
+            f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
+            bp_ratio, mom, yoy = get_finmind_chip_and_revenue(target)
+            f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
+            data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+            save_analysis_cache(target, {"data": data, "fund": f_data, "inst_data": inst_data})
+
         sc = data['Score']
         
         display_time = get_stock_live_time(target)
@@ -899,7 +1004,11 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}</div>", unsafe_allow_html=True)
         
         _, up_c, _ = st.columns([1, 2, 1])
-        if up_c.button("🔄 更新個股即時數值", use_container_width=True): st.cache_data.clear(); st.rerun()
+        force_refresh_analysis = up_c.button("🔄 更新個股即時數值", use_container_width=True)
+        if force_refresh_analysis:
+            st.session_state[force_key] = True
+            st.cache_data.clear()
+            st.rerun()
         st.markdown("---")
         
         st.markdown("##### 🧪 策略回測實驗室 (自由調配風報比)")
@@ -910,7 +1019,7 @@ elif st.session_state.page == "analysis":
             dynamic_rrr = round(atr_target_mult / atr_stop_mult, 1) if atr_stop_mult > 0 else 0
             st.markdown(f"<div style='text-align:right; color:#34d399; font-weight:bold; font-size:0.9rem;'>當前配置風報比 (RRR) = 1 : {dynamic_rrr}</div>", unsafe_allow_html=True)
 
-        win_rate, closed_signals, wins, buy_dates = calculate_historical_winrate_interactive(df_slice, atr_target_mult, atr_stop_mult)
+        win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(df_slice, atr_target_mult, atr_stop_mult)
         
         curr_atr = df_slice['ATR'].iloc[-1] if 'ATR' in df_slice.columns else data['收盤價'] * 0.03
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
@@ -923,8 +1032,20 @@ elif st.session_state.page == "analysis":
             with col_sum1: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>策略波段勝率<br><span style='color:{wr_color}; font-size:1.8rem; font-weight:900;'>{win_rate:.1f}%</span></div>", unsafe_allow_html=True)
             with col_sum2: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>歷史觸發買點<br><span style='font-size:1.8rem; font-weight:900; color:#e2e8f0;'>{closed_signals} 次</span></div>", unsafe_allow_html=True)
             with col_sum3: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>成功達標獲利<br><span style='font-size:1.8rem; font-weight:900; color:#ef4444;'>{wins} 次</span></div>", unsafe_allow_html=True)
+            avg_ret = backtest_stats.get('avg_return', 0.0)
+            max_dd = backtest_stats.get('max_drawdown', 0.0)
+            max_loss_streak = backtest_stats.get('max_consecutive_losses', 0)
+            avg_col = "#ef4444" if avg_ret > 0 else ("#22c55e" if avg_ret < 0 else "#94a3b8")
+            st.markdown(
+                f"<div style='display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; background-color:rgba(30,41,59,0.4); border:1px solid rgba(51,65,85,0.5); padding:10px; border-radius:8px; margin-top:12px;'>"
+                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>平均報酬</span><span style='color:{avg_col}; font-weight:800; font-family:monospace;'>{avg_ret:+.2f}%</span></div>"
+                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>最大回撤</span><span style='color:#22c55e; font-weight:800; font-family:monospace;'>-{max_dd:.2f}%</span></div>"
+                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>連續虧損</span><span style='color:#facc15; font-weight:800; font-family:monospace;'>{max_loss_streak} 次</span></div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
             
-            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，過去 90 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>。" if closed_signals > 0 else "過去 90 日內此策略尚未產生足夠的歷史買進訊號。"
+            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，過去 90 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。" if closed_signals > 0 else "過去 90 日內此策略尚未產生足夠的歷史買進訊號。"
             st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
