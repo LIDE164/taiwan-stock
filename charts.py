@@ -1,12 +1,9 @@
-# charts.py - AI機構級強化版圖表模組（扣抵趨勢/滿分100制/極簡文字版）
+# charts.py - AI機構級強化版圖表模組（字體防重疊/100分制/扣抵趨勢版）
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 
-# ==============================
-# 🔥 AI 主力成本 + 支撐壓力 (Volume Profile)
-# ==============================
 def find_levels(df, bins=60):
     price = (df['High'] + df['Low'] + df['Close']) / 3
     volume = df['Volume']
@@ -22,9 +19,6 @@ def find_levels(df, bins=60):
     if not levels: return [], []
     return [l[0] for l in levels], [l[1] for l in levels]
 
-# ==============================
-# 🔥 趨勢判斷（機構邏輯）
-# ==============================
 def detect_trend(df):
     if '5MA' not in df or '20MA' not in df or '60MA' not in df: return "盤整⚠️"
     ma5, ma20, ma60 = df['5MA'].iloc[-1], df['20MA'].iloc[-1], df['60MA'].iloc[-1]
@@ -32,9 +26,6 @@ def detect_trend(df):
     elif ma5 < ma20 < ma60: return "空頭❄️"
     else: return "盤整⚠️"
 
-# ==============================
-# 🔥 突破判斷（過濾假突破）
-# ==============================
 def detect_breakout(df_view, levels):
     signals = []
     for lvl in levels:
@@ -58,17 +49,16 @@ def compute_ai_signals(df):
     df['momentum'] = df['Close'].pct_change(3)
     df['vol_strength'] = df['Volume'] > df['Volume'].rolling(5).mean() * 1.3
     df['breakout'] = df['Close'] > df['High'].rolling(20).max().shift(1)
-    df['fake_breakout'] = (df['High'] > df['High'].rolling(20).max().shift(1)) & (df['Close'] < df['20MA'])
 
-    # AI分數轉換為 100 分制
+    # 將 AI 分數嚴格映射到 100 分制
     score = (
-        df['trend_up'].astype(int) * 25 +
-        df['breakout'].astype(int) * 35 +
+        df['trend_up'].astype(int) * 30 +
+        df['breakout'].astype(int) * 30 +
         df['vol_strength'].astype(int) * 20 +
         (df['momentum'] > 0).astype(int) * 20
     )
     df['ai_score'] = score
-    df['ai_buy'] = (score >= 60) # 60分以上及格視為買點
+    df['ai_buy'] = (score >= 60) # 60分以上及格視為強勢買點
     return df
 
 def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False, show_buy_signal=True, show_sup_res=True, show_signals=True, buy_dates=None):
@@ -99,7 +89,7 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
     
     highest, lowest = df_view['High'].max(), df_view['Low'].min()
 
-    # 📌 鎖定左上角顯示最新「收盤價 + 均線數值」
+    # 📌 鎖定左上角顯示「現價 + 均線數值」
     ma_text = f"現價: {latest_price:.1f} | 5T: {df_view['5MA'].iloc[-1]:.1f} | 10T: {df_view['10MA'].iloc[-1]:.1f} | 20T: {df_view['20MA'].iloc[-1]:.1f}"
     fig.add_annotation(
         xref="x domain", yref="y domain", x=0.01, y=0.98, text=ma_text, 
@@ -117,25 +107,24 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
 
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1, opacity=0.5)
 
-    # 📌 均線扣抵值 (加上趨勢方向 ↗️ ↘️)
-    curr_close = df_view['Close'].iloc[-1]
-    for period, color in [(5, '#facc15'), (10, '#34d399'), (20, '#60a5fa')]:
-        if len(df_view) >= period:
-            idx = -period
-            d_date = df_view.index[idx].strftime('%Y-%m-%d')
-            d_price = df_view['Low'].iloc[idx] * 0.97 
-            
-            deduct_close = df_view['Close'].iloc[idx]
-            trend_dir = "↗️" if curr_close >= deduct_close else "↘️"
-            name = f"{period}{trend_dir}"
-            
-            fig.add_trace(go.Scatter(
-                x=[d_date], y=[d_price], mode='text',
-                text=[name], textposition="bottom center", textfont=dict(size=11, color=color, weight='bold'),
-                name=f"{period}扣抵", hoverinfo='skip'
-            ), row=1, col=1)
+    # 📌 5日均線單一扣抵值趨勢 (加上 ↗️ ↘️)
+    if len(df_view) >= 5:
+        idx = -5
+        d_date = df_view.index[idx].strftime('%Y-%m-%d')
+        # 距離拉開避免重疊
+        d_price = df_view['Low'].iloc[idx] * 0.85 
+        
+        deduct_close = df_view['Close'].iloc[idx]
+        curr_close = df_view['Close'].iloc[-1]
+        trend_dir = "↗️" if curr_close >= deduct_close else "↘️"
+        
+        fig.add_trace(go.Scatter(
+            x=[d_date], y=[d_price], mode='text',
+            text=[f"5{trend_dir}"], textposition="bottom center", textfont=dict(size=12, color='#facc15', weight='bold'),
+            name="5扣抵", hoverinfo='skip'
+        ), row=1, col=1)
 
-    # ===== 訊號與 AI 標示 =====
+    # ===== 訊號與 AI 標示 (智能間距防重疊) =====
     re_x, re_y, be_x, be_y = [], [], [], []
     for i in range(len(df_view)):
         row = df_view.iloc[i]
@@ -145,16 +134,15 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         if idx > 0:
             p = df.iloc[idx-1]
             if p['Open'] > p['Close'] and row['Close'] > row['Open'] and row['Close'] > p['Open'] and row['Open'] < p['Close']:
-                re_x.append(date_str); re_y.append(row['Low'] * 0.96)
+                re_x.append(date_str); re_y.append(row['Low'] * 0.98) # 第一層偏移
             if p['Close'] > p['Open'] and row['Open'] > row['Close'] and row['Open'] > p['Close'] and row['Close'] < p['Open']:
-                be_x.append(date_str); be_y.append(row['High'] * 1.04)
+                be_x.append(date_str); be_y.append(row['High'] * 1.02) # 第一層偏移
 
-    # 繪製紅黑吞
     if show_signals:
         if re_x: fig.add_trace(go.Scatter(x=re_x, y=re_y, mode='text', text=["紅吞"]*len(re_x), textposition="bottom center", textfont=dict(color="#ef4444", size=11, weight="bold"), name="紅吞", hoverinfo='skip'), row=1, col=1)
         if be_x: fig.add_trace(go.Scatter(x=be_x, y=be_y, mode='text', text=["黑吞"]*len(be_x), textposition="top center", textfont=dict(color="#22c55e", size=11, weight="bold"), name="黑吞", hoverinfo='skip'), row=1, col=1)
 
-    # ===== AI 支撐壓力與文字訊號標示 =====
+    # 支撐壓力與文字訊號
     if show_sup_res:
         levels, strengths = find_levels(df_view)
         for lvl in levels:
@@ -164,29 +152,36 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         buy_x, buy_y, sell_x, sell_y = [], [], [], []
         for typ, x, ref_p in signals:
             if typ == "buy": 
-                buy_x.append(x); buy_y.append(ref_p * 0.96)
+                buy_x.append(x); buy_y.append(ref_p * 0.95) # 第二層偏移
             else: 
-                sell_x.append(x); sell_y.append(ref_p * 1.04) 
+                sell_x.append(x); sell_y.append(ref_p * 1.05) # 第二層偏移
                 
-        if buy_x: fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='text', text=["撐"]*len(buy_x), textfont=dict(color='#22c55e', size=13, weight='bold'), name="支撐買點", hoverinfo='skip'), row=1, col=1)
-        if sell_x: fig.add_trace(go.Scatter(x=sell_x, y=sell_y, mode='text', text=["壓"]*len(sell_x), textfont=dict(color='#ef4444', size=13, weight='bold'), name="壓力賣點", hoverinfo='skip'), row=1, col=1)
+        if buy_x: fig.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='text', text=["撐"]*len(buy_x), textposition="bottom center", textfont=dict(color='#22c55e', size=13, weight='bold'), name="支撐買點", hoverinfo='skip'), row=1, col=1)
+        if sell_x: fig.add_trace(go.Scatter(x=sell_x, y=sell_y, mode='text', text=["壓"]*len(sell_x), textposition="top center", textfont=dict(color='#ef4444', size=13, weight='bold'), name="壓力賣點", hoverinfo='skip'), row=1, col=1)
 
         fig.add_hline(y=highest, line_dash="dash", line_color="#ef4444", row=1, col=1, annotation_text=f"高 {highest:.1f}", annotation_position="top right", annotation_font_color="#ef4444")
         fig.add_hline(y=lowest, line_dash="dash", line_color="#22c55e", row=1, col=1, annotation_text=f"低 {lowest:.1f}", annotation_position="bottom right", annotation_font_color="#22c55e")
 
+    # AI 滿分 100 模型與藍色箭頭標示
     if show_buy_signal:
         ai_x, ai_y, ai_text = [], [], []
         for i in range(len(df_view)):
             row = df_view.iloc[i]
             if row.get('ai_buy', False):
                 ai_x.append(x_vals[i])
-                ai_y.append(row['Low'] * 0.91) 
-                ai_text.append(f"🔼<br>{int(row['ai_score'])}")
+                ai_y.append(row['Low'] * 0.91) # 第三層偏移，保證絕對不會重疊
+                ai_text.append(f"{int(row['ai_score'])}")
 
         if ai_x:
-            fig.add_trace(go.Scatter(x=ai_x, y=ai_y, mode='text', text=ai_text, textposition="bottom center", textfont=dict(color="#22c55e", size=11, weight="bold"), name="AI買點", hoverinfo='skip'), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=ai_x, y=ai_y, mode='markers+text', 
+                marker=dict(symbol='triangle-up', size=12, color='#3b82f6'), # 藍色🔼
+                text=ai_text, textposition="bottom center", 
+                textfont=dict(color="#3b82f6", size=10, weight="bold"), 
+                name="AI買點", hoverinfo='skip'
+            ), row=1, col=1)
 
-    fig.update_yaxes(range=[lowest * 0.82, highest * 1.15], row=1, col=1)
+    fig.update_yaxes(range=[lowest * 0.8, highest * 1.15], row=1, col=1) # 拉開Y軸範圍確保底部的字顯示得出來
 
     # ===== 2. 成交量 =====
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, opacity=0.85, name="VOL"), row=2, col=1)
