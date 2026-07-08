@@ -30,6 +30,10 @@ def render_app_style(is_light_mode=False):
     .hero-panel {{ background:#0F172A; border:1px solid #1E293B; border-radius:12px; padding:20px; margin-bottom:16px; }}
     .market-status-grid {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; margin:10px 0 12px 0; }}
     .market-status-card {{ min-height:96px; }}
+    .chart-control-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0 14px 0; }}
+    .chart-control-card {{ display:flex; align-items:center; justify-content:center; min-height:48px; padding:10px 8px; border-radius:10px; border:1px solid #1E293B; background:#0F172A; color:#CBD5E1; text-decoration:none !important; font-weight:850; text-align:center; }}
+    .chart-control-card.active {{ border-color:#60A5FA; background:rgba(96,165,250,.12); color:#E2E8F0; box-shadow:0 0 0 1px rgba(96,165,250,.60), 0 0 16px rgba(96,165,250,.16); }}
+    .chart-control-card.off {{ color:#64748B; }}
     .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
     div[role="radiogroup"] {{ gap:10px; }}
     div[role="radiogroup"] label {{
@@ -165,6 +169,8 @@ def render_app_style(is_light_mode=False):
         .market-status-card .terminal-title {{ font-size:0.68rem; line-height:1.2; }}
         .market-status-card .terminal-value {{ font-size:1.02rem; line-height:1.2; word-break:break-word; }}
         .market-status-card .terminal-sub {{ font-size:0.66rem; line-height:1.2; }}
+        .chart-control-grid {{ gap:7px; }}
+        .chart-control-card {{ min-height:44px; font-size:.88rem; padding:8px 6px; }}
     }}
 </style>
 """,

@@ -436,7 +436,7 @@ def get_radar_targets(records=None, limit=200):
 
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
-if 'view_days' not in st.session_state: st.session_state.view_days = BACKTEST_LOOKBACK_DAYS
+if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
@@ -1387,6 +1387,20 @@ elif st.session_state.page == "analysis":
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
     def set_view_days(days): st.session_state.view_days = days
+    chart_days_param = str(st.query_params.get("days", st.session_state.view_days))
+    if chart_days_param in ("30", "60", "90"):
+        st.session_state.view_days = int(chart_days_param)
+    def chart_flag(name, default=True):
+        raw_value = str(st.query_params.get(name, "1" if default else "0")).lower()
+        return raw_value not in ("0", "false", "off", "no")
+    def chart_control_url(days=None, show_buy=None, show_sup=None, show_signals=None):
+        mode_param = str(st.query_params.get("mode", "")).strip()
+        q_days = days if days is not None else st.session_state.view_days
+        q_buy = "1" if (chart_flag("show_buy", True) if show_buy is None else show_buy) else "0"
+        q_sup = "1" if (chart_flag("show_sup", True) if show_sup is None else show_sup) else "0"
+        q_sig = "1" if (chart_flag("show_signals", True) if show_signals is None else show_signals) else "0"
+        mode_piece = f"&mode={mode_param}" if mode_param else ""
+        return f"/?stock={target}&days={q_days}&show_buy={q_buy}&show_sup={q_sup}&show_signals={q_sig}{mode_piece}"
     
     df_chart = get_stock_data(target)
     if df_chart is not None and len(df_chart) >= 14:
@@ -1466,13 +1480,10 @@ elif st.session_state.page == "analysis":
             st.rerun()
         st.markdown("---")
         
-        st.markdown("##### 🧪 策略回測實驗室 (自由調配風報比)")
-        with st.expander("⚙️ 調整停利/停損參數 (預設風報比 1:1.5)", expanded=True):
-            s_col1, s_col2 = st.columns(2)
-            with s_col1: atr_stop_mult = st.slider("🛑 停損區間 (ATR倍數)", 0.5, 3.0, 1.0, 0.1)
-            with s_col2: atr_target_mult = st.slider("💰 停利目標 (ATR倍數)", 0.5, 5.0, 1.5, 0.1)
-            dynamic_rrr = round(atr_target_mult / atr_stop_mult, 1) if atr_stop_mult > 0 else 0
-            st.markdown(f"<div style='text-align:right; color:#34d399; font-weight:bold; font-size:0.9rem;'>當前配置風報比 (RRR) = 1 : {dynamic_rrr}</div>", unsafe_allow_html=True)
+        st.markdown("##### 策略回測實驗室")
+        atr_stop_mult = 1.0
+        atr_target_mult = 1.5
+        dynamic_rrr = 1.5
 
         backtest_df = df_slice.tail(st.session_state.view_days)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
@@ -1498,46 +1509,6 @@ elif st.session_state.page == "analysis":
             {"label": "回測樣本", "value": f"{closed_signals} 筆", "sub": credibility_text, "color": credibility_color},
             {"label": "風報比", "value": f"1 : {dynamic_rrr}", "sub": f"停損 {atr_stop_mult}x / 停利 {atr_target_mult}x", "color": "#60A5FA"},
         ])
-        tab_tech, tab_chip, tab_backtest, tab_risk, tab_trade = st.tabs(["技術分析", "籌碼法人", "策略回測", "資金控管", "模擬交易"])
-        with tab_tech:
-            st.markdown(f"**主訊號**：{data.get('Feature', '一般狀態')}")
-            st.markdown(f"MACD柱 `{data.get('MACD柱', '--')}`｜RSI `{data.get('RSI', '--')}`｜ADX `{data.get('ADX', '--')}`｜20MA `{data.get('20MA', '--')}`")
-            st.markdown(f"型態：{data.get('Entry_Pattern', '一般觀察型')}｜訊號衝突：{data.get('Signal_Conflict', '低')}")
-        with tab_chip:
-            st.markdown(f"法人10日：`{safe_num(data.get('Whale_Net'), 0):,.0f}` 張")
-            st.markdown(f"外資10日 `{safe_num(data.get('ForeignNet10d'), 0):,.0f}`｜投信10日 `{safe_num(data.get('TrustNet10d'), 0):,.0f}`｜自營商10日 `{safe_num(data.get('DealerNet10d'), 0):,.0f}`")
-            st.markdown(f"資料信心：`{data.get('Confidence', 100)}%`")
-        with tab_backtest:
-            st.markdown(f"勝率 `{win_rate:.1f}%`｜樣本 `{closed_signals}` 筆｜可信度 `{credibility_text}`")
-            st.markdown(f"平均報酬 `{backtest_stats.get('avg_return', 0.0):+.2f}%`｜最大回撤 `-{backtest_stats.get('max_drawdown', 0.0):.2f}%`｜連續虧損 `{backtest_stats.get('max_consecutive_losses', 0)}` 次")
-        with tab_risk:
-            st.markdown(f"停利目標：`{data['ATR_Target']}`｜停損防守：`{data['ATR_Stop']}`｜RRR：`1 : {dynamic_rrr}`")
-            st.markdown("可用下方資金控管計算器調整單筆可承受虧損。")
-        with tab_trade:
-            st.markdown("可用下方按鈕將目前策略加入模擬交易中心。")
-
-        wr_color = "#ef4444" if win_rate >= 60 else ("#facc15" if win_rate >= 40 else "#22c55e")
-        with st.container(border=True):
-            col_sum1, col_sum2, col_sum3 = st.columns(3)
-            with col_sum1: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>歷史勝率<br><span style='color:{wr_color}; font-size:1.8rem; font-weight:900;'>{win_rate:.1f}%</span></div>", unsafe_allow_html=True)
-            with col_sum2: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>歷史觸發買點<br><span style='font-size:1.8rem; font-weight:900; color:#e2e8f0;'>{closed_signals} 次</span></div>", unsafe_allow_html=True)
-            with col_sum3: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>成功達標獲利<br><span style='font-size:1.8rem; font-weight:900; color:#ef4444;'>{wins} 次</span></div>", unsafe_allow_html=True)
-            avg_ret = backtest_stats.get('avg_return', 0.0)
-            max_dd = backtest_stats.get('max_drawdown', 0.0)
-            max_loss_streak = backtest_stats.get('max_consecutive_losses', 0)
-            avg_col = "#ef4444" if avg_ret > 0 else ("#22c55e" if avg_ret < 0 else "#94a3b8")
-            st.markdown(
-                f"<div style='display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; background-color:rgba(30,41,59,0.4); border:1px solid rgba(51,65,85,0.5); padding:10px; border-radius:8px; margin-top:12px;'>"
-                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>平均報酬</span><span style='color:{avg_col}; font-weight:800; font-family:monospace;'>{avg_ret:+.2f}%</span></div>"
-                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>最大回撤</span><span style='color:#22c55e; font-weight:800; font-family:monospace;'>-{max_dd:.2f}%</span></div>"
-                f"<div style='display:flex; flex-direction:column; align-items:center;'><span style='color:#64748b; font-size:0.8rem;'>連續虧損</span><span style='color:#facc15; font-weight:800; font-family:monospace;'>{max_loss_streak} 次</span></div>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-            
-            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，目前圖表區間 {len(backtest_df)} 日共觸發 {closed_signals} 次買點，歷史勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。此勝率已依樣本數做保守修正。" if closed_signals > 0 else f"目前圖表區間 {len(backtest_df)} 日內此策略尚未產生足夠的歷史買進訊號。"
-            st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
-
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
         v_t = data['評級'].replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
         confidence = data.get("Confidence", 100)
@@ -1577,14 +1548,28 @@ elif st.session_state.page == "analysis":
             save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
             st.success(f"✅ 已將風報比 1:{data['RRR']} 的策略單寫入資料庫！"); st.balloons()
         
-        dc1, dc2, dc3, dc5, dc6, dc7 = st.columns([0.8, 0.8, 0.8, 1.3, 1.3, 1.3])
-        dc1.button("30日", on_click=set_view_days, args=(30,))
-        dc2.button("60日", on_click=set_view_days, args=(60,))
-        dc3.button("90日", on_click=set_view_days, args=(90,))
-        with dc5: current_show_buy = st.toggle("🛒 顯示買進", value=True)
-        with dc6: current_show_sup = st.toggle("📏 歷史高低點", value=True)
-        with dc7: current_show_signals = st.toggle("🏷️ 顯示符號", value=True)
-        
+        current_show_buy = chart_flag("show_buy", True)
+        current_show_sup = chart_flag("show_sup", True)
+        current_show_signals = chart_flag("show_signals", True)
+        day_cards = []
+        for day in (30, 60, 90):
+            active = " active" if st.session_state.view_days == day else ""
+            day_cards.append(f"<a class='chart-control-card{active}' href='{chart_control_url(days=day)}'>{day}日</a>")
+        st.markdown(f"<div class='chart-control-grid'>{''.join(day_cards)}</div>", unsafe_allow_html=True)
+        buy_class = "active" if current_show_buy else "off"
+        sup_class = "active" if current_show_sup else "off"
+        sig_class = "active" if current_show_signals else "off"
+        buy_url = chart_control_url(show_buy=not current_show_buy)
+        sup_url = chart_control_url(show_sup=not current_show_sup)
+        sig_url = chart_control_url(show_signals=not current_show_signals)
+        st.markdown(
+            f"<div class='chart-control-grid'>"
+            f"<a class='chart-control-card {buy_class}' href='{buy_url}'>買進</a>"
+            f"<a class='chart-control-card {sup_class}' href='{sup_url}'>高低點</a>"
+            f"<a class='chart-control-card {sig_class}' href='{sig_url}'>符號</a>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
         fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
         
