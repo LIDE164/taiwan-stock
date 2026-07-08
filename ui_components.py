@@ -304,7 +304,7 @@ def generate_cards_html(
 
     for _, r in df_disp.iterrows():
         record = r.to_dict() if hasattr(r, "to_dict") else dict(r)
-        p_val = record.get("漲跌", 0)
+        p_val = record.get("漲跌幅", record.get("漲跌", 0))
         p_col = "#ef4444" if p_val >= 0 else "#22c55e"
         p_bg = "rgba(239,68,68,0.1)" if p_val >= 0 else "rgba(34,197,94,0.1)"
         change_sign = "+" if p_val > 0 else ""
@@ -314,6 +314,15 @@ def generate_cards_html(
         rating = record.get("評級", "⚪ 忽略").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
         score_mode = record.get("Score_Mode", score_mode_label)
         score_source = record.get("Score_Source", "")
+        list_tag = record.get("List_Tag", "")
+        if list_tag == "嚴格起漲":
+            tag_bg, tag_col, tag_text = "rgba(34,197,94,0.14)", "#4ade80", "嚴格起漲"
+        elif list_tag == "備援觀察":
+            tag_bg, tag_col, tag_text = "rgba(96,165,250,0.14)", "#60A5FA", "備援觀察"
+        elif list_tag:
+            tag_bg, tag_col, tag_text = "rgba(250,204,21,0.14)", "#FACC15", "條件不足"
+        else:
+            tag_bg, tag_col, tag_text = "", "", ""
 
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(record.get("代號", ""))
@@ -334,11 +343,13 @@ def generate_cards_html(
         cards_html += "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; position: relative; z-index: 10;'>"
         cards_html += "<div style='display: flex; align-items: flex-start; gap: 12px;'>"
         cards_html += f"<a {stock_link} class='stock-card-link'>"
-        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}</span>"
+        cards_html += f"<div style='display:flex; align-items:center; gap:8px; flex-wrap:wrap;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}</span>"
 
         industry_name = record.get("產業", "一般產業")
         cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
-        cards_html += f"<div style='font-size: 0.78rem; color: #94A3B8; margin-top: 5px;'>收盤 {record.get('收盤價', 0):.1f}｜<span style='color:{p_col};'>{change_sign}{record.get('漲跌幅', 0)}%</span>｜點擊解析</div></a></div>"
+        if tag_text:
+            cards_html += f"<div style='display:inline-flex; margin-top:6px; font-size:0.72rem; background:{tag_bg}; color:{tag_col}; border:1px solid rgba(148,163,184,0.18); padding:2px 7px; border-radius:4px; font-weight:900;'>{tag_text}</div>"
+        cards_html += f"<div style='font-size: 0.86rem; color: #94A3B8; margin-top: 6px;'>收盤 <span style='font-size:1.18rem; color:#E2E8F0; font-weight:950; font-family:monospace;'>{record.get('收盤價', 0):.1f}</span>｜<span style='color:{p_col}; font-weight:900;'>{change_sign}{record.get('漲跌幅', 0)}%</span>｜點擊解析</div></a></div>"
         cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score}分</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"

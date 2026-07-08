@@ -184,7 +184,16 @@ def get_institutional_trading(ticker):
             for col in ['外資', '投信', '自營商']:
                 if col not in pivot.columns: pivot[col] = 0
             pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
-            return [{"單日合計(張)": int(r['單日合計'])} for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()]
+            return [
+                {
+                    "日期": r["date"],
+                    "外資(張)": int(r["外資"]),
+                    "投信(張)": int(r["投信"]),
+                    "自營商(張)": int(r["自營商"]),
+                    "單日合計(張)": int(r["單日合計"]),
+                }
+                for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()
+            ]
     except: pass
     return []
 
@@ -236,11 +245,16 @@ def run_daily_scan():
                 wr, sample_count = calc_winrate(df)
                 inst = get_institutional_trading(stock)
                 whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3]]) if inst else 0
+                foreign_net = sum([int(str(x.get('外資(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
+                trust_net = sum([int(str(x.get('投信(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
+                dealer_net = sum([int(str(x.get('自營商(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
 
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
                     "收盤價": round(t_close, 2), "WinRate": wr, "Backtest_Samples": sample_count, "Whale_Net": whale_net,
+                    "Foreign_Net": foreign_net, "InvestmentTrust_Net": trust_net, "Dealer_Net": dealer_net,
+                    "Institutional_Detail": inst[:10],
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs,
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
@@ -265,6 +279,8 @@ def run_daily_scan():
             if res: scan_results.append(res)
             
     scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
+    strict_results = [r for r in scan_results if r.get("Score", 0) >= 60]
+    watch_results = [r for r in scan_results if 45 <= r.get("Score", 0) < 60]
             
     if db is None:
         logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
@@ -287,8 +303,11 @@ def run_daily_scan():
             logging.warning("讀取既有雲端名單失敗: %s", e)
         return scan_results
 
-    db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})
-    logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
+    write_payload = {"update_time": firestore.SERVER_TIMESTAMP}
+    db.collection("market_data").document("daily_scan_strict").set({"data": strict_results, **write_payload})
+    db.collection("market_data").document("daily_scan_watch").set({"data": watch_results, **write_payload})
+    db.collection("market_data").document("daily_scan").set({"data": strict_results + watch_results, **write_payload})
+    logging.info(f"✅ 掃描完成！主清單 {len(strict_results)} 檔，備援觀察 {len(watch_results)} 檔。")
     return scan_results
 
 if __name__ == "__main__":

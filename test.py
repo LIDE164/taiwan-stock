@@ -98,6 +98,7 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
+BACKTEST_DISPLAY_DAYS = BACKTEST_LOOKBACK_DAYS
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
 API_FALLBACK_RADAR_TICKERS = [
     "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891", "2886",
@@ -115,6 +116,8 @@ MIN_CLOUD_SCAN_COUNT = 20
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
     "market_data/daily_scan": 21600,
+    "market_data/daily_scan_strict": 21600,
+    "market_data/daily_scan_watch": 21600,
     "user_settings/fav_groups": 600,
     "user_data/simulated_orders": 600,
 }
@@ -431,8 +434,16 @@ def save_analysis_cache(ticker, payload):
 
 def hydrate_scan_results(force=False):
     if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
-        data = load_cloud_data("market_data", "daily_scan", [])
+        data = load_cloud_data("market_data", "daily_scan_strict", [])
+        scan_source = "strict"
+        if not isinstance(data, list) or len(data) == 0:
+            data = load_cloud_data("market_data", "daily_scan_watch", [])
+            scan_source = "watch"
+        if not isinstance(data, list) or len(data) == 0:
+            data = load_cloud_data("market_data", "daily_scan", [])
+            scan_source = "legacy"
         st.session_state.scan_results = data if isinstance(data, list) else []
+        st.session_state.scan_results_source = scan_source
     return st.session_state.get("scan_results", [])
 
 def restore_nav_pool(min_score=60):
@@ -477,6 +488,7 @@ def get_radar_targets(records=None, limit=200):
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
+if 'backtest_days' not in st.session_state: st.session_state.backtest_days = BACKTEST_DISPLAY_DAYS
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
@@ -1251,6 +1263,10 @@ if st.session_state.page == "home":
                         if r: live_data.append(r)
                 if cloud_scan_too_small and len(live_data) >= MIN_CLOUD_SCAN_COUNT:
                     live_data = sorted(live_data, key=lambda x: (safe_num(x.get("Score"), 0), safe_num(x.get("漲跌幅"), 0)), reverse=True)
+                    strict_live = [r for r in live_data if safe_num(r.get("Score"), 0) >= 60]
+                    watch_live = [r for r in live_data if 45 <= safe_num(r.get("Score"), 0) < 60]
+                    save_cloud_data("market_data", "daily_scan_strict", strict_live)
+                    save_cloud_data("market_data", "daily_scan_watch", watch_live)
                     save_cloud_data("market_data", "daily_scan", live_data)
                     st.session_state.scan_results = live_data
                     st.session_state.scan_results_is_local = False
@@ -1274,7 +1290,7 @@ if st.session_state.page == "home":
         col_f1, col_f2 = st.columns([1.6, 1])
         with col_f1:
             st.caption("產業過濾")
-            selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
+            selected_theme = st.selectbox("產業過濾：", available_themes, label_visibility="collapsed")
         with col_f2:
             st.caption("排序")
             sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
@@ -1308,6 +1324,7 @@ if st.session_state.page == "home":
             if strict_count > 0:
                 df_results = strict_results
                 list_mode_note = "明日起漲嚴格條件"
+                list_tag = "嚴格起漲"
             else:
                 fallback_results = df_pool[df_pool["Score"] >= 60]
                 fallback_results = fallback_results[~fallback_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
@@ -1315,7 +1332,11 @@ if st.session_state.page == "home":
                 fallback_results = fallback_results[fallback_results["Confidence"] >= 60]
                 df_results = fallback_results
                 list_mode_note = "備援觀察清單"
+                list_tag = "備援觀察"
             score_count = len(df_results)
+            if not df_results.empty:
+                df_results = df_results.copy()
+                df_results["List_Tag"] = list_tag
             sort_map = {
                 "AI分數": ["Score", "漲跌幅"],
                 "歷史勝率": ["WinRate", "Score", "漲跌幅"],
@@ -1352,7 +1373,7 @@ if st.session_state.page == "home":
                         for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows()
                     ]
                     order_rows = [
-                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"}
+                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"現價 {safe_num(o.get('curr_price', o.get('buy_price', 0)), 0):.1f}", "sub": f"目標 {o.get('target_price', '--')} / 停損 {o.get('stop_price', '--')}", "color": "#60A5FA"}
                         for o in st.session_state.get("simulated_orders", [])[:3]
                     ]
                     render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
@@ -1585,7 +1606,7 @@ elif st.session_state.page == "analysis":
         atr_target_mult = 1.5
         dynamic_rrr = 1.5
 
-        backtest_df = df_slice.tail(st.session_state.view_days)
+        backtest_df = df_chart.tail(st.session_state.backtest_days)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
         if use_cached_list_score and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)

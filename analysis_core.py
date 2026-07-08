@@ -482,7 +482,7 @@ def calculate_historical_performance(
         if ret <= 0:
             current_losses += 1
             max_consecutive_losses = max(max_consecutive_losses, current_losses)
-    else:
+        else:
             current_losses = 0
     winrate_stats = summarize_winrate(wins, len(trades))
 
