@@ -99,6 +99,19 @@ FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
+API_FALLBACK_RADAR_TICKERS = [
+    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891", "2886",
+    "2303", "3711", "2357", "2379", "3034", "3008", "3231", "3661", "3017", "3324",
+    "2345", "2360", "2356", "2327", "4938", "2376", "6669", "5269", "2395", "2059",
+    "2603", "2609", "2615", "2606", "2610", "2637", "2645", "5608", "1301", "1303",
+    "1326", "6505", "2002", "2014", "2027", "2105", "2201", "2207", "1216", "1227",
+    "1231", "1402", "1476", "1590", "1605", "1717", "1722", "1785", "1802", "1904",
+    "2006", "2049", "2408", "2409", "2449", "2498", "2515", "2542", "2614", "2801",
+    "2880", "2883", "2884", "2885", "2887", "2890", "2892", "2912", "3037", "3045",
+    "3094", "3189", "3406", "3443", "3481", "3533", "3702", "4904", "5434", "5871",
+    "5876", "6176", "6239", "6415", "8046",
+]
+MIN_CLOUD_SCAN_COUNT = 20
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
     "market_data/daily_scan": 21600,
@@ -370,7 +383,7 @@ def save_cloud_data(collection_name, document_name, data):
         st.session_state._cloud_doc_cache = {}
     st.session_state._cloud_doc_cache[cache_key] = {"value": data, "ts": time.time()}
     if db is None: return
-    try: db.collection(collection_name).document(document_name).set({'data': data})
+    try: db.collection(collection_name).document(document_name).set({'data': data, 'update_time': firestore.SERVER_TIMESTAMP})
     except: pass
 
 def load_analysis_cache(ticker, max_age_seconds=900):
@@ -448,6 +461,8 @@ def get_radar_targets(records=None, limit=200):
         code = normalize_ticker(row.get("代號", ""))
         if code:
             targets.append(code)
+    if len(targets) < MIN_CLOUD_SCAN_COUNT:
+        targets.extend(API_FALLBACK_RADAR_TICKERS)
     targets.extend(st.session_state.get("custom_pool", []))
     targets.extend(get_favorite_stock_set())
     targets.extend(DEFAULT_RADAR_TICKERS)
@@ -1192,10 +1207,12 @@ if st.session_state.page == "home":
         
         cached_list = list(st.session_state.get('scan_results', []))
         use_local_fallback = st.session_state.get("scan_results_is_local", False)
+        cloud_scan_too_small = (not use_local_fallback and len(cached_list) < MIN_CLOUD_SCAN_COUNT)
         cloud_count = 0 if use_local_fallback else len(cached_list)
         
-        if is_intraday or use_local_fallback:
-            with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
+        if is_intraday or use_local_fallback or cloud_scan_too_small:
+            spinner_text = "⚡ 雲端名單過少，正在用 API 重建雷達清單..." if cloud_scan_too_small else "⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."
+            with st.spinner(spinner_text):
                 fb_df = pd.DataFrame(cached_list)
                 targets = get_radar_targets(cached_list)
                 live_data = []
@@ -1203,7 +1220,7 @@ if st.session_state.page == "home":
                 def process_live(ticker):
                     df = get_stock_data(ticker)
                     if df is not None:
-                        base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
+                        base = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == str(ticker)), None)
                         analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS)
                         cached_data = analysis_cache.get("data") if analysis_cache else None
                         if is_intraday and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
@@ -1224,14 +1241,19 @@ if st.session_state.page == "home":
                             bt_preview = calculate_historical_performance(df.tail(BACKTEST_LOOKBACK_DAYS), 1.5, 1.0)
                             res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
                             res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
-                            res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
+                            res["Score_Source"] = "盤中重算" if is_intraday else ("API備援重建" if cloud_scan_too_small else "本機備援重算")
                             save_analysis_cache(ticker, {"data": res, "fund": fund, "inst_data": inst_data})
                             return res
                     return None
                     
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     for r in executor.map(process_live, targets):
                         if r: live_data.append(r)
+                if cloud_scan_too_small and len(live_data) >= MIN_CLOUD_SCAN_COUNT:
+                    live_data = sorted(live_data, key=lambda x: (safe_num(x.get("Score"), 0), safe_num(x.get("漲跌幅"), 0)), reverse=True)
+                    save_cloud_data("market_data", "daily_scan", live_data)
+                    st.session_state.scan_results = live_data
+                    st.session_state.scan_results_is_local = False
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
             df_results = pd.DataFrame(cached_list)
@@ -1303,13 +1325,14 @@ if st.session_state.page == "home":
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
+            scan_source_label = "本機" if use_local_fallback else ("API備援" if cloud_scan_too_small else "雲端")
             
             st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 嚴格條件 {strict_count} 檔 → {list_mode_note} {score_count} 檔 | 門檻 {score_threshold} 分 / 風險 {market_risk_score}% | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
                     market_rows = [
-                        {"title": "掃描來源", "value": "本機" if use_local_fallback else "雲端", "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
+                        {"title": "掃描來源", "value": scan_source_label, "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
                         {"title": "目前模式", "value": "盤中" if is_intraday else "盤後", "sub": score_mode_label, "color": "#FACC15"},
                         {"title": "排序口徑", "value": sort_mode, "sub": selected_theme, "color": "#94A3B8"},
                     ]
