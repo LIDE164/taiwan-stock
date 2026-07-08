@@ -30,9 +30,129 @@ def render_app_style(is_light_mode=False):
     .hero-panel {{ background:#0F172A; border:1px solid #1E293B; border-radius:12px; padding:20px; margin-bottom:16px; }}
     .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
     div[role="radiogroup"] {{ gap:10px; }}
-    div[role="radiogroup"] label {{ background:#111827; border:1px solid #1E293B; border-radius:8px; padding:8px 12px; margin-right:6px; color:#E2E8F0; }}
-    div[role="radiogroup"] label:has(input:checked) {{ border-color:#60A5FA; background:rgba(96,165,250,0.12); }}
-    [data-testid="stToggle"] label {{ color:#E2E8F0 !important; font-weight:800; }}
+    div[role="radiogroup"] label {{
+        position:relative;
+        min-height:44px;
+        background:#111827 !important;
+        border:1px solid #1E293B !important;
+        border-radius:8px !important;
+        padding:10px 16px !important;
+        margin-right:6px;
+        color:#E2E8F0 !important;
+        font-weight:800;
+        transition:border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    }}
+    div[role="radiogroup"] label > div:first-child,
+    div[role="radiogroup"] label input[type="radio"] {{
+        display:none !important;
+        opacity:0 !important;
+        width:0 !important;
+        height:0 !important;
+        margin:0 !important;
+        padding:0 !important;
+    }}
+    div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] {{
+        display:block !important;
+        opacity:1 !important;
+        width:auto !important;
+        height:auto !important;
+        margin:0 !important;
+        color:#E2E8F0 !important;
+    }}
+    div[role="radiogroup"] label:has(input:checked) {{
+        border-color:#60A5FA !important;
+        background:rgba(96,165,250,0.12) !important;
+        box-shadow:0 0 0 1px rgba(96,165,250,.65), 0 0 18px rgba(96,165,250,.18) !important;
+    }}
+    div[role="radiogroup"] label:hover {{
+        border-color:#3B82F6 !important;
+        background:rgba(96,165,250,0.08) !important;
+    }}
+    [data-testid="stToggle"] label {{
+        display:inline-flex !important;
+        align-items:center !important;
+        min-height:44px;
+        background:#111827 !important;
+        border:1px solid #1E293B !important;
+        border-radius:8px !important;
+        padding:10px 16px !important;
+        color:#E2E8F0 !important;
+        font-weight:800;
+        transition:border-color .18s ease, box-shadow .18s ease, background .18s ease;
+    }}
+    [data-testid="stToggle"] label > div:first-child,
+    [data-testid="stToggle"] input {{
+        display:none !important;
+        opacity:0 !important;
+        width:0 !important;
+        height:0 !important;
+        margin:0 !important;
+        padding:0 !important;
+    }}
+    [data-testid="stToggle"] label div[data-testid="stMarkdownContainer"] {{
+        display:block !important;
+        opacity:1 !important;
+        width:auto !important;
+        height:auto !important;
+        margin:0 !important;
+        color:#E2E8F0 !important;
+    }}
+    [data-testid="stToggle"] label:has(input:checked) {{
+        border-color:#60A5FA !important;
+        background:rgba(96,165,250,0.12) !important;
+        box-shadow:0 0 0 1px rgba(96,165,250,.65), 0 0 18px rgba(96,165,250,.18) !important;
+    }}
+    [data-testid="stToggle"] label:hover {{
+        border-color:#3B82F6 !important;
+        background:rgba(96,165,250,0.08) !important;
+    }}
+    .stButton > button,
+    div[data-testid="stButton"] button,
+    button[kind="secondary"],
+    button[kind="primary"] {{
+        background:#0F172A !important;
+        color:#E2E8F0 !important;
+        border:1px solid #1E293B !important;
+        border-radius:10px !important;
+        min-height:42px;
+        font-weight:850 !important;
+        box-shadow:none !important;
+        transition:border-color .18s ease, box-shadow .18s ease, background .18s ease, color .18s ease;
+    }}
+    .stButton > button:hover,
+    div[data-testid="stButton"] button:hover,
+    button[kind="secondary"]:hover,
+    button[kind="primary"]:hover {{
+        background:rgba(96,165,250,0.12) !important;
+        border-color:#60A5FA !important;
+        color:#E2E8F0 !important;
+        box-shadow:0 0 0 1px rgba(96,165,250,.55), 0 0 16px rgba(96,165,250,.16) !important;
+    }}
+    .stButton > button:active,
+    div[data-testid="stButton"] button:active,
+    button[kind="secondary"]:active,
+    button[kind="primary"]:active {{
+        background:rgba(96,165,250,0.18) !important;
+        border-color:#93C5FD !important;
+        color:#E2E8F0 !important;
+    }}
+    .stTextInput input,
+    .stNumberInput input,
+    .stTextArea textarea,
+    div[data-baseweb="select"] > div {{
+        background:#0F172A !important;
+        color:#E2E8F0 !important;
+        border:1px solid #1E293B !important;
+        border-radius:10px !important;
+        box-shadow:none !important;
+    }}
+    .stTextInput input:focus,
+    .stNumberInput input:focus,
+    .stTextArea textarea:focus,
+    div[data-baseweb="select"] > div:focus-within {{
+        border-color:#60A5FA !important;
+        box-shadow:0 0 0 1px rgba(96,165,250,.55), 0 0 16px rgba(96,165,250,.16) !important;
+    }}
     @media (max-width: 900px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
 </style>
 """,
