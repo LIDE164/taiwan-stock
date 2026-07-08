@@ -24,6 +24,8 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s -
 
 FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
 FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
+LIVE_SCORE_CACHE_SECONDS = 30
+POST_ANALYSIS_CACHE_SECONDS = 21600
 
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
 
@@ -1005,7 +1007,7 @@ if st.session_state.page == "home":
                     df = get_stock_data(ticker)
                     if df is not None:
                         base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
-                        analysis_cache = load_analysis_cache(ticker, 900)
+                        analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS)
                         cached_data = analysis_cache.get("data") if analysis_cache else None
                         if isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
                             cached_data = dict(cached_data)
@@ -1203,21 +1205,38 @@ elif st.session_state.page == "analysis":
         cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
         if cached_doc is None:
             cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
-        is_intra = st.session_state.get('is_intraday', False)
+        cached_doc_mode = cached_doc.get("Score_Mode_Raw") if isinstance(cached_doc, dict) else ""
+        _, _, inferred_intra = resolve_score_mode(cached_doc_mode == "realtime")
+        is_intra = bool(st.session_state.get('is_intraday', False) or inferred_intra)
+        if is_intra:
+            st.session_state.is_intraday = True
+            st.session_state.score_mode_label = "盤中即時分數"
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
-        cached_analysis = None if force_analysis_refresh else load_analysis_cache(target, 900 if is_intra else 21600)
+        cached_analysis = None if force_analysis_refresh else load_analysis_cache(target, LIVE_SCORE_CACHE_SECONDS if is_intra else POST_ANALYSIS_CACHE_SECONDS)
 
-        if cached_analysis:
+        cached_data = cached_analysis.get("data") if cached_analysis else None
+        used_realtime_snapshot = False
+        if is_intra and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
+            inst_data = cached_analysis.get("inst_data", [])
+            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
+            data = dict(cached_data)
+            data["Score_Source"] = "30秒盤中快照"
+            used_realtime_snapshot = True
+        elif cached_analysis:
             inst_data = cached_analysis.get("inst_data", [])
             f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
             data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+            if is_intra:
+                data["Score_Source"] = "盤中重算"
         else:
             inst_data = get_institutional_trading(target)
             f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
             bp_ratio, mom, yoy = get_finmind_chip_and_revenue(target)
             f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
             data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+            if is_intra:
+                data["Score_Source"] = "盤中重算"
             save_analysis_cache(target, {"data": data, "fund": f_data, "inst_data": inst_data})
 
         use_cached_list_score = cached_doc and not force_analysis_refresh and not is_intra
@@ -1236,7 +1255,8 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{data['產業']}】</div>", unsafe_allow_html=True)
         st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌幅']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b></div>", unsafe_allow_html=True)
+        score_source_text = f"　｜　來源：<b>{data.get('Score_Source')}</b>" if data.get("Score_Source") else ""
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b>{score_source_text}</div>", unsafe_allow_html=True)
         
         _, up_c, _ = st.columns([1, 2, 1])
         force_refresh_analysis = up_c.button("🔄 更新個股即時數值", use_container_width=True)
@@ -1262,7 +1282,7 @@ elif st.session_state.page == "analysis":
             data['WinRate'] = win_rate
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence", "Score_Source"]:
                         if k in data:
                             row[k] = data[k]
                     break
