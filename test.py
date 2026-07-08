@@ -93,6 +93,12 @@ def get_stock_name(ticker):
 def normalize_ticker(ticker):
     return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
 
+def is_realtime_score_record(record):
+    if not isinstance(record, dict):
+        return False
+    text = " ".join(str(record.get(k, "")) for k in ["Score_Mode_Raw", "Score_Mode", "Score_Source"])
+    return "realtime" in text.lower() or "盤中" in text
+
 def safe_num(value, default=0.0):
     try:
         if value is None or pd.isna(value):
@@ -308,6 +314,11 @@ render_sidebar_favorites(fav_sidebar_slot)
 
 if 'stock' in st.query_params:
     q_stock = st.query_params['stock']
+    q_mode = str(st.query_params.get('mode', '')).lower()
+    if q_mode in ("intraday", "realtime"):
+        _, q_score_mode_label, q_is_intraday = resolve_score_mode(True)
+        st.session_state.is_intraday = q_is_intraday
+        st.session_state.score_mode_label = q_score_mode_label
     if st.session_state.get('last_q_stock') != q_stock:
         st.session_state.current_stock = q_stock
         st.session_state.page = "analysis"
@@ -923,7 +934,8 @@ def generate_cards_html(df_disp, is_intraday=False):
             
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(r.get("代號", ""))
-        stock_link = f'href="/?stock={ticker_code}" target="_self"'
+        mode_param = "&mode=intraday" if is_intraday or is_realtime_score_record(r.to_dict() if hasattr(r, "to_dict") else r) else ""
+        stock_link = f'href="/?stock={ticker_code}{mode_param}" target="_self"'
         
         disp_name = r.get('名稱', '')
         if not disp_name or disp_name == "": disp_name = get_stock_name(r.get("代號", ""))
@@ -1205,24 +1217,29 @@ elif st.session_state.page == "analysis":
         cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
         if cached_doc is None:
             cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
-        cached_doc_mode = cached_doc.get("Score_Mode_Raw") if isinstance(cached_doc, dict) else ""
-        _, _, inferred_intra = resolve_score_mode(cached_doc_mode == "realtime")
+        query_mode = str(st.query_params.get('mode', '')).lower()
+        requested_analysis_intraday = query_mode in ("intraday", "realtime")
+        _, _, inferred_intra = resolve_score_mode(requested_analysis_intraday or is_realtime_score_record(cached_doc))
         is_intra = bool(st.session_state.get('is_intraday', False) or inferred_intra)
         if is_intra:
             st.session_state.is_intraday = True
-            st.session_state.score_mode_label = "盤中即時分數"
+            st.session_state.score_mode_label = "盤中參考分數"
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
         cached_analysis = None if force_analysis_refresh else load_analysis_cache(target, LIVE_SCORE_CACHE_SECONDS if is_intra else POST_ANALYSIS_CACHE_SECONDS)
 
         cached_data = cached_analysis.get("data") if cached_analysis else None
         used_realtime_snapshot = False
-        if is_intra and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
+        if is_intra and is_realtime_score_record(cached_doc) and not force_analysis_refresh:
+            inst_data = cached_analysis.get("inst_data", []) if cached_analysis else []
+            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業')})
+            data = dict(cached_doc)
+            data["Score_Source"] = "名單盤中快照"
+        elif is_intra and isinstance(cached_data, dict) and is_realtime_score_record(cached_data):
             inst_data = cached_analysis.get("inst_data", [])
             f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
             data = dict(cached_data)
             data["Score_Source"] = "30秒盤中快照"
-            used_realtime_snapshot = True
         elif cached_analysis:
             inst_data = cached_analysis.get("inst_data", [])
             f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
