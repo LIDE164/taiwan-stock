@@ -120,6 +120,10 @@ st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
 if LOW_FIREBASE_READ_MODE:
     st.sidebar.caption("Firebase 低讀取模式：開啟")
+try:
+    st.sidebar.caption(f"Firebase 專案：{st.secrets.get('firebase', {}).get('project_id', '未設定')}")
+except Exception:
+    st.sidebar.caption("Firebase 專案：未設定")
 
 if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True):
     st.cache_data.clear()
