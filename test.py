@@ -19,15 +19,69 @@ from streamlit_autorefresh import st_autorefresh
 from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
-from ui_components import (
-    credibility_label,
-    generate_cards_html as build_cards_html,
-    render_app_style,
-    render_home_side_panel,
-    render_market_status_cards,
-    render_metric_grid,
-    render_stock_hero,
-)
+try:
+    from ui_components import (
+        credibility_label,
+        generate_cards_html as build_cards_html,
+        render_app_style,
+        render_home_side_panel,
+        render_market_status_cards,
+        render_metric_grid,
+        render_stock_hero,
+    )
+except Exception as ui_import_error:
+    def credibility_label(sample_count):
+        try:
+            n = int(sample_count)
+        except (TypeError, ValueError):
+            return "--", "#94A3B8"
+        if n < 10:
+            return "樣本嚴重不足", "#EF4444"
+        if n < 30:
+            return "僅供參考", "#FACC15"
+        if n < 50:
+            return "中等可信", "#60A5FA"
+        return "統計較穩定", "#22C55E"
+
+    def render_app_style(is_light_mode=False):
+        app_bg = "#f4f6f9" if is_light_mode else "#0b1120"
+        st.markdown(f"<style>.stApp {{ background-color:{app_bg}; }} a.stock-card-link {{ text-decoration:none; color:inherit; display:block; }}</style>", unsafe_allow_html=True)
+        st.caption(f"UI 模組載入失敗，已使用內建備援版：{ui_import_error}")
+
+    def render_market_status_cards(items):
+        cols = st.columns(len(items))
+        for col, item in zip(cols, items):
+            with col:
+                st.metric(item.get("label", ""), item.get("value", "--"), item.get("sub", ""))
+
+    def render_home_side_panel(title, rows, empty_text="暫無資料"):
+        st.markdown(f"**{title}**")
+        if not rows:
+            st.caption(empty_text)
+        for row in rows[:6]:
+            st.write(f"{row.get('title', '')}  {row.get('value', '')}")
+            st.caption(row.get("sub", ""))
+
+    def render_stock_hero(data, target, name, strategy_text):
+        st.markdown(f"## {target} {name}")
+        st.caption(f"{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {data.get('Confidence', 100)}%")
+        st.metric("現價", data.get("收盤價", "--"), f"{data.get('漲跌幅', 0):+.2f}%")
+        st.info(f"建議策略：{strategy_text}")
+
+    def render_metric_grid(metrics):
+        cols = st.columns(len(metrics))
+        for col, metric in zip(cols, metrics):
+            with col:
+                st.metric(metric.get("label", ""), metric.get("value", "--"), metric.get("sub", ""))
+
+    def build_cards_html(df_disp, **kwargs):
+        html = ""
+        for _, row in df_disp.iterrows():
+            code = row.get("代號", "")
+            name = row.get("名稱", "")
+            score = row.get("Score", 0)
+            html += f"<a href='/?stock={code}' class='stock-card-link'><div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'><b>{code} {name}</b><span style='float:right; color:#EF4444; font-weight:900;'>{score}分</span><br><span style='color:#94A3B8;'>歷史勝率 {row.get('WinRate', '--')}%｜樣本 {row.get('Backtest_Samples', '--')}</span></div></a>"
+        return html
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
