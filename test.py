@@ -19,7 +19,15 @@ from streamlit_autorefresh import st_autorefresh
 from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
-from ui_components import generate_cards_html as build_cards_html, render_app_style
+from ui_components import (
+    credibility_label,
+    generate_cards_html as build_cards_html,
+    render_app_style,
+    render_home_side_panel,
+    render_market_status_cards,
+    render_metric_grid,
+    render_stock_hero,
+)
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -690,6 +698,18 @@ def render_index_board():
         txf_change_text = f"{'↑' if txf_change > 0 else '↓'} {abs(txf_change):.0f}" if txf_available else "請改用 FinMind/券商源"
         twii_df_for_pred = get_stock_data("^TWII")
         today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
+        sox = macro.get('^SOX', {"price": None, "pct": None})
+        vix = macro.get('^VIX', {"price": None, "pct": None})
+        twd = macro.get('TWD=X', {"price": None, "pct": None})
+        bar_color = "#22c55e" if risk_score < 40 else ("#facc15" if risk_score < 70 else "#ef4444")
+        render_market_status_cards([
+            {"label": "台股加權", "value": f"{twii_close:,.0f}", "sub": f"{'+' if twii_change > 0 else ''}{twii_change:.0f}", "color": twii_color},
+            {"label": f"台指期 ({txf_symbol})", "value": txf_price_text, "sub": txf_change_text, "color": txf_color},
+            {"label": "費城半導體", "value": "--" if sox.get("price") is None else f"{sox.get('price'):,.1f}", "sub": "--" if sox.get("pct") is None else f"{sox.get('pct'):+.2f}%", "color": "#ef4444" if (sox.get("pct") or 0) >= 0 else "#22c55e"},
+            {"label": "VIX", "value": "--" if vix.get("price") is None else f"{vix.get('price'):,.2f}", "sub": "--" if vix.get("pct") is None else f"{vix.get('pct'):+.2f}%", "color": "#22c55e" if vix.get("pct") is not None and vix.get("pct") <= 0 else "#ef4444"},
+            {"label": "美元台幣", "value": "--" if twd.get("price") is None else f"{twd.get('price'):,.3f}", "sub": "--" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值"), "color": "#facc15"},
+            {"label": "今日風險分數", "value": f"{risk_score}%", "sub": tmr_title, "color": bar_color},
+        ])
         
         with st.container(border=False):
             st.markdown("<div style='background-color:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:16px; margin-bottom:14px;'>", unsafe_allow_html=True)
@@ -704,14 +724,10 @@ def render_index_board():
             st.markdown("</div>", unsafe_allow_html=True)
             if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
         
-        bar_color = "#22c55e" if risk_score < 40 else ("#facc15" if risk_score < 70 else "#ef4444")
         st.markdown(f"<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日風險：<span style='color:{bar_color};'>{risk_score}%</span></h4>", unsafe_allow_html=True)
         st.markdown(f"<div style='width:100%; height:12px; background-color:#1e293b; border-radius:6px; overflow:hidden; margin: 10px 0;'><div style='width: {risk_score}%; height:100%; background-color: {bar_color}; transition: width 0.5s;'></div></div>", unsafe_allow_html=True)
         
         mc1, mc2, mc3, mc4 = st.columns(4)
-        sox = macro.get('^SOX', {"price": None, "pct": None})
-        vix = macro.get('^VIX', {"price": None, "pct": None})
-        twd = macro.get('TWD=X', {"price": None, "pct": None})
         def fmt_macro(item, digits=2):
             price, pct = item.get("price"), item.get("pct")
             if price is None or pct is None:
@@ -1088,6 +1104,9 @@ if st.session_state.page == "home":
                             fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
+                            bt_preview = calculate_historical_performance(df.tail(BACKTEST_LOOKBACK_DAYS), 1.5, 1.0)
+                            res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
+                            res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
                             res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
                             save_analysis_cache(ticker, {"data": res, "fund": fund, "inst_data": inst_data})
                             return res
@@ -1136,7 +1155,34 @@ if st.session_state.page == "home":
             
             st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔 | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
-                st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
+                left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
+                with left_dash:
+                    market_rows = [
+                        {"title": "掃描來源", "value": "本機" if use_local_fallback else "雲端", "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
+                        {"title": "目前模式", "value": "盤中" if is_intraday else "盤後", "sub": score_mode_label, "color": "#FACC15"},
+                        {"title": "排序口徑", "value": sort_mode, "sub": selected_theme, "color": "#94A3B8"},
+                    ]
+                    render_home_side_panel("市場總覽", market_rows)
+                with mid_dash:
+                    st.markdown("<div class='section-title'>AI 雷達清單</div>", unsafe_allow_html=True)
+                    st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
+                with right_dash:
+                    favorite_set = get_favorite_stock_set()
+                    fav_rows = []
+                    for _, row in df_disp.head(20).iterrows():
+                        if normalize_ticker(row.get("代號", "")) in favorite_set:
+                            fav_rows.append({"title": f"{row.get('代號')} {row.get('名稱', '')}", "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
+                    mover_rows = [
+                        {"title": f"{r.get('代號')} {r.get('名稱', '')}", "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"}
+                        for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows()
+                    ]
+                    order_rows = [
+                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"}
+                        for o in st.session_state.get("simulated_orders", [])[:3]
+                    ]
+                    render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
+                    render_home_side_panel("今日異動", mover_rows)
+                    render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
                 st.info("目前沒有 60 分以上標的。")
         else:
@@ -1325,11 +1371,15 @@ elif st.session_state.page == "analysis":
         sc = data['Score']
         
         display_time = get_stock_live_time(target)
-        p_color = '#ef4444' if data['漲跌幅'] >= 0 else '#22c55e'
-        
-        st.markdown(f"<h2 style='text-align: center; margin-bottom: 5px;'>🎯 {target} {c_name}</h2>", unsafe_allow_html=True)
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 1.1rem;'>【{data['產業']}】</div>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='text-align: center; color: {p_color}; font-size: 2.2rem; margin-bottom: 0px;'>{data['收盤價']} ({'+' if data['漲跌幅']>0 else ''}{data['漲跌幅']}%)</h3>", unsafe_allow_html=True)
+        if sc >= 70:
+            strategy_text = "趨勢偏強，拉回不破 20MA 可觀察續強"
+        elif sc >= 60:
+            strategy_text = "強勢偏多，等待回測均線或量能確認"
+        elif sc >= 45:
+            strategy_text = "偏多觀察，先等訊號確認不追價"
+        else:
+            strategy_text = "訊號不足，暫不主動進場"
+        render_stock_hero(data, target, c_name, strategy_text)
         score_source_text = f"　｜　來源：<b>{data.get('Score_Source')}</b>" if data.get("Score_Source") else ""
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b>{score_source_text}</div>", unsafe_allow_html=True)
         
@@ -1366,6 +1416,30 @@ elif st.session_state.page == "analysis":
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
         data['ATR_Stop'] = round(data['收盤價'] - (curr_atr * atr_stop_mult), 1)
         data['RRR'] = dynamic_rrr
+        credibility_text, credibility_color = credibility_label(closed_signals)
+        render_metric_grid([
+            {"label": "AI 分數", "value": f"{sc}", "sub": data.get("評級", "").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", ""), "color": "#EF4444" if sc >= 60 else "#FACC15"},
+            {"label": "歷史勝率", "value": f"{win_rate:.1f}%", "sub": "保守修正後", "color": "#EF4444" if win_rate >= 60 else "#FACC15"},
+            {"label": "回測樣本", "value": f"{closed_signals} 筆", "sub": credibility_text, "color": credibility_color},
+            {"label": "風報比", "value": f"1 : {dynamic_rrr}", "sub": f"停損 {atr_stop_mult}x / 停利 {atr_target_mult}x", "color": "#60A5FA"},
+        ])
+        tab_tech, tab_chip, tab_backtest, tab_risk, tab_trade = st.tabs(["技術分析", "籌碼法人", "策略回測", "資金控管", "模擬交易"])
+        with tab_tech:
+            st.markdown(f"**主訊號**：{data.get('Feature', '一般狀態')}")
+            st.markdown(f"MACD柱 `{data.get('MACD柱', '--')}`｜RSI `{data.get('RSI', '--')}`｜ADX `{data.get('ADX', '--')}`｜20MA `{data.get('20MA', '--')}`")
+            st.markdown(f"型態：{data.get('Entry_Pattern', '一般觀察型')}｜訊號衝突：{data.get('Signal_Conflict', '低')}")
+        with tab_chip:
+            st.markdown(f"法人10日：`{safe_num(data.get('Whale_Net'), 0):,.0f}` 張")
+            st.markdown(f"外資10日 `{safe_num(data.get('ForeignNet10d'), 0):,.0f}`｜投信10日 `{safe_num(data.get('TrustNet10d'), 0):,.0f}`｜自營商10日 `{safe_num(data.get('DealerNet10d'), 0):,.0f}`")
+            st.markdown(f"資料信心：`{data.get('Confidence', 100)}%`")
+        with tab_backtest:
+            st.markdown(f"勝率 `{win_rate:.1f}%`｜樣本 `{closed_signals}` 筆｜可信度 `{credibility_text}`")
+            st.markdown(f"平均報酬 `{backtest_stats.get('avg_return', 0.0):+.2f}%`｜最大回撤 `-{backtest_stats.get('max_drawdown', 0.0):.2f}%`｜連續虧損 `{backtest_stats.get('max_consecutive_losses', 0)}` 次")
+        with tab_risk:
+            st.markdown(f"停利目標：`{data['ATR_Target']}`｜停損防守：`{data['ATR_Stop']}`｜RRR：`1 : {dynamic_rrr}`")
+            st.markdown("可用下方資金控管計算器調整單筆可承受虧損。")
+        with tab_trade:
+            st.markdown("可用下方按鈕將目前策略加入模擬交易中心。")
 
         wr_color = "#ef4444" if win_rate >= 60 else ("#facc15" if win_rate >= 40 else "#22c55e")
         with st.container(border=True):

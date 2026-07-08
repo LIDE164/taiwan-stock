@@ -22,10 +22,127 @@ def render_app_style(is_light_mode=False):
     .radar-metric {{ background-color: {panel_bg}; border: 1px solid {panel_border}; border-radius: 12px; padding: 16px; text-align: center; color: #e2e8f0; min-height: 92px; }}
     .radar-label {{ color: {soft_text}; font-size: 0.85rem; font-weight: 700; }}
     .radar-subtle {{ color: {muted_text}; }}
+    .terminal-card {{ background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; color:#E2E8F0; }}
+    .terminal-title {{ color:#94A3B8; font-size:0.78rem; font-weight:800; letter-spacing:0; }}
+    .terminal-value {{ font-size:1.35rem; font-weight:900; line-height:1.25; }}
+    .terminal-sub {{ color:#94A3B8; font-size:0.78rem; font-weight:700; }}
+    .section-title {{ color:#E2E8F0; font-size:1.05rem; font-weight:900; margin:0 0 10px 0; }}
+    .hero-panel {{ background:#0F172A; border:1px solid #1E293B; border-radius:12px; padding:20px; margin-bottom:16px; }}
+    .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
+    @media (max-width: 900px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
 </style>
 """,
         unsafe_allow_html=True,
     )
+
+
+def fmt_num(value, digits=0, missing="--"):
+    try:
+        if value is None:
+            return missing
+        return f"{float(value):,.{digits}f}"
+    except (TypeError, ValueError):
+        return missing
+
+
+def change_color(value):
+    try:
+        return "#EF4444" if float(value) >= 0 else "#22C55E"
+    except (TypeError, ValueError):
+        return "#94A3B8"
+
+
+def credibility_label(sample_count):
+    try:
+        n = int(sample_count)
+    except (TypeError, ValueError):
+        return "--", "#94A3B8"
+    if n < 10:
+        return "樣本嚴重不足", "#EF4444"
+    if n < 30:
+        return "僅供參考", "#FACC15"
+    if n < 50:
+        return "中等可信", "#60A5FA"
+    return "統計較穩定", "#22C55E"
+
+
+def render_market_status_cards(items):
+    cols = st.columns(len(items))
+    for col, item in zip(cols, items):
+        color = item.get("color", "#E2E8F0")
+        with col:
+            st.markdown(
+                f"""
+<div class="terminal-card" style="min-height:96px;">
+  <div class="terminal-title">{item.get('label', '')}</div>
+  <div class="terminal-value" style="color:{color};">{item.get('value', '--')}</div>
+  <div class="terminal-sub" style="color:{color};">{item.get('sub', '')}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+
+def render_home_side_panel(title, rows, empty_text="暫無資料"):
+    st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
+    if not rows:
+        st.markdown(f"<div class='terminal-card terminal-sub'>{empty_text}</div>", unsafe_allow_html=True)
+        return
+    for row in rows[:6]:
+        st.markdown(
+            f"""
+<div class="terminal-card" style="padding:10px; margin-bottom:8px;">
+  <div style="display:flex; justify-content:space-between; gap:8px;">
+    <b>{row.get('title', '')}</b>
+    <span style="color:{row.get('color', '#94A3B8')}; font-weight:900;">{row.get('value', '')}</span>
+  </div>
+  <div class="terminal-sub">{row.get('sub', '')}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+def render_stock_hero(data, target, name, strategy_text):
+    score = data.get("Score", 0)
+    confidence = data.get("Confidence", 100)
+    change = data.get("漲跌幅", 0)
+    p_color = change_color(change)
+    rating = str(data.get("評級", "觀察")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
+    st.markdown(
+        f"""
+<div class="hero-panel">
+  <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+    <div>
+      <div style="font-size:1.8rem; font-weight:950; color:#E2E8F0;">{target} {name}</div>
+      <div class="terminal-sub">{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {confidence}%</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:1.9rem; font-weight:950; color:{p_color};">{data.get('收盤價', '--')} <span style="font-size:1rem;">{change:+.2f}%</span></div>
+      <div style="color:#94A3B8; font-weight:800;">AI 評級：<span style="color:#EF4444;">{rating} {score} 分</span></div>
+    </div>
+  </div>
+  <div style="margin-top:14px; padding:12px; border-radius:8px; background:rgba(30,41,59,0.55); border:1px solid rgba(51,65,85,0.7); color:#E2E8F0; font-weight:800;">
+    建議策略：{strategy_text}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_metric_grid(metrics):
+    html = "<div class='metric-grid'>"
+    for metric in metrics:
+        html += (
+            "<div class='terminal-card'>"
+            f"<div class='terminal-title'>{metric.get('label', '')}</div>"
+            f"<div class='terminal-value' style='color:{metric.get('color', '#E2E8F0')};'>{metric.get('value', '--')}</div>"
+            f"<div class='terminal-sub'>{metric.get('sub', '')}</div>"
+            "</div>"
+        )
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def generate_cards_html(
@@ -67,23 +184,23 @@ def generate_cards_html(
             disp_name = get_stock_name(record.get("代號", ""))
         fav_mark = " ⭐" if ticker_code in favorite_set else ""
         sim_mark = " 🛒" if ticker_code in simulated_set else ""
+        sample_count = record.get("Backtest_Samples", record.get("closed_signals", record.get("ClosedSignals", "--")))
+        cred_text, cred_color = credibility_label(sample_count)
+        main_signal = record.get("Feature", "一般狀態")
+        rrr = record.get("RRR", 1.5)
 
-        cards_html += "<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
+        cards_html += "<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
         cards_html += "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; position: relative; z-index: 10;'>"
-        cards_html += "<div style='display: flex; align-items: center; gap: 12px;'>"
-        cards_html += "<div style='width: 50px; height: 50px; border-radius: 50%; background: radial-gradient(circle, #1e293b 0%, #0b1120 100%); border: 1px solid #334155; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: inset 0 2px 4px rgba(255,255,255,0.05), 0 4px 8px rgba(0,0,0,0.4);'>"
-        cards_html += f"<span style='color: {s_col}; font-weight: 800; font-size: 1.2rem; line-height: 1;'>{score}</span>"
-        cards_html += f"<span style='color: {r_col}; font-size: 0.65rem; font-weight: 800; margin-top: 2px;'>{rating}</span></div>"
-
-        cards_html += f"<a {stock_link} class='stock-card-link'><div style='display: flex; align-items: center; gap: 6px;'>"
-        cards_html += f"<span class='stock-name-hover' style='color: #f8fafc; font-weight: bold; font-size: 1.15rem; transition: color 0.2s;'>{disp_name}{fav_mark}{sim_mark}</span>"
+        cards_html += "<div style='display: flex; align-items: flex-start; gap: 12px;'>"
+        cards_html += f"<a {stock_link} class='stock-card-link'>"
+        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}</span>"
 
         industry_name = record.get("產業", "一般產業")
-        cards_html += f"<span style='font-size: 0.7rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 600;'>🏷️ {industry_name}</span>"
-        cards_html += f"</div><div style='font-size: 0.8rem; color: #64748b; margin-top: 4px; font-family: monospace;'>{record.get('代號', '')} <span style='color:#475569; font-size:0.7rem; margin-left:4px;'>(點擊解析)</span></div></a></div>"
+        cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
+        cards_html += f"<div style='font-size: 0.78rem; color: #94A3B8; margin-top: 5px;'>收盤 {record.get('收盤價', 0):.1f}｜<span style='color:{p_col};'>{change_sign}{record.get('漲跌幅', 0)}%</span>｜點擊解析</div></a></div>"
+        cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score}分</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
 
-        cards_html += f"<div style='text-align: right; flex-shrink: 0;'><div style='color: {p_col}; font-weight: 800; font-size: 1.2rem; font-family: monospace;'>{record.get('收盤價', 0):.1f}</div>"
-        cards_html += f"<div style='background-color: {p_bg}; color: {p_col}; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; display: inline-block; font-weight: 800; font-family: monospace; margin-top: 4px;'>{change_sign}{record.get('漲跌幅', 0)}%</div></div></div>"
+        cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
 
         wr_val = record.get("WinRate", 0.0)
         wr_col = "#ef4444" if wr_val >= 60 else ("#facc15" if wr_val >= 40 else "#22c55e")
@@ -93,11 +210,11 @@ def generate_cards_html(
         w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
         whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
 
-        cards_html += "<div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
+        cards_html += "<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>資料信心</span><span style='color: {conf_col}; font-weight: bold; font-family: monospace;'>{confidence_val:.0f}%</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人淨買</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div></div>"
-        cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>進場特徵：{record.get('Feature', '一般')}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>樣本 / 可信度</span><span style='color: {cred_color}; font-weight: bold; font-family: monospace;'>{sample_count}｜{cred_text}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人10日</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>RRR</span><span style='color: #60A5FA; font-weight: bold; font-family: monospace;'>1 : {rrr}</span></div></div>"
         source_text = f"{score_mode}｜{score_source}" if score_source else score_mode
         cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{source_text}</div>"
         cards_html += "</div>"
