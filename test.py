@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
+import os
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -85,8 +86,16 @@ except Exception as ui_import_error:
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
-FINMIND_TOKEN = st.secrets["FINMIND_TOKEN"]
-FUGLE_API_KEY = st.secrets["FUGLE_API_KEY"]
+def get_secret(name, default=""):
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    return value or os.getenv(name, default)
+
+
+FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
+FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
@@ -493,7 +502,7 @@ def get_stock_data(ticker_number):
     
     try:
         market_state = get_market_state()
-        if base_ticker != "^TWII" and market_state == "open":
+        if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
             res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
             if res.status_code == 200:
@@ -562,6 +571,8 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
 def get_finmind_chip_and_revenue(ticker):
     big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    if not FINMIND_TOKEN:
+        return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
     try:
         start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
         try:
@@ -610,6 +621,9 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     if previous is not None and previous > 0 and abs(price - previous) / previous > 0.08:
         return False
+    if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.03:
+        return False
+    return True
     # 台指期近月通常不應長時間偏離加權指數太多；超過 3% 多半是抓到錯合約/錯欄位。
     if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.03:
         return False
@@ -627,25 +641,26 @@ def get_txf_quote(reference_index=None):
                     return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
         except Exception:
             pass
-    try:
-        start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesDaily&data_id=TX&start_date={start_date}&token={FINMIND_TOKEN}"
-        res = requests.get(url, timeout=5).json()
-        rows = res.get("data", [])
-        if rows:
-            df = pd.DataFrame(rows).sort_values(by="date")
-            close_col = next((c for c in ["close", "settlement_price", "Close"] if c in df.columns), None)
-            if close_col and len(df) >= 2:
-                df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
-                df = df.dropna(subset=[close_col])
-                df = df[(df[close_col] > 10000) & (df[close_col] < 100000)]
-                if len(df) >= 2:
-                    curr = float(df[close_col].iloc[-1])
-                    prev = float(df[close_col].iloc[-2])
-                    if is_plausible_txf_price(curr, prev, reference_index):
-                        return curr, curr - prev, "FinMind TX", str(df["date"].iloc[-1])
-    except Exception:
-        pass
+    if FINMIND_TOKEN:
+        try:
+            start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+            url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesDaily&data_id=TX&start_date={start_date}&token={FINMIND_TOKEN}"
+            res = requests.get(url, timeout=5).json()
+            rows = res.get("data", [])
+            if rows:
+                df = pd.DataFrame(rows).sort_values(by="date")
+                close_col = next((c for c in ["close", "settlement_price", "Close"] if c in df.columns), None)
+                if close_col and len(df) >= 2:
+                    df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
+                    df = df.dropna(subset=[close_col])
+                    df = df[(df[close_col] > 10000) & (df[close_col] < 100000)]
+                    if len(df) >= 2:
+                        curr = float(df[close_col].iloc[-1])
+                        prev = float(df[close_col].iloc[-2])
+                        if is_plausible_txf_price(curr, prev, reference_index):
+                            return curr, curr - prev, "FinMind TX", str(df["date"].iloc[-1])
+        except Exception:
+            pass
     return None, None, "資料源受限", "暫無資料"
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -653,6 +668,8 @@ def get_stock_live_time(ticker): return datetime.now(timezone(timedelta(hours=8)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_trading(ticker):
+    if not FINMIND_TOKEN:
+        return []
     try:
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={(datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')}&token={FINMIND_TOKEN}"
         res = requests.get(url, timeout=5).json()

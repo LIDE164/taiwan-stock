@@ -19,9 +19,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def get_secret(name, default=""):
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets.get(name, "")
     except Exception:
-        return default
+        value = ""
+    return value or os.getenv(name, default)
 
 
 def init_firestore():

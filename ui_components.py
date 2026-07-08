@@ -28,6 +28,8 @@ def render_app_style(is_light_mode=False):
     .terminal-sub {{ color:#94A3B8; font-size:0.78rem; font-weight:700; }}
     .section-title {{ color:#E2E8F0; font-size:1.05rem; font-weight:900; margin:0 0 10px 0; }}
     .hero-panel {{ background:#0F172A; border:1px solid #1E293B; border-radius:12px; padding:20px; margin-bottom:16px; }}
+    .market-status-grid {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; margin:10px 0 12px 0; }}
+    .market-status-card {{ min-height:96px; }}
     .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
     div[role="radiogroup"] {{ gap:10px; }}
     div[role="radiogroup"] label {{
@@ -153,7 +155,17 @@ def render_app_style(is_light_mode=False):
         border-color:#60A5FA !important;
         box-shadow:0 0 0 1px rgba(96,165,250,.55), 0 0 16px rgba(96,165,250,.16) !important;
     }}
-    @media (max-width: 900px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
+    @media (max-width: 900px) {{
+        .market-status-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }}
+        .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+    }}
+    @media (max-width: 520px) {{
+        .market-status-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }}
+        .market-status-card {{ min-height:82px; padding:10px 8px !important; border-radius:9px !important; }}
+        .market-status-card .terminal-title {{ font-size:0.68rem; line-height:1.2; }}
+        .market-status-card .terminal-value {{ font-size:1.02rem; line-height:1.2; word-break:break-word; }}
+        .market-status-card .terminal-sub {{ font-size:0.66rem; line-height:1.2; }}
+    }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -191,20 +203,19 @@ def credibility_label(sample_count):
 
 
 def render_market_status_cards(items):
-    cols = st.columns(len(items))
-    for col, item in zip(cols, items):
+    cards = []
+    for item in items:
         color = item.get("color", "#E2E8F0")
-        with col:
-            st.markdown(
-                f"""
-<div class="terminal-card" style="min-height:96px;">
+        cards.append(
+            f"""
+<div class="terminal-card market-status-card">
   <div class="terminal-title">{item.get('label', '')}</div>
   <div class="terminal-value" style="color:{color};">{item.get('value', '--')}</div>
   <div class="terminal-sub" style="color:{color};">{item.get('sub', '')}</div>
 </div>
-""",
-                unsafe_allow_html=True,
-            )
+"""
+        )
+    st.markdown(f"<div class='market-status-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
 def render_home_side_panel(title, rows, empty_text="暫無資料"):
