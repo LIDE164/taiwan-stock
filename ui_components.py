@@ -29,6 +29,10 @@ def render_app_style(is_light_mode=False):
     .section-title {{ color:#E2E8F0; font-size:1.05rem; font-weight:900; margin:0 0 10px 0; }}
     .hero-panel {{ background:#0F172A; border:1px solid #1E293B; border-radius:12px; padding:20px; margin-bottom:16px; }}
     .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
+    div[role="radiogroup"] {{ gap:10px; }}
+    div[role="radiogroup"] label {{ background:#111827; border:1px solid #1E293B; border-radius:8px; padding:8px 12px; margin-right:6px; color:#E2E8F0; }}
+    div[role="radiogroup"] label:has(input:checked) {{ border-color:#60A5FA; background:rgba(96,165,250,0.12); }}
+    [data-testid="stToggle"] label {{ color:#E2E8F0 !important; font-weight:800; }}
     @media (max-width: 900px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
 </style>
 """,
@@ -179,8 +183,8 @@ def generate_cards_html(
         mode_param = "&mode=intraday" if is_intraday or is_realtime_score_record(record) else ""
         stock_link = f'href="/?stock={ticker_code}{mode_param}" target="_self"'
 
-        disp_name = record.get("名稱", "")
-        if not disp_name:
+        disp_name = str(record.get("名稱", "")).strip()
+        if not disp_name or disp_name == ticker_code or disp_name.isdigit():
             disp_name = get_stock_name(record.get("代號", ""))
         fav_mark = " ⭐" if ticker_code in favorite_set else ""
         sim_mark = " 🛒" if ticker_code in simulated_set else ""

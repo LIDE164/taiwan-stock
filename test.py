@@ -1106,9 +1106,16 @@ if st.session_state.page == "home":
         if st.session_state.get("scan_results_is_local") and st.session_state.get("cloud_last_error"):
             st.caption(f"Firebase 狀態：{st.session_state.cloud_last_error}")
 
-        col_m1, col_m2 = st.columns([1, 1])
-        with col_m1: radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
-        with col_m2: only_favorites = st.toggle("⭐ 只看自選群組", value=False)
+        st.markdown("<div class='terminal-card' style='margin-bottom:12px;'>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>雷達篩選器</div>", unsafe_allow_html=True)
+        col_m1, col_m2 = st.columns([1.4, 1])
+        with col_m1:
+            st.caption("引擎模式")
+            radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
+        with col_m2:
+            st.caption("自選群組")
+            only_favorites = st.toggle("⭐ 只看自選群組", value=False)
+        st.markdown("</div>", unsafe_allow_html=True)
         requested_intraday = "盤中" in radar_mode
         score_mode, score_mode_label, is_intraday = resolve_score_mode(requested_intraday)
         st.session_state.is_intraday = is_intraday
@@ -1174,10 +1181,17 @@ if st.session_state.page == "home":
         if '產業' not in df_results.columns:
             df_results['產業'] = "一般產業"
         available_themes = ["全部產業"] + sorted(list(set(df_results['產業'].dropna().unique()) - {"一般產業"}))
-        selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
+        st.markdown("<div class='terminal-card' style='margin-bottom:12px;'>", unsafe_allow_html=True)
+        col_f1, col_f2 = st.columns([1.6, 1])
+        with col_f1:
+            st.caption("產業過濾")
+            selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
+        with col_f2:
+            st.caption("排序")
+            sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
         industry_count = len(df_results)
-        sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
             
         if not df_results.empty: 
             df_results = df_results[df_results['Score'] >= 60]
@@ -1214,9 +1228,10 @@ if st.session_state.page == "home":
                     fav_rows = []
                     for _, row in df_disp.head(20).iterrows():
                         if normalize_ticker(row.get("代號", "")) in favorite_set:
-                            fav_rows.append({"title": f"{row.get('代號')} {row.get('名稱', '')}", "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
+                            code = normalize_ticker(row.get("代號", ""))
+                            fav_rows.append({"title": f"{code} {get_stock_name(code)}", "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
                     mover_rows = [
-                        {"title": f"{r.get('代號')} {r.get('名稱', '')}", "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"}
+                        {"title": f"{normalize_ticker(r.get('代號', ''))} {get_stock_name(r.get('代號', ''))}", "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"}
                         for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows()
                     ]
                     order_rows = [
