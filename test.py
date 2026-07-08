@@ -610,7 +610,8 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     if previous is not None and previous > 0 and abs(price - previous) / previous > 0.08:
         return False
-    if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.08:
+    # 台指期近月通常不應長時間偏離加權指數太多；超過 3% 多半是抓到錯合約/錯欄位。
+    if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.03:
         return False
     return True
 
@@ -764,43 +765,31 @@ def render_index_board():
             {"label": "美元台幣", "value": "--" if twd.get("price") is None else f"{twd.get('price'):,.3f}", "sub": "--" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值"), "color": "#facc15"},
             {"label": "今日風險分數", "value": f"{risk_score}%", "sub": tmr_title, "color": bar_color},
         ])
-        
-        with st.container(border=False):
-            st.markdown("<div style='background-color:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:16px; margin-bottom:14px;'>", unsafe_allow_html=True)
-            col1, col2, col3 = st.columns([1, 1, 1.7])
-            with col1:
-                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color:#94a3b8; font-weight: bold;'>台灣加權指數</div><div style='text-align: center; font-size: 2rem; font-weight: 900; color: {twii_color}; margin: 0;'>{twii_close:,.0f}</div><div style='text-align: center; font-size: 0.95rem; font-weight: bold; color: {twii_color};'>{'↑' if twii_change > 0 else '↓'} {abs(twii_change):.0f}</div>", unsafe_allow_html=True)
-            with col2:
-                st.markdown(f"<div style='text-align: center; font-size: 0.85rem; color:#94a3b8; font-weight: bold;'>台指期 ({txf_symbol})</div><div style='text-align: center; font-size: 1.7rem; font-weight: 900; color: {txf_color}; margin: 0;'>{txf_price_text}</div><div style='text-align: center; font-size: 0.8rem; font-weight: bold; color: {txf_color};'>{txf_change_text}</div>", unsafe_allow_html=True)
-            with col3:
-                st.markdown(f"<div style='text-align: left; color: #facc15; font-size: 1.05rem; font-weight: bold;'>📝 盤勢分析 ({last_dt_str})</div><div style='font-size: 1.1rem; font-weight: bold;'>{today_title}</div><div style='font-size: 0.85rem; line-height: 1.4;'>{today_desc}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='text-align: left; color: #60a5fa; font-size: 1.05rem; font-weight: bold; margin-top:8px;'>🔮 次日開盤預測 ({next_dt_str})</div><div style='font-size: 1.1rem; font-weight: bold;'>{tmr_title}</div><div style='font-size: 0.85rem; line-height: 1.4;'>{tmr_desc}</div>", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("🔄 手動更新即時大盤報價", use_container_width=True): st.cache_data.clear(); st.rerun()
-        
-        st.markdown(f"<h4 style='margin-top:20px; text-align:center;'>🌍 全球總經與次日風險：<span style='color:{bar_color};'>{risk_score}%</span></h4>", unsafe_allow_html=True)
-        st.markdown(f"<div style='width:100%; height:12px; background-color:#1e293b; border-radius:6px; overflow:hidden; margin: 10px 0;'><div style='width: {risk_score}%; height:100%; background-color: {bar_color}; transition: width 0.5s;'></div></div>", unsafe_allow_html=True)
-        
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        def fmt_macro(item, digits=2):
-            price, pct = item.get("price"), item.get("pct")
-            if price is None or pct is None:
-                return "資料缺失", "資料缺失", "#94a3b8"
-            return f"{price:,.{digits}f}", f"{'+' if pct > 0 else ''}{pct:.2f}%", "#ef4444" if pct >= 0 else "#22c55e"
-        
-        with mc1.container(border=True):
-            sox_price, sox_pct_text, sox_col = fmt_macro(sox, 1)
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>費城半導體</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{sox_col};'>{sox_price}<br>{sox_pct_text}</div>", unsafe_allow_html=True)
-        with mc2.container(border=True):
-            vix_price, vix_pct_text, vix_col_raw = fmt_macro(vix, 2)
-            vix_col = "#22c55e" if vix.get("pct") is not None and vix.get("pct") <= 0 else vix_col_raw
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>VIX 恐慌指數</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{vix_col};'>{vix_price}<br>{vix_pct_text}</div>", unsafe_allow_html=True)
-        with mc3.container(border=True):
-            twd_price, _, _ = fmt_macro(twd, 3)
-            twd_text = "資料缺失" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值")
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>美元/台幣</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:#facc15;'>{twd_price}<br>{twd_text}</div>", unsafe_allow_html=True)
-        with mc4.container(border=True):
-            st.markdown(f"<div style='text-align:center; font-size:0.85rem;'>台指期</div><div style='text-align:center; font-size:1.1rem; font-weight:bold; color:{txf_color};'>{txf_price_text}<br>{('+' if txf_available and txf_change>0 else '') + (f'{txf_change:.0f}' if txf_available else '受限')}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:12px 14px; margin:10px 0 14px 0;">
+  <div style="display:flex; justify-content:space-between; gap:14px; align-items:center; flex-wrap:wrap;">
+    <div style="flex:1; min-width:260px;">
+      <span style="color:#FACC15; font-weight:900;">盤勢分析 ({last_dt_str})</span>
+      <span style="color:#E2E8F0; font-weight:900; margin-left:10px;">{today_title}</span>
+      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{today_desc}</span>
+    </div>
+    <div style="flex:1; min-width:260px;">
+      <span style="color:#60A5FA; font-weight:900;">次日開盤 ({next_dt_str})</span>
+      <span style="color:{bar_color}; font-weight:900; margin-left:10px;">{tmr_title}</span>
+      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{tmr_desc}</span>
+    </div>
+  </div>
+  <div style="width:100%; height:8px; background-color:#1E293B; border-radius:6px; overflow:hidden; margin-top:10px;">
+    <div style="width:{risk_score}%; height:100%; background-color:{bar_color};"></div>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if st.button("🔄 手動更新即時大盤報價", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     except: st.error(f"大盤儀表板加載中...")
 
 def get_dynamic_theme(ticker, industry):
