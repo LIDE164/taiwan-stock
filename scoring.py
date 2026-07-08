@@ -136,13 +136,6 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-2, f"⚠️ 資料信心偏低 ({confidence:.0f}%)，分數僅供保守參考")
     elif confidence < 80:
         add(-1, f"⚠️ 資料信心中等 ({confidence:.0f}%)，需留意缺失資料")
-    if signal_conflict == "高":
-        add(-2, "⚠️ 多空訊號衝突高，降低追價可信度")
-    elif signal_conflict == "中":
-        add(-1, "⚠️ 多空訊號仍有分歧")
-    if entry_pattern in ("過熱追高型", "假突破風險型"):
-        add(-2, f"⚠️ 進場型態偏風險：{entry_pattern}")
-
     final_score = max(5, min(99, int(50 + sc * 3)))
 
     if final_score >= 60:

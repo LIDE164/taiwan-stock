@@ -269,7 +269,7 @@ def hydrate_scan_results(force=False):
         st.session_state.scan_results = data if isinstance(data, list) else []
     return st.session_state.get("scan_results", [])
 
-def restore_nav_pool(min_score=45):
+def restore_nav_pool(min_score=60):
     records = hydrate_scan_results()
     if not records:
         return []
@@ -991,6 +991,7 @@ if st.session_state.page == "home":
             st.caption("目前非台股交易時段，系統已自動改採盤後正式分數。")
         
         cached_list = list(st.session_state.get('scan_results', []))
+        cloud_count = len(cached_list)
         
         if is_intraday:
             with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
@@ -1021,6 +1022,7 @@ if st.session_state.page == "home":
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
             df_results = pd.DataFrame(cached_list)
+        mode_count = len(df_results)
 
         if only_favorites:
             favorite_set = get_favorite_stock_set()
@@ -1028,16 +1030,19 @@ if st.session_state.page == "home":
                 df_results = df_results[df_results['代號'].astype(str).map(normalize_ticker).isin(favorite_set)]
             else:
                 df_results = df_results.iloc[0:0]
+        favorite_count = len(df_results)
         
         if '產業' not in df_results.columns:
             df_results['產業'] = "一般產業"
         available_themes = ["全部產業"] + sorted(list(set(df_results['產業'].dropna().unique()) - {"一般產業"}))
         selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
+        industry_count = len(df_results)
         sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
             
         if not df_results.empty: 
-            df_results = df_results[df_results['Score'] >= 45]
+            df_results = df_results[df_results['Score'] >= 60]
+            score_count = len(df_results)
             for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
                 if col not in df_results.columns:
                     df_results[col] = default
@@ -1052,9 +1057,15 @@ if st.session_state.page == "home":
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 當前符合條件標的共 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
-            st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
-        else: st.info("此條件下暫無標的。")
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔 | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
+            if not df_disp.empty:
+                st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
+            else:
+                st.info("目前沒有 60 分以上標的。")
+        else:
+            score_count = 0
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 篩選過程 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔</div>", unsafe_allow_html=True)
+            st.info("此條件下暫無標的。")
     else: st.info("💡 雲端資料庫目前無暫存數據。")
 
 # ==========================================
