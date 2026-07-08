@@ -1003,13 +1003,17 @@ if st.session_state.page == "home":
                     df = get_stock_data(ticker)
                     if df is not None:
                         base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
+                        analysis_cache = load_analysis_cache(ticker, 900)
+                        inst_data = analysis_cache.get("inst_data", []) if analysis_cache else None
                         if base:
                             fund = {"Industry": base.get('產業', '一般產業'), "BigPlayer": base.get('BigPlayer', 0), "EPS": base.get('EPS', '0'), "MoM": base.get('MoM', 0), "YoY": base.get('YoY', 0)}
                             wr = base.get('WinRate', 0.0)
                         else:
                             fund = {"Industry": "一般產業", "BigPlayer": 0, "EPS": "0", "MoM": 0, "YoY": 0}
                             wr = 0.0
-                        res = analyze_today(df, ticker, None, False, fund, cached_doc=base, is_intraday=True)
+                        if analysis_cache and analysis_cache.get("fund"):
+                            fund = analysis_cache.get("fund")
+                        res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=True)
                         if res:
                             res['WinRate'] = wr
                             res['Whale_Net'] = base.get('Whale_Net', 0) if base else 0
@@ -1209,7 +1213,8 @@ elif st.session_state.page == "analysis":
             data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
             save_analysis_cache(target, {"data": data, "fund": f_data, "inst_data": inst_data})
 
-        if cached_doc and not force_analysis_refresh:
+        use_cached_list_score = cached_doc and not force_analysis_refresh and not is_intra
+        if use_cached_list_score:
             for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence"]:
                 if k in cached_doc:
                     data[k] = cached_doc[k]
@@ -1244,8 +1249,16 @@ elif st.session_state.page == "analysis":
 
         backtest_df = df_slice.tail(st.session_state.view_days)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
-        if cached_doc and not force_analysis_refresh and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
+        if use_cached_list_score and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
+        if is_intra:
+            data['WinRate'] = win_rate
+            for row in st.session_state.get('nav_pool_data', []) or []:
+                if normalize_ticker(row.get('代號', '')) == target:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence"]:
+                        if k in data:
+                            row[k] = data[k]
+                    break
         
         curr_atr = df_slice['ATR'].iloc[-1] if 'ATR' in df_slice.columns else data['收盤價'] * 0.03
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
