@@ -173,6 +173,7 @@ def adjust_intraday_volume(volume, avg_volume_5d, is_intraday=False):
     return effective_volume, effective_volume / avg_volume_5d, confirmed
 
 def render_sidebar_favorites(container):
+    link_color = "#333" if is_light_mode else "#e2e8f0"
     with container.container():
         st.title("⭐ 我的自選群組")
         fav_groups = st.session_state.get('fav_groups', {})
@@ -182,7 +183,7 @@ def render_sidebar_favorites(container):
                 with st.expander(f"📁 {g_name} ({len(stocks)} 檔)"):
                     for s in stocks:
                         s_name = get_stock_name(s)
-                        st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{text_col}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
+                        st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{link_color}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
         else:
             st.info("尚未加入任何標的")
 
