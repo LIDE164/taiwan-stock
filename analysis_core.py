@@ -235,6 +235,43 @@ def is_strategy_signal(
     return score >= score_threshold, score
 
 
+def summarize_winrate(wins: int, total: int) -> Dict[str, Any]:
+    if total <= 0:
+        return {
+            "raw_win_rate": 0.0,
+            "adjusted_win_rate": 0.0,
+            "wilson_low": 0.0,
+            "wilson_high": 0.0,
+            "sample_confidence": "無樣本",
+        }
+
+    raw = wins / total
+    prior_wins = 5
+    prior_total = 10
+    bayes = (wins + prior_wins) / (total + prior_total)
+    reliability = min(1.0, total / 30)
+    adjusted = bayes * (1 - reliability) + raw * reliability
+
+    z = 1.96
+    denom = 1 + z * z / total
+    center = (raw + z * z / (2 * total)) / denom
+    margin = z * ((raw * (1 - raw) / total + z * z / (4 * total * total)) ** 0.5) / denom
+    if total < 10:
+        sample_confidence = "低"
+    elif total < 30:
+        sample_confidence = "中"
+    else:
+        sample_confidence = "高"
+
+    return {
+        "raw_win_rate": round(raw * 100, 1),
+        "adjusted_win_rate": round(adjusted * 100, 1),
+        "wilson_low": round(max(0.0, center - margin) * 100, 1),
+        "wilson_high": round(min(1.0, center + margin) * 100, 1),
+        "sample_confidence": sample_confidence,
+    }
+
+
 def _trade_result(
     future_df: pd.DataFrame,
     target_price: float,
@@ -337,6 +374,11 @@ def calculate_historical_performance(
         "avg_return": 0.0,
         "max_drawdown": 0.0,
         "max_consecutive_losses": 0,
+        "raw_win_rate": 0.0,
+        "adjusted_win_rate": 0.0,
+        "wilson_low": 0.0,
+        "wilson_high": 0.0,
+        "sample_confidence": "無樣本",
         "trades": [],
     }
     if df_slice is None or len(df_slice) < 21:
@@ -408,11 +450,12 @@ def calculate_historical_performance(
         if ret <= 0:
             current_losses += 1
             max_consecutive_losses = max(max_consecutive_losses, current_losses)
-        else:
+    else:
             current_losses = 0
+    winrate_stats = summarize_winrate(wins, len(trades))
 
     return {
-        "win_rate": round(wins / len(trades) * 100, 1),
+        "win_rate": winrate_stats["adjusted_win_rate"],
         "closed_signals": len(trades),
         "wins": wins,
         "losses": losses,
@@ -420,6 +463,7 @@ def calculate_historical_performance(
         "avg_return": round(float(np.mean(returns)), 2),
         "max_drawdown": round(max_drawdown, 2),
         "max_consecutive_losses": max_consecutive_losses,
+        **winrate_stats,
         "trades": trades,
     }
 

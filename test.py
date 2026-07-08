@@ -1182,7 +1182,7 @@ elif st.session_state.page == "analysis":
         wr_color = "#ef4444" if win_rate >= 60 else ("#facc15" if win_rate >= 40 else "#22c55e")
         with st.container(border=True):
             col_sum1, col_sum2, col_sum3 = st.columns(3)
-            with col_sum1: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>策略波段勝率<br><span style='color:{wr_color}; font-size:1.8rem; font-weight:900;'>{win_rate:.1f}%</span></div>", unsafe_allow_html=True)
+            with col_sum1: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>歷史勝率<br><span style='color:{wr_color}; font-size:1.8rem; font-weight:900;'>{win_rate:.1f}%</span></div>", unsafe_allow_html=True)
             with col_sum2: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>歷史觸發買點<br><span style='font-size:1.8rem; font-weight:900; color:#e2e8f0;'>{closed_signals} 次</span></div>", unsafe_allow_html=True)
             with col_sum3: st.markdown(f"<div style='text-align:center; color:#888; font-size:0.9rem;'>成功達標獲利<br><span style='font-size:1.8rem; font-weight:900; color:#ef4444;'>{wins} 次</span></div>", unsafe_allow_html=True)
             avg_ret = backtest_stats.get('avg_return', 0.0)
@@ -1198,7 +1198,7 @@ elif st.session_state.page == "analysis":
                 unsafe_allow_html=True
             )
             
-            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，目前圖表區間 {len(backtest_df)} 日共觸發 {closed_signals} 次買點，勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。" if closed_signals > 0 else f"目前圖表區間 {len(backtest_df)} 日內此策略尚未產生足夠的歷史買進訊號。"
+            summary_text = f"在自訂風報比 `1 : {dynamic_rrr}` 之下，目前圖表區間 {len(backtest_df)} 日共觸發 {closed_signals} 次買點，歷史勝率為 <span style='color:{wr_color}; font-weight:bold;'>{win_rate:.1f}%</span>，平均單筆報酬 <span style='color:{avg_col}; font-weight:bold;'>{avg_ret:+.2f}%</span>。此勝率已依樣本數做保守修正。" if closed_signals > 0 else f"目前圖表區間 {len(backtest_df)} 日內此策略尚未產生足夠的歷史買進訊號。"
             st.markdown(f"<div style='margin-top:12px; padding:12px; background-color:rgba(30,41,59,0.5); border-radius:8px; line-height: 1.6; font-size:0.95rem; color:#cbd5e1;'>📝 <b>回測總結：</b>{summary_text}</div>", unsafe_allow_html=True)
 
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
