@@ -45,6 +45,8 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     confidence = _num(data.get("Confidence"), 100)
     tomorrow_turn_price = _num(data.get("明日5MA扣抵價"), 0)
     ma5_up = bool(data.get("5MA已上彎", data.get("5日線即將上彎", False)))
+    signal_conflict = str(data.get("Signal_Conflict", "低"))
+    entry_pattern = str(data.get("Entry_Pattern", ""))
     vix = _num(fund_data.get("VIX"), 0)
     mom = _num(data.get("MoM"))
     yoy = _num(data.get("YoY"))
@@ -134,6 +136,12 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-2, f"⚠️ 資料信心偏低 ({confidence:.0f}%)，分數僅供保守參考")
     elif confidence < 80:
         add(-1, f"⚠️ 資料信心中等 ({confidence:.0f}%)，需留意缺失資料")
+    if signal_conflict == "高":
+        add(-2, "⚠️ 多空訊號衝突高，降低追價可信度")
+    elif signal_conflict == "中":
+        add(-1, "⚠️ 多空訊號仍有分歧")
+    if entry_pattern in ("過熱追高型", "假突破風險型"):
+        add(-2, f"⚠️ 進場型態偏風險：{entry_pattern}")
 
     final_score = max(5, min(99, int(50 + sc * 3)))
 

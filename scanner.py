@@ -220,7 +220,10 @@ def run_daily_scan():
                     "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs,
-                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp
+                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
+                    "Confidence": data.get("Confidence", 100),
+                    "Signal_Conflict": data.get("Signal_Conflict", "低"),
+                    "Entry_Pattern": data.get("Entry_Pattern", "一般觀察型")
                 }
         return None
 

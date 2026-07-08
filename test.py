@@ -105,6 +105,9 @@ def get_favorite_stock_set():
         favs.update(normalize_ticker(s) for s in stocks)
     return favs
 
+def get_simulated_order_stock_set():
+    return {normalize_ticker(o.get("ticker", "")) for o in st.session_state.get("simulated_orders", []) if o.get("ticker")}
+
 def get_market_progress(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
     start = now_tpe.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -699,6 +702,36 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     hit_pressure = (upper_shadow > body_len * 1.5)
     ma5_up_today = bool(len(df) >= 6 and float(df['Close'].iloc[-1]) > float(df['Close'].iloc[-6]))
     tomorrow_turn_price = float(df['Close'].iloc[-4]) if len(df) >= 4 else t_close
+    bullish_count = sum([
+        t_close > t.get('20MA', t_close),
+        t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0),
+        effective_volume > avg_vol_5 * 1.1 if avg_vol_5 > 0 else False,
+        bool(red_mask.iloc[-1]),
+        has_support,
+        ma5_up_today,
+    ])
+    bearish_count = sum([
+        t_close < t.get('20MA', t_close),
+        t.get('MACD_Hist', 0) <= p.get('MACD_Hist', 0),
+        t.get('RSI', 50) >= 75,
+        bool(black_mask.iloc[-1]),
+        hit_pressure,
+        t_close < tomorrow_turn_price if tomorrow_turn_price > 0 else False,
+    ])
+    conflict_score = min(bullish_count, bearish_count) / max(bullish_count, bearish_count, 1)
+    signal_conflict = "高" if conflict_score >= 0.55 else ("中" if conflict_score >= 0.3 else "低")
+    if hit_pressure and t.get('RSI', 50) >= 75:
+        entry_pattern = "過熱追高型"
+    elif t_close > t.get('20MA', t_close) and est_vol_ratio > 1.5 and t.get('MACD_Hist', 0) > p.get('MACD_Hist', 0):
+        entry_pattern = "趨勢突破型"
+    elif has_support and t_close > t.get('20MA', t_close):
+        entry_pattern = "回測支撐型"
+    elif t.get('RSI', 50) <= 35 and t_close > p_close:
+        entry_pattern = "低檔反彈型"
+    elif t_close > t.get('20MA', t_close) and hit_pressure:
+        entry_pattern = "假突破風險型"
+    else:
+        entry_pattern = "一般觀察型"
     data_quality, confidence = build_data_quality(
         price_status="realtime" if effective_intraday else "ok",
         volume_status="confirmed" if volume_confirmed else "estimated",
@@ -732,6 +765,7 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "Price_Dev": price_dev, "Price_Dev_Source": price_dev_source, "Ohlc_Avg_Dev": price_dev if price_dev_source == "ohlc_avg" else 0,
         "VWAP_Dev": price_dev if price_dev_source == "real_vwap" else 0, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
         "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
+        "Signal_Conflict": signal_conflict, "Conflict_Score": round(conflict_score, 2), "Entry_Pattern": entry_pattern,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > price_anchor else "跌破均價線")
@@ -871,6 +905,8 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
 
 def generate_cards_html(df_disp, is_intraday=False):
     cards_html = ""
+    favorite_set = get_favorite_stock_set()
+    simulated_set = get_simulated_order_stock_set()
     for _, r in df_disp.iterrows():
         p_val = r.get('漲跌', 0)
         p_col = "#ef4444" if p_val >= 0 else "#22c55e"
@@ -883,10 +919,13 @@ def generate_cards_html(df_disp, is_intraday=False):
         score_mode = r.get('Score_Mode', st.session_state.get('score_mode_label', '盤後正式分數'))
             
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
-        stock_link = f'href="/?stock={r.get("代號", "")}" target="_self"'
+        ticker_code = normalize_ticker(r.get("代號", ""))
+        stock_link = f'href="/?stock={ticker_code}" target="_self"'
         
         disp_name = r.get('名稱', '')
         if not disp_name or disp_name == "": disp_name = get_stock_name(r.get("代號", ""))
+        fav_mark = " ⭐" if ticker_code in favorite_set else ""
+        sim_mark = " 🛒" if ticker_code in simulated_set else ""
         
         cards_html += f"<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
         cards_html += f"<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; position: relative; z-index: 10;'>"
@@ -896,7 +935,7 @@ def generate_cards_html(df_disp, is_intraday=False):
         cards_html += f"<span style='color: {r_col}; font-size: 0.65rem; font-weight: 800; margin-top: 2px;'>{rating}</span></div>"
         
         cards_html += f"<a {stock_link} class='stock-card-link'><div style='display: flex; align-items: center; gap: 6px;'>"
-        cards_html += f"<span class='stock-name-hover' style='color: #f8fafc; font-weight: bold; font-size: 1.15rem; transition: color 0.2s;'>{disp_name}</span>"
+        cards_html += f"<span class='stock-name-hover' style='color: #f8fafc; font-weight: bold; font-size: 1.15rem; transition: color 0.2s;'>{disp_name}{fav_mark}{sim_mark}</span>"
         
         industry_name = r.get("產業", "一般產業")
         cards_html += f"<span style='font-size: 0.7rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 600;'>🏷️ {industry_name}</span>"
@@ -908,14 +947,15 @@ def generate_cards_html(df_disp, is_intraday=False):
         
         wr_val = r.get('WinRate', 0.0)
         wr_col = "#ef4444" if wr_val >= 60 else ("#facc15" if wr_val >= 40 else "#22c55e")
-        rrr_val = r.get('RRR', 1.5)
+        confidence_val = safe_num(r.get('Confidence'), 100)
+        conf_col = "#4ade80" if confidence_val >= 80 else ("#facc15" if confidence_val >= 60 else "#94a3b8")
         w_net = r.get('Whale_Net', 0)
         w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
         whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
         
         cards_html += f"<div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>風報比 RRR</span><span style='color: #e2e8f0; font-weight: bold; font-family: monospace;'>1 : {rrr_val}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>資料信心</span><span style='color: {conf_col}; font-weight: bold; font-family: monospace;'>{confidence_val:.0f}%</span></div>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人淨買</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div></div>"
         cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>進場特徵：{r.get('Feature', '一般')}</span></div>"
         cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{score_mode}</div>"
@@ -994,10 +1034,20 @@ if st.session_state.page == "home":
         available_themes = ["全部產業"] + sorted(list(set(df_results['產業'].dropna().unique()) - {"一般產業"}))
         selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
+        sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
             
         if not df_results.empty: 
             df_results = df_results[df_results['Score'] >= 45]
-            df_disp = df_results.sort_values(by=['Score', '漲跌幅'], ascending=[False, False]).head(100)
+            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
+                if col not in df_results.columns:
+                    df_results[col] = default
+                df_results[col] = pd.to_numeric(df_results[col], errors="coerce").fillna(default)
+            sort_map = {
+                "AI分數": ["Score", "漲跌幅"],
+                "歷史勝率": ["WinRate", "Score", "漲跌幅"],
+                "資料信心": ["Confidence", "Score", "漲跌幅"],
+            }
+            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(100)
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
