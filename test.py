@@ -121,9 +121,17 @@ is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_
 if LOW_FIREBASE_READ_MODE:
     st.sidebar.caption("Firebase 低讀取模式：開啟")
 try:
-    st.sidebar.caption(f"Firebase 專案：{st.secrets.get('firebase', {}).get('project_id', '未設定')}")
+    firebase_secret_info = st.secrets.get('firebase', {})
+    st.sidebar.caption(f"Firebase 專案：{firebase_secret_info.get('project_id', '未設定')}")
+    client_email = firebase_secret_info.get('client_email', '未設定')
+    st.sidebar.caption(f"Firebase 帳號：{client_email}")
 except Exception:
     st.sidebar.caption("Firebase 專案：未設定")
+if "cloud_daily_scan_meta" in st.session_state:
+    scan_meta = st.session_state.cloud_daily_scan_meta
+    st.sidebar.caption(f"daily_scan：{scan_meta.get('count', 0)} 檔")
+    if scan_meta.get("updated"):
+        st.sidebar.caption(f"daily_scan 更新：{scan_meta.get('updated')}")
 
 if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True):
     st.cache_data.clear()
@@ -329,9 +337,22 @@ def load_cloud_data(collection_name, document_name, default_data):
                 st.session_state.cloud_last_error = f"{target} 文件不存在"
             st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts}
             return default_data
-        value = doc.to_dict().get('data', default_data)
+        doc_data = doc.to_dict()
+        value = doc_data.get('data', default_data)
         st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
         if collection_name == "market_data":
+            updated_at = doc_data.get("update_time") or doc_data.get("updated_at") or ""
+            try:
+                if hasattr(updated_at, "astimezone"):
+                    updated_at = updated_at.astimezone(TPE).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    updated_at = str(updated_at)
+            except Exception:
+                updated_at = str(updated_at)
+            st.session_state.cloud_daily_scan_meta = {
+                "count": len(value) if isinstance(value, list) else 0,
+                "updated": updated_at,
+            }
             if isinstance(value, list) and len(value) == 0:
                 st.session_state.cloud_last_error = f"{target} 的 data 欄位是空清單"
             else:
