@@ -38,6 +38,20 @@ def init_firestore():
 db = init_firestore()
 FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
+FALLBACK_SCAN_POOL = [
+    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891", "2886",
+    "2303", "3711", "2357", "2379", "3034", "3008", "3231", "3661", "3017", "3324",
+    "2345", "2360", "2356", "2327", "4938", "2376", "6669", "5269", "2395", "2059",
+    "2603", "2609", "2615", "2618", "2606", "2610", "2618", "2637", "2645", "5608",
+    "1301", "1303", "1326", "6505", "2002", "2014", "2027", "2105", "2201", "2207",
+    "1216", "1227", "1231", "1402", "1476", "1590", "1605", "1717", "1722", "1785",
+    "1802", "1904", "2006", "2049", "2408", "2409", "2449", "2498", "2515", "2542",
+    "2614", "2801", "2809", "2880", "2883", "2884", "2885", "2887", "2890", "2892",
+    "2912", "3037", "3045", "3094", "3105", "3189", "3406", "3443", "3481", "3533",
+    "3702", "4904", "5347", "5434", "5871", "5876", "6176", "6239", "6415", "8046",
+]
+MIN_SCAN_RESULTS_TO_OVERWRITE = 20
+
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
     "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
@@ -115,23 +129,31 @@ def fetch_top_500():
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
     try:
         res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res.raise_for_status()
         df_twse = pd.DataFrame(res.json())
         df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'], errors='coerce')
         all_stocks.append(df_twse[['Code', 'TradeVolume']])
-    except: pass
+    except Exception as e:
+        logging.warning("上市成交量排行取得失敗，改用備援池: %s", e)
     try:
         res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2.raise_for_status()
         df_tpex = pd.DataFrame(res2.json())
         df_tpex = df_tpex.rename(columns={'SecuritiesCompanyCode': 'Code', 'TradingVolume': 'TradeVolume'})
         df_tpex['TradeVolume'] = pd.to_numeric(df_tpex['TradeVolume'], errors='coerce')
         all_stocks.append(df_tpex[['Code', 'TradeVolume']])
-    except: pass
+    except Exception as e:
+        logging.warning("上櫃成交量排行取得失敗，改用備援池: %s", e)
 
     if all_stocks:
         df_all = pd.concat(all_stocks, ignore_index=True)
         df_all = df_all[df_all['Code'].str.match(r'^\d{4}$')]
-        return df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
-    else: return ["2330", "2317", "2454", "3231", "2382"]
+        ranked = df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
+        merged = list(dict.fromkeys(ranked + FALLBACK_SCAN_POOL))
+        logging.info("股票池完成：交易所 %s 檔，合併備援後 %s 檔", len(ranked), len(merged))
+        return merged
+    logging.warning("交易所股票池完全取得失敗，使用核心備援池 %s 檔", len(FALLBACK_SCAN_POOL))
+    return FALLBACK_SCAN_POOL
 
 def get_stock_data(ticker_number):
     try:
@@ -238,7 +260,7 @@ def run_daily_scan():
                 }
         return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         for res in executor.map(process_stock, pool):
             if res: scan_results.append(res)
             
@@ -246,6 +268,23 @@ def run_daily_scan():
             
     if db is None:
         logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
+        return scan_results
+
+    if len(scan_results) < MIN_SCAN_RESULTS_TO_OVERWRITE:
+        logging.error(
+            "掃描結果僅 %s 檔，低於安全覆蓋門檻 %s 檔，本次不覆蓋 Firebase daily_scan。",
+            len(scan_results),
+            MIN_SCAN_RESULTS_TO_OVERWRITE,
+        )
+        try:
+            old_doc = db.collection("market_data").document("daily_scan").get()
+            if old_doc.exists:
+                old_data = old_doc.to_dict().get("data", [])
+                if isinstance(old_data, list) and len(old_data) >= len(scan_results):
+                    logging.info("保留既有雲端名單 %s 檔。", len(old_data))
+                    return old_data
+        except Exception as e:
+            logging.warning("讀取既有雲端名單失敗: %s", e)
         return scan_results
 
     db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})

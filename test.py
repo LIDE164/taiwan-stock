@@ -1251,14 +1251,27 @@ if st.session_state.page == "home":
             if "Signal_Conflict" not in df_results.columns:
                 df_results["Signal_Conflict"] = "低"
             risk_allowed_patterns = ["趨勢突破型", "回測支撐型", "整理突破型"]
-            df_results = df_results[df_results["Score"] >= score_threshold]
-            df_results = df_results[~df_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
-            df_results = df_results[df_results["Entry_Pattern"].isin(risk_allowed_patterns)]
-            df_results = df_results[(df_results["Signal_Conflict"] != "高") & (df_results["Conflict_Score"] <= 0.45)]
-            df_results = df_results[(df_results["收盤價"] > df_results["20MA"]) & (df_results["MACD柱"] > df_results["前日MACD柱"])]
-            df_results = df_results[(df_results["Est_Vol_Ratio"] >= 1.1) & (df_results["Est_Vol_Ratio"] <= 3.0)]
-            df_results = df_results[(df_results["BIAS"] >= 0) & (df_results["BIAS"] < 8) & (df_results["RSI"] < 75)]
-            df_results = df_results[(df_results["Backtest_Samples"] >= 10) & (df_results["Confidence"] >= 70)]
+            df_pool = df_results.copy()
+            strict_results = df_pool[df_pool["Score"] >= score_threshold]
+            strict_results = strict_results[~strict_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
+            strict_results = strict_results[strict_results["Entry_Pattern"].isin(risk_allowed_patterns)]
+            strict_results = strict_results[(strict_results["Signal_Conflict"] != "高") & (strict_results["Conflict_Score"] <= 0.45)]
+            strict_results = strict_results[(strict_results["收盤價"] > strict_results["20MA"]) & (strict_results["MACD柱"] > strict_results["前日MACD柱"])]
+            strict_results = strict_results[(strict_results["Est_Vol_Ratio"] >= 1.1) & (strict_results["Est_Vol_Ratio"] <= 3.0)]
+            strict_results = strict_results[(strict_results["BIAS"] >= 0) & (strict_results["BIAS"] < 8) & (strict_results["RSI"] < 75)]
+            strict_results = strict_results[(strict_results["Backtest_Samples"] >= 10) & (strict_results["Confidence"] >= 70)]
+            strict_count = len(strict_results)
+
+            if strict_count > 0:
+                df_results = strict_results
+                list_mode_note = "明日起漲嚴格條件"
+            else:
+                fallback_results = df_pool[df_pool["Score"] >= 60]
+                fallback_results = fallback_results[~fallback_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
+                fallback_results = fallback_results[fallback_results["Signal_Conflict"] != "高"]
+                fallback_results = fallback_results[fallback_results["Confidence"] >= 60]
+                df_results = fallback_results
+                list_mode_note = "備援觀察清單"
             score_count = len(df_results)
             sort_map = {
                 "AI分數": ["Score", "漲跌幅"],
@@ -1270,7 +1283,7 @@ if st.session_state.page == "home":
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 明日起漲條件 {score_count} 檔 | 門檻 {score_threshold} 分 / 風險 {market_risk_score}% | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 嚴格條件 {strict_count} 檔 → {list_mode_note} {score_count} 檔 | 門檻 {score_threshold} 分 / 風險 {market_risk_score}% | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
