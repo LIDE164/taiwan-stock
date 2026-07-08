@@ -917,6 +917,7 @@ def generate_cards_html(df_disp, is_intraday=False):
         s_col = "#ef4444" if score >= 60 else ("#facc15" if score >= 45 else "#22c55e")
         rating = r.get('評級', '⚪ 忽略').replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
         score_mode = r.get('Score_Mode', st.session_state.get('score_mode_label', '盤後正式分數'))
+        score_source = r.get('Score_Source', '')
             
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(r.get("代號", ""))
@@ -958,7 +959,8 @@ def generate_cards_html(df_disp, is_intraday=False):
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>資料信心</span><span style='color: {conf_col}; font-weight: bold; font-family: monospace;'>{confidence_val:.0f}%</span></div>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人淨買</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div></div>"
         cards_html += f"<div style='font-size: 0.75rem; color: #fbbf24; display: flex; align-items: flex-start; gap: 6px; position: relative; z-index: 10;'><span style='margin-top: 1px;'>⚡</span><span style='line-height: 1.4; font-weight: 500;'>進場特徵：{r.get('Feature', '一般')}</span></div>"
-        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{score_mode}</div>"
+        source_text = f"{score_mode}｜{score_source}" if score_source else score_mode
+        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{source_text}</div>"
         
         cards_html += f"</div>"
     return cards_html
@@ -1004,19 +1006,24 @@ if st.session_state.page == "home":
                     if df is not None:
                         base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
                         analysis_cache = load_analysis_cache(ticker, 900)
-                        inst_data = analysis_cache.get("inst_data", []) if analysis_cache else None
-                        if base:
-                            fund = {"Industry": base.get('產業', '一般產業'), "BigPlayer": base.get('BigPlayer', 0), "EPS": base.get('EPS', '0'), "MoM": base.get('MoM', 0), "YoY": base.get('YoY', 0)}
-                            wr = base.get('WinRate', 0.0)
-                        else:
-                            fund = {"Industry": "一般產業", "BigPlayer": 0, "EPS": "0", "MoM": 0, "YoY": 0}
-                            wr = 0.0
+                        cached_data = analysis_cache.get("data") if analysis_cache else None
+                        if isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
+                            cached_data = dict(cached_data)
+                            cached_data["Score_Source"] = "解析快取"
+                            return cached_data
+
                         if analysis_cache and analysis_cache.get("fund"):
                             fund = analysis_cache.get("fund")
+                            inst_data = analysis_cache.get("inst_data", [])
+                        else:
+                            inst_data = get_institutional_trading(ticker)
+                            fund = get_fundamental_and_industry_data(ticker, df['Close'].iloc[-1])
+                            bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker)
+                            fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=True)
                         if res:
-                            res['WinRate'] = wr
-                            res['Whale_Net'] = base.get('Whale_Net', 0) if base else 0
+                            res["Score_Source"] = "盤中重算"
+                            save_analysis_cache(ticker, {"data": res, "fund": fund, "inst_data": inst_data})
                             return res
                     return None
                     
