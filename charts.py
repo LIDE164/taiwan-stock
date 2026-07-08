@@ -90,6 +90,7 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
 
     df = compute_ai_signals(df)
     df_view = df.tail(view_days).copy()
+    buy_date_set = {pd.to_datetime(d).strftime('%Y-%m-%d') for d in buy_dates}
     
     x_vals = df_view.index.strftime('%Y-%m-%d')
     colors = ['#ef4444' if row['Close'] >= row['Open'] else '#22c55e' for _, row in df_view.iterrows()]
@@ -198,7 +199,9 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         ai_x, ai_y, ai_text, ai_colors, ai_hover = [], [], [], [], []
         for i in range(len(df_view)):
             row = df_view.iloc[i]
-            if row.get('ai_buy', False):
+            date_key = df_view.index[i].strftime('%Y-%m-%d')
+            is_backtest_buy = date_key in buy_date_set if buy_date_set else bool(row.get('ai_buy', False))
+            if is_backtest_buy:
                 ai_x.append(x_vals[i])
                 ai_y.append(row['Low'] * 0.91) # 第三層偏移，保證絕對不會重疊
                 ai_text.append(f"{int(row['ai_score'])}<br>{str(row.get('ai_pattern', ''))[:2]}")

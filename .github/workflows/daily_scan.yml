@@ -32,4 +32,9 @@ jobs:
           echo "$SECRETS_CONTENT" > .streamlit/secrets.toml
 
       - name: 執行全市場掃描程式
-        run: python scanner.py
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FORCE_SCAN=1 python scanner.py
+          else
+            python scanner.py
+          fi

@@ -6,12 +6,13 @@ import pandas as pd
 import requests
 import concurrent.futures
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import streamlit as st
 
 # 引入共用核心演算法
-from analysis_core import apply_technical_indicators, build_score_input, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, build_score_input, calculate_historical_winrate
 from scoring import get_decision_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -166,10 +167,22 @@ def get_institutional_trading(ticker):
 
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
-    win_rate, _, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0)
+    win_rate, _, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
     return win_rate
 
+def should_run_postclose_scan(now_tpe=None):
+    now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
+    if os.getenv("FORCE_SCAN") == "1":
+        return True
+    if now_tpe.weekday() >= 5:
+        return False
+    postclose_time = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
+    return now_tpe >= postclose_time
+
 def run_daily_scan():
+    if not should_run_postclose_scan():
+        logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
+        return []
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
     build_industry_cache()
     

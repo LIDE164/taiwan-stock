@@ -7,6 +7,11 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+BACKTEST_LOOKBACK_DAYS = 90
+BACKTEST_HOLD_DAYS = 9
+BACKTEST_MIN_GAP_DAYS = 5
+BACKTEST_SCORE_THRESHOLD = 60
+
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -224,7 +229,7 @@ def is_strategy_signal(
     df_slice: pd.DataFrame,
     fund: Optional[Dict[str, Any]] = None,
     mode: str = "post",
-    score_threshold: int = 60,
+    score_threshold: int = BACKTEST_SCORE_THRESHOLD,
 ) -> Tuple[bool, int]:
     if df_slice is None or len(df_slice) < 20:
         return False, 0
@@ -357,11 +362,11 @@ def calculate_historical_performance(
     target_mult: float = 1.5,
     stop_mult: float = 1.0,
     *,
-    lookback_days: int = 90,
-    hold_days: int = 9,
-    min_gap_days: int = 5,
+    lookback_days: int = BACKTEST_LOOKBACK_DAYS,
+    hold_days: int = BACKTEST_HOLD_DAYS,
+    min_gap_days: int = BACKTEST_MIN_GAP_DAYS,
     fund: Optional[Dict[str, Any]] = None,
-    score_threshold: int = 60,
+    score_threshold: int = BACKTEST_SCORE_THRESHOLD,
     fee_rate: float = 0.001425,
     slippage_rate: float = 0.0005,
 ) -> Dict[str, Any]:
@@ -473,11 +478,11 @@ def calculate_historical_winrate(
     target_mult: float = 1.5,
     stop_mult: float = 1.0,
     *,
-    lookback_days: int = 90,
-    hold_days: int = 9,
-    min_gap_days: int = 5,
+    lookback_days: int = BACKTEST_LOOKBACK_DAYS,
+    hold_days: int = BACKTEST_HOLD_DAYS,
+    min_gap_days: int = BACKTEST_MIN_GAP_DAYS,
     fund: Optional[Dict[str, Any]] = None,
-    score_threshold: int = 60,
+    score_threshold: int = BACKTEST_SCORE_THRESHOLD,
     fee_rate: float = 0.001425,
     slippage_rate: float = 0.0005,
 ) -> Tuple[float, int, int, List[Any]]:

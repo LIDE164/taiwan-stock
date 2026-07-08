@@ -16,7 +16,7 @@ import logging
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
-from analysis_core import apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
 
@@ -287,7 +287,7 @@ def restore_nav_pool(min_score=45):
 
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
-if 'view_days' not in st.session_state: st.session_state.view_days = 30
+if 'view_days' not in st.session_state: st.session_state.view_days = BACKTEST_LOOKBACK_DAYS
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
@@ -1126,8 +1126,11 @@ elif st.session_state.page == "analysis":
     df_chart = get_stock_data(target)
     if df_chart is not None and len(df_chart) >= 14:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
+        current_list = st.session_state.get('nav_pool_data', []) or []
         cached_list = st.session_state.get('scan_results', [])
-        cached_doc = next((x for x in cached_list if str(x['代號']) == str(target)), None)
+        cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
+        if cached_doc is None:
+            cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
         is_intra = st.session_state.get('is_intraday', False)
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
@@ -1144,6 +1147,13 @@ elif st.session_state.page == "analysis":
             f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
             data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
             save_analysis_cache(target, {"data": data, "fund": f_data, "inst_data": inst_data})
+
+        if cached_doc and not force_analysis_refresh:
+            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence"]:
+                if k in cached_doc:
+                    data[k] = cached_doc[k]
+            if "Score_Mode" not in data:
+                data["Score_Mode"] = st.session_state.get("score_mode_label", "盤後正式分數")
 
         sc = data['Score']
         
@@ -1173,6 +1183,8 @@ elif st.session_state.page == "analysis":
 
         backtest_df = df_slice.tail(st.session_state.view_days)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
+        if cached_doc and not force_analysis_refresh and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
+            win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
         
         curr_atr = df_slice['ATR'].iloc[-1] if 'ATR' in df_slice.columns else data['收盤價'] * 0.03
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
