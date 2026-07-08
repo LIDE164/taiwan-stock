@@ -313,17 +313,17 @@ st.session_state.fav_groups = {
 render_sidebar_favorites(fav_sidebar_slot)
 
 if 'stock' in st.query_params:
-    q_stock = st.query_params['stock']
+    q_stock = normalize_ticker(st.query_params['stock'])
     q_mode = str(st.query_params.get('mode', '')).lower()
     if q_mode in ("intraday", "realtime"):
         _, q_score_mode_label, q_is_intraday = resolve_score_mode(True)
         st.session_state.is_intraday = q_is_intraday
         st.session_state.score_mode_label = q_score_mode_label
     if st.session_state.get('last_q_stock') != q_stock:
-        st.session_state.current_stock = q_stock
-        st.session_state.page = "analysis"
         st.session_state.date_offset = 0
-        st.session_state.last_q_stock = q_stock
+    st.session_state.current_stock = q_stock
+    st.session_state.page = "analysis"
+    st.session_state.last_q_stock = q_stock
 
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
@@ -1101,7 +1101,10 @@ elif st.session_state.page == "simulated_orders":
     
     col_home, col_clear = st.columns([1, 1])
     with col_home:
-        if st.button("🏠 回雷達總機", use_container_width=True): st.session_state.page = "home"; st.rerun()
+        if st.button("🏠 回雷達總機", use_container_width=True):
+            st.query_params.clear()
+            st.session_state.page = "home"
+            st.rerun()
     with col_clear:
         if st.button("🗑️ 清空所有紀錄", use_container_width=True):
             st.session_state.simulated_orders = []
@@ -1203,7 +1206,10 @@ elif st.session_state.page == "analysis":
     with c1:
         if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
     with c2:
-        if st.button("🏠 回雷達總機", use_container_width=True): st.session_state.page = "home"; st.rerun()
+        if st.button("🏠 回雷達總機", use_container_width=True):
+            st.query_params.clear()
+            st.session_state.page = "home"
+            st.rerun()
     with c3:
         if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
