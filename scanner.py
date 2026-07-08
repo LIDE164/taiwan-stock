@@ -224,7 +224,17 @@ def run_daily_scan():
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
                     "Confidence": data.get("Confidence", 100),
                     "Signal_Conflict": data.get("Signal_Conflict", "低"),
-                    "Entry_Pattern": data.get("Entry_Pattern", "一般觀察型")
+                    "Conflict_Score": data.get("Conflict_Score", 0),
+                    "Entry_Pattern": data.get("Entry_Pattern", "一般觀察型"),
+                    "Est_Vol_Ratio": data.get("Est_Vol_Ratio", 0),
+                    "BIAS": data.get("BIAS", 0),
+                    "RSI": data.get("RSI", 50),
+                    "20MA": data.get("20MA", 0),
+                    "MACD柱": data.get("MACD柱", 0),
+                    "前日MACD柱": data.get("前日MACD柱", 0),
+                    "Box_Breakout": data.get("Box_Breakout", False),
+                    "Box_Range_Pct": data.get("Box_Range_Pct", 0),
+                    "Tomorrow_Plan": data.get("Tomorrow_Plan", {})
                 }
         return None
 

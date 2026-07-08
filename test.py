@@ -782,6 +782,7 @@ def render_index_board():
             {"label": "美元台幣", "value": "--" if twd.get("price") is None else f"{twd.get('price'):,.3f}", "sub": "--" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值"), "color": "#facc15"},
             {"label": "今日風險分數", "value": f"{risk_score}%", "sub": tmr_title, "color": bar_color},
         ])
+        st.session_state.market_risk_score = risk_score
         st.markdown(
             f"""
 <div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:12px 14px; margin:10px 0 14px 0;">
@@ -882,6 +883,16 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     has_support = (lower_shadow > body_len * 1.5) and (effective_volume > avg_vol_5) and volume_confirmed
     hit_pressure = (upper_shadow > body_len * 1.5)
+    box_high, box_low, box_range_pct = 0.0, 0.0, 0.0
+    box_breakout = False
+    breakout_volume_ok = False
+    if len(df) >= 11:
+        box_window = df.iloc[-11:-1]
+        box_high = float(box_window["High"].max())
+        box_low = float(box_window["Low"].min())
+        box_range_pct = (box_high - box_low) / box_low * 100 if box_low > 0 else 0.0
+        breakout_volume_ok = est_vol_ratio >= 1.2
+        box_breakout = bool(box_range_pct < 12 and t_close > box_high and breakout_volume_ok and not hit_pressure)
     ma5_up_today = bool(len(df) >= 6 and float(df['Close'].iloc[-1]) > float(df['Close'].iloc[-6]))
     tomorrow_turn_price = float(df['Close'].iloc[-4]) if len(df) >= 4 else t_close
     bullish_count = sum([
@@ -914,6 +925,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         entry_pattern = "假突破風險型"
     else:
         entry_pattern = "一般觀察型"
+    if box_breakout and entry_pattern == "一般觀察型":
+        entry_pattern = "整理突破型"
     data_quality, confidence = build_data_quality(
         price_status="realtime" if effective_intraday else "ok",
         volume_status="confirmed" if volume_confirmed else "estimated",
@@ -922,6 +935,15 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         macro_status=macro.get("status", {}),
         txf_status=macro.get("status", {}).get("TX=F", "missing")
     )
+    ma20_val = float(t.get('20MA', t_close) or t_close)
+    atr_val = float(t.get('ATR', t_close * 0.03) or t_close * 0.03)
+    tomorrow_plan = {
+        "明日觸發": f"突破今日高點 {t_high:.2f} 且量能延續",
+        "觀察支撐": f"收盤 {t_close:.2f} / 20MA {ma20_val:.2f}",
+        "失效價": f"跌破 {min(t_low, ma20_val):.2f}",
+        "禁止追高價": f"開高超過 {t_close * 1.035:.2f} 不追",
+        "建議型態": entry_pattern,
+    }
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -948,6 +970,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "VWAP_Dev": price_dev if price_dev_source == "real_vwap" else 0, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
         "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
         "Signal_Conflict": signal_conflict, "Conflict_Score": round(conflict_score, 2), "Entry_Pattern": entry_pattern,
+        "Box_Breakout": box_breakout, "Box_Days": 10, "Box_Range_Pct": round(box_range_pct, 2), "Breakout_Volume_OK": breakout_volume_ok,
+        "Tomorrow_Plan": tomorrow_plan,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > price_anchor else "跌破均價線")
@@ -1124,16 +1148,17 @@ if st.session_state.page == "home":
             st.caption(f"Firebase 狀態：{st.session_state.cloud_last_error}")
 
         st.markdown("<div class='terminal-card' style='margin-bottom:12px;'>", unsafe_allow_html=True)
-        st.markdown("<div class='section-title'>雷達篩選器</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>明日起漲觀察清單</div>", unsafe_allow_html=True)
         col_m1, col_m2 = st.columns([1.4, 1])
         with col_m1:
             st.caption("引擎模式")
-            radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
+            radar_mode = st.radio("引擎模式：", ["盤後正式選股", "隔日追蹤 / 盤中確認"], horizontal=True, label_visibility="collapsed")
         with col_m2:
             st.caption("自選群組")
-            only_favorites = st.toggle("⭐ 只看自選群組", value=False)
+            favorite_mode = st.radio("自選群組：", ["全部清單", "只看自選群組"], horizontal=True, label_visibility="collapsed")
+            only_favorites = favorite_mode == "只看自選群組"
         st.markdown("</div>", unsafe_allow_html=True)
-        requested_intraday = "盤中" in radar_mode
+        requested_intraday = "盤中確認" in radar_mode
         score_mode, score_mode_label, is_intraday = resolve_score_mode(requested_intraday)
         st.session_state.is_intraday = is_intraday
         st.session_state.score_mode_label = score_mode_label
@@ -1211,12 +1236,26 @@ if st.session_state.page == "home":
         industry_count = len(df_results)
             
         if not df_results.empty: 
-            df_results = df_results[df_results['Score'] >= 60]
-            score_count = len(df_results)
-            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
+            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100, "Backtest_Samples": 0, "Est_Vol_Ratio": 0, "BIAS": 0, "RSI": 50, "Conflict_Score": 0, "收盤價": 0, "20MA": 0, "MACD柱": 0, "前日MACD柱": 0}.items():
                 if col not in df_results.columns:
                     df_results[col] = default
                 df_results[col] = pd.to_numeric(df_results[col], errors="coerce").fillna(default)
+            market_risk_score = int(st.session_state.get("market_risk_score", 50))
+            score_threshold = 60 if market_risk_score < 40 else (65 if market_risk_score <= 70 else 75)
+            if "Entry_Pattern" not in df_results.columns:
+                df_results["Entry_Pattern"] = "一般觀察型"
+            if "Signal_Conflict" not in df_results.columns:
+                df_results["Signal_Conflict"] = "低"
+            risk_allowed_patterns = ["趨勢突破型", "回測支撐型", "整理突破型"]
+            df_results = df_results[df_results["Score"] >= score_threshold]
+            df_results = df_results[~df_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
+            df_results = df_results[df_results["Entry_Pattern"].isin(risk_allowed_patterns)]
+            df_results = df_results[(df_results["Signal_Conflict"] != "高") & (df_results["Conflict_Score"] <= 0.45)]
+            df_results = df_results[(df_results["收盤價"] > df_results["20MA"]) & (df_results["MACD柱"] > df_results["前日MACD柱"])]
+            df_results = df_results[(df_results["Est_Vol_Ratio"] >= 1.1) & (df_results["Est_Vol_Ratio"] <= 3.0)]
+            df_results = df_results[(df_results["BIAS"] >= 0) & (df_results["BIAS"] < 8) & (df_results["RSI"] < 75)]
+            df_results = df_results[(df_results["Backtest_Samples"] >= 10) & (df_results["Confidence"] >= 70)]
+            score_count = len(df_results)
             sort_map = {
                 "AI分數": ["Score", "漲跌幅"],
                 "歷史勝率": ["WinRate", "Score", "漲跌幅"],
@@ -1227,7 +1266,7 @@ if st.session_state.page == "home":
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔 | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 明日起漲條件 {score_count} 檔 | 門檻 {score_threshold} 分 / 風險 {market_risk_score}% | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
@@ -1551,22 +1590,28 @@ elif st.session_state.page == "analysis":
         current_show_buy = chart_flag("show_buy", True)
         current_show_sup = chart_flag("show_sup", True)
         current_show_signals = chart_flag("show_signals", True)
+        def chart_card(label, url, active=True):
+            border = "#60A5FA" if active else "#1E293B"
+            bg = "rgba(96,165,250,.12)" if active else "#0F172A"
+            color = "#E2E8F0" if active else "#64748B"
+            glow = "box-shadow:0 0 0 1px rgba(96,165,250,.60),0 0 16px rgba(96,165,250,.16);" if active else ""
+            return (
+                f"<a href='{url}' style='display:flex;align-items:center;justify-content:center;"
+                f"min-height:46px;padding:10px 8px;border-radius:10px;border:1px solid {border};"
+                f"background:{bg};color:{color};text-decoration:none;font-weight:850;text-align:center;{glow}'>{label}</a>"
+            )
         day_cards = []
         for day in (30, 60, 90):
-            active = " active" if st.session_state.view_days == day else ""
-            day_cards.append(f"<a class='chart-control-card{active}' href='{chart_control_url(days=day)}'>{day}日</a>")
+            day_cards.append(chart_card(f"{day}日", chart_control_url(days=day), st.session_state.view_days == day))
         st.markdown(f"<div class='chart-control-grid'>{''.join(day_cards)}</div>", unsafe_allow_html=True)
-        buy_class = "active" if current_show_buy else "off"
-        sup_class = "active" if current_show_sup else "off"
-        sig_class = "active" if current_show_signals else "off"
         buy_url = chart_control_url(show_buy=not current_show_buy)
         sup_url = chart_control_url(show_sup=not current_show_sup)
         sig_url = chart_control_url(show_signals=not current_show_signals)
         st.markdown(
             f"<div class='chart-control-grid'>"
-            f"<a class='chart-control-card {buy_class}' href='{buy_url}'>買進</a>"
-            f"<a class='chart-control-card {sup_class}' href='{sup_url}'>高低點</a>"
-            f"<a class='chart-control-card {sig_class}' href='{sig_url}'>符號</a>"
+            f"{chart_card('買進', buy_url, current_show_buy)}"
+            f"{chart_card('高低點', sup_url, current_show_sup)}"
+            f"{chart_card('符號', sig_url, current_show_signals)}"
             f"</div>",
             unsafe_allow_html=True,
         )

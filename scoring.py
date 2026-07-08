@@ -36,6 +36,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     bias = _num(data.get("BIAS"))
     volume = _num(data.get("成交量"))
     volume_5d = _num(data.get("5日均量"))
+    vol_ratio = _num(data.get("Est_Vol_Ratio"), volume / volume_5d if volume_5d > 0 else 0)
     macd_hist = _num(data.get("MACD柱"))
     prev_macd_hist = _num(data.get("前日MACD柱"), -999)
     j_value = _num(data.get("J值"), 50)
@@ -80,6 +81,12 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
 
     if data.get("Volume_Confirmed") is False:
         add(-1, "⚠️ 盤中量能尚未確認，避免假量追高")
+    elif vol_ratio >= 4:
+        add(-4, f"⚠️ 量能爆量 {vol_ratio:.1f} 倍，隔日賣壓風險升高")
+    elif vol_ratio > 3:
+        add(-2, f"⚠️ 量能過熱 {vol_ratio:.1f} 倍，避免追高")
+    elif 1.2 <= vol_ratio <= 2.5:
+        add(2, f"✅ 量能溫和放大 {vol_ratio:.1f} 倍")
     elif volume_5d > 0 and volume > volume_5d * 1.1:
         add(2, "✅ 量能放大，具主力進場特徵")
     else:
@@ -136,6 +143,14 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-2, f"⚠️ 資料信心偏低 ({confidence:.0f}%)，分數僅供保守參考")
     elif confidence < 80:
         add(-1, f"⚠️ 資料信心中等 ({confidence:.0f}%)，需留意缺失資料")
+    if signal_conflict == "高":
+        add(-3, "⚠️ 多空訊號衝突高，不適合列為主清單")
+    if entry_pattern in ["過熱追高型", "假突破風險型"]:
+        add(-4, f"⚠️ 型態為 {entry_pattern}，隔日追價風險高")
+    elif entry_pattern in ["趨勢突破型", "回測支撐型"]:
+        add(2, f"✅ 型態為 {entry_pattern}，較符合明日觀察")
+    if data.get("Box_Breakout", False):
+        add(2, "✅ 近 10 日整理後突破")
     final_score = max(5, min(99, int(50 + sc * 3)))
 
     if final_score >= 60:
@@ -150,5 +165,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         feature = "🔥 紅吞表態"
     elif data.get("回測有撐", False):
         feature = "💪 回檔有撐"
+    elif data.get("Box_Breakout", False):
+        feature = "📦 整理突破"
 
     return final_score, label, rs if with_reason else [], feature

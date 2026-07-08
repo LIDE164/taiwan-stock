@@ -131,6 +131,17 @@ def build_score_input(
         and safe_float(t.get("Volume")) > volume_avg_5
     )
     hit_pressure = t_high - max(t_close, t_open) > body_len * 1.5
+    vol_ratio = safe_float(t.get("Volume")) / volume_avg_5 if volume_avg_5 > 0 else 0.0
+    box_high, box_low, box_range_pct = 0.0, 0.0, 0.0
+    box_breakout = False
+    breakout_volume_ok = False
+    if len(work_df) >= 11:
+        box_window = work_df.iloc[-11:-1]
+        box_high = safe_float(box_window["High"].max())
+        box_low = safe_float(box_window["Low"].min())
+        box_range_pct = (box_high - box_low) / box_low * 100 if box_low > 0 else 0.0
+        breakout_volume_ok = vol_ratio >= 1.2
+        box_breakout = bool(box_range_pct < 12 and t_close > box_high and breakout_volume_ok and not hit_pressure)
     roc_20 = 0.0
     if len(work_df) >= 20:
         base = safe_float(work_df["Close"].iloc[-20])
@@ -186,7 +197,17 @@ def build_score_input(
         entry_pattern = "假突破風險型"
     else:
         entry_pattern = "一般觀察型"
+    if box_breakout and entry_pattern == "一般觀察型":
+        entry_pattern = "整理突破型"
     confidence = max(45, int(100 - conflict_score * 30 - (10 if entry_pattern in ["過熱追高型", "假突破風險型"] else 0)))
+    ma20_val = safe_float(t.get("20MA"), t_close)
+    tomorrow_plan = {
+        "明日觸發": f"突破今日高點 {t_high:.2f} 且量能延續",
+        "觀察支撐": f"收盤 {t_close:.2f} / 20MA {ma20_val:.2f}",
+        "失效價": f"跌破 {min(t_low, ma20_val):.2f}",
+        "禁止追高價": f"開高超過 {t_close * 1.035:.2f} 不追",
+        "建議型態": entry_pattern,
+    }
 
     return {
         "ADX": safe_float(t.get("ADX")),
@@ -214,12 +235,18 @@ def build_score_input(
         "J值": safe_float(t.get("J"), 50),
         "RSI": safe_float(t.get("RSI"), 50),
         "Momentum_Score": momentum_score,
+        "Est_Vol_Ratio": round(vol_ratio, 2),
         "Volume_Confirmed": True,
         "Bullish_Count": bullish_count,
         "Bearish_Count": bearish_count,
         "Signal_Conflict": signal_conflict,
         "Conflict_Score": round(conflict_score, 2),
         "Entry_Pattern": entry_pattern,
+        "Box_Breakout": box_breakout,
+        "Box_Days": 10,
+        "Box_Range_Pct": round(box_range_pct, 2),
+        "Breakout_Volume_OK": breakout_volume_ok,
+        "Tomorrow_Plan": tomorrow_plan,
         "Confidence": confidence,
         "Data_Quality": {"price": "ok", "volume": "confirmed", "source": "chart_history"},
     }
