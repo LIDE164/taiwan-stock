@@ -57,6 +57,17 @@ def render_app_style(is_light_mode=False):
         margin:0 !important;
         padding:0 !important;
     }}
+    div[role="radiogroup"] label > div:first-child *,
+    div[role="radiogroup"] label span[role="radio"],
+    div[role="radiogroup"] label div[role="radio"],
+    div[role="radiogroup"] label [data-testid="stRadioIcon"] {{
+        display:none !important;
+        opacity:0 !important;
+        width:0 !important;
+        height:0 !important;
+        margin:0 !important;
+        padding:0 !important;
+    }}
     div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] {{
         display:block !important;
         opacity:1 !important;
