@@ -96,10 +96,14 @@ def get_secret(name, default=""):
 
 FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
+MEGA_API_KEY = get_secret("MEGA_API_KEY") or get_secret("MEGA_SECURITIES_API_KEY")
+MEGA_SECRET_KEY = get_secret("MEGA_SECRET_KEY") or get_secret("MEGA_SECURITIES_SECRET_KEY")
+MEGA_API_BASE_URL = get_secret("MEGA_API_BASE_URL")
+MEGA_TXF_QUOTE_URL = get_secret("MEGA_TXF_QUOTE_URL")
+MEGA_TXF_SYMBOL = get_secret("MEGA_TXF_SYMBOL", "TXF")
+MEGA_QUOTE_ENABLED = bool(MEGA_API_KEY and MEGA_SECRET_KEY and MEGA_TXF_QUOTE_URL)
 SHIOAJI_API_KEY = get_secret("SHIOAJI_API_KEY") or get_secret("SJ_API_KEY")
 SHIOAJI_SECRET_KEY = get_secret("SHIOAJI_SECRET_KEY") or get_secret("SJ_SEC_KEY")
-SHIOAJI_API_KEY = SHIOAJI_API_KEY or get_secret("SINOPAC_API_KEY")
-SHIOAJI_SECRET_KEY = SHIOAJI_SECRET_KEY or get_secret("SINOPAC_SECRET_KEY")
 SHIOAJI_SIMULATION = str(get_secret("SHIOAJI_SIMULATION", "false")).lower() in ("1", "true", "yes")
 TPE = timezone(timedelta(hours=8))
 LIVE_SCORE_CACHE_SECONDS = 30
@@ -166,6 +170,16 @@ if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=Tru
 render_app_style(is_light_mode)
 
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "3231": "緯創", "2891": "中信金"}
+STATIC_STOCK_NAME_FALLBACK = {
+    "3189": "景碩",
+    "8476": "台境",
+    "2801": "彰銀",
+    "2434": "統懋",
+    "8150": "南茂",
+    "6214": "精誠",
+    "2377": "微星",
+    "3035": "智原",
+}
 
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
@@ -187,13 +201,26 @@ def fetch_stock_name_fallback(ticker):
     code = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
     if not code:
         return ""
+    if code in STATIC_STOCK_NAME_FALLBACK:
+        return STATIC_STOCK_NAME_FALLBACK[code]
     try:
         res = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{code}", timeout=3)
         data = res.json().get("data", {}) if res.status_code == 200 else {}
-        for key in ["companyName", "name", "shortName", "symbolName"]:
+        for key in ["companyName", "company_name", "name", "shortName", "symbolName", "stockName"]:
             value = str(data.get(key, "")).strip()
             if value and value != code:
                 return value
+    except Exception:
+        pass
+    try:
+        res = requests.get(f"https://tw.stock.yahoo.com/quote/{code}", timeout=3)
+        if res.status_code == 200:
+            title_match = re.search(r"<title>\s*([^<]+)", res.text)
+            title = title_match.group(1).strip() if title_match else ""
+            title = re.sub(r"\s*\(?%s(?:\.TW|\.TWO)?\)?.*$" % re.escape(code), "", title).strip()
+            title = title.split("|")[0].split("-")[0].strip()
+            if title and title != code and len(title) <= 12:
+                return title
     except Exception:
         pass
     return ""
@@ -899,6 +926,54 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     return True
 
+def get_mega_txf_quote(reference_index=None):
+    if not MEGA_QUOTE_ENABLED:
+        return None
+    try:
+        url = MEGA_TXF_QUOTE_URL.format(symbol=MEGA_TXF_SYMBOL)
+        headers = {
+            "X-API-KEY": MEGA_API_KEY,
+            "X-SECRET-KEY": MEGA_SECRET_KEY,
+            "Authorization": f"Bearer {MEGA_API_KEY}",
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200:
+            logging.warning("Mega TXF quote failed: HTTP %s", res.status_code)
+            return None
+        payload = res.json()
+        if isinstance(payload, list):
+            data = payload[0] if payload else {}
+        elif isinstance(payload, dict):
+            data = payload.get("data", payload)
+            if isinstance(data, list):
+                data = data[0] if data else {}
+        else:
+            data = {}
+        curr = safe_num(
+            data.get("price")
+            or data.get("lastPrice")
+            or data.get("last")
+            or data.get("close")
+            or data.get("Close"),
+            None,
+        )
+        change = safe_num(
+            data.get("change")
+            or data.get("changePrice")
+            or data.get("diff")
+            or data.get("priceChange"),
+            None,
+        )
+        prev = curr - change if curr is not None and change is not None else None
+        if curr is None or not is_plausible_txf_price(curr, prev, reference_index):
+            return None
+        ts = data.get("time") or data.get("timestamp") or data.get("datetime")
+        ts_text = str(ts) if ts else datetime.now(TPE).strftime("%Y/%m/%d %H:%M")
+        return curr, (change or 0), f"兆豐 {MEGA_TXF_SYMBOL}", ts_text
+    except Exception as e:
+        logging.warning("Mega TXF quote failed: %s", e)
+        return None
+
 @st.cache_resource(show_spinner=False)
 def get_shioaji_api():
     if not SHIOAJI_API_KEY or not SHIOAJI_SECRET_KEY:
@@ -953,6 +1028,10 @@ def get_shioaji_txf_quote(reference_index=None):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_txf_quote(reference_index=None):
+    mega_quote = get_mega_txf_quote(reference_index)
+    if mega_quote:
+        return mega_quote
+
     shioaji_quote = get_shioaji_txf_quote(reference_index)
     if shioaji_quote:
         return shioaji_quote
@@ -978,6 +1057,8 @@ def get_txf_quote(reference_index=None):
         except Exception:
             pass
 
+    if MEGA_API_KEY and MEGA_SECRET_KEY and not MEGA_TXF_QUOTE_URL:
+        return None, None, "兆豐API", "缺少 MEGA_TXF_QUOTE_URL"
     return None, None, "資料源受限", "暫無資料"
 
 @st.cache_data(ttl=5, show_spinner=False)

@@ -68,6 +68,21 @@ def render_app_style(is_light_mode=False):
         margin:0 !important;
         padding:0 !important;
     }}
+    div[data-testid="stRadio"] [data-baseweb="radio"] > div:first-child,
+    div[data-testid="stRadio"] [data-baseweb="radio"] > div:first-child *,
+    div[data-testid="stRadio"] [data-baseweb="radio"] svg,
+    div[data-testid="stRadio"] [data-baseweb="radio"] [aria-hidden="true"],
+    div[role="radiogroup"] svg,
+    div[role="radiogroup"] label::before,
+    div[role="radiogroup"] label::after {{
+        display:none !important;
+        opacity:0 !important;
+        width:0 !important;
+        height:0 !important;
+        margin:0 !important;
+        padding:0 !important;
+        border:0 !important;
+    }}
     div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] {{
         display:block !important;
         opacity:1 !important;
