@@ -1,4 +1,4 @@
-# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單與營收籌碼回補防呆版)
+﻿# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單與營收籌碼回補防呆版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -96,38 +96,12 @@ def get_secret(name, default=""):
 
 FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
-MEGA_API_KEY = get_secret("MEGA_API_KEY") or get_secret("MEGA_SECURITIES_API_KEY")
-MEGA_SECRET_KEY = get_secret("MEGA_SECRET_KEY") or get_secret("MEGA_SECURITIES_SECRET_KEY")
-MEGA_API_BASE_URL = get_secret("MEGA_API_BASE_URL")
-MEGA_TXF_QUOTE_URL = get_secret("MEGA_TXF_QUOTE_URL")
-MEGA_TXF_SYMBOL = get_secret("MEGA_TXF_SYMBOL", "TXF")
-MEGA_QUOTE_ENABLED = bool(MEGA_API_KEY and MEGA_SECRET_KEY and MEGA_TXF_QUOTE_URL)
-SHIOAJI_API_KEY = get_secret("SHIOAJI_API_KEY") or get_secret("SJ_API_KEY")
-SHIOAJI_SECRET_KEY = get_secret("SHIOAJI_SECRET_KEY") or get_secret("SJ_SEC_KEY")
-SHIOAJI_SIMULATION = str(get_secret("SHIOAJI_SIMULATION", "false")).lower() in ("1", "true", "yes")
-TPE = timezone(timedelta(hours=8))
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
-BACKTEST_DISPLAY_DAYS = BACKTEST_LOOKBACK_DAYS
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
-API_FALLBACK_RADAR_TICKERS = [
-    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891", "2886",
-    "2303", "3711", "2357", "2379", "3034", "3008", "3231", "3661", "3017", "3324",
-    "2345", "2360", "2356", "2327", "4938", "2376", "6669", "5269", "2395", "2059",
-    "2603", "2609", "2615", "2606", "2610", "2637", "2645", "5608", "1301", "1303",
-    "1326", "6505", "2002", "2014", "2027", "2105", "2201", "2207", "1216", "1227",
-    "1231", "1402", "1476", "1590", "1605", "1717", "1722", "1785", "1802", "1904",
-    "2006", "2049", "2408", "2409", "2449", "2498", "2515", "2542", "2614", "2801",
-    "2880", "2883", "2884", "2885", "2887", "2890", "2892", "2912", "3037", "3045",
-    "3094", "3189", "3406", "3443", "3481", "3533", "3702", "4904", "5434", "5871",
-    "5876", "6176", "6239", "6415", "8046",
-]
-MIN_CLOUD_SCAN_COUNT = 20
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
-    "market_data/daily_scan": 300,
-    "market_data/daily_scan_strict": 300,
-    "market_data/daily_scan_watch": 300,
+    "market_data/daily_scan": 21600,
     "user_settings/fav_groups": 600,
     "user_data/simulated_orders": 600,
 }
@@ -146,18 +120,6 @@ st.sidebar.title("⚙️ 介面設定")
 is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
 if LOW_FIREBASE_READ_MODE:
     st.sidebar.caption("Firebase 低讀取模式：開啟")
-try:
-    firebase_secret_info = st.secrets.get('firebase', {})
-    st.sidebar.caption(f"Firebase 專案：{firebase_secret_info.get('project_id', '未設定')}")
-    client_email = firebase_secret_info.get('client_email', '未設定')
-    st.sidebar.caption(f"Firebase 帳號：{client_email}")
-except Exception:
-    st.sidebar.caption("Firebase 專案：未設定")
-if "cloud_daily_scan_meta" in st.session_state:
-    scan_meta = st.session_state.cloud_daily_scan_meta
-    st.sidebar.caption(f"daily_scan：{scan_meta.get('count', 0)} 檔")
-    if scan_meta.get("updated"):
-        st.sidebar.caption(f"daily_scan 更新：{scan_meta.get('updated')}")
 
 if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True):
     st.cache_data.clear()
@@ -170,16 +132,6 @@ if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=Tru
 render_app_style(is_light_mode)
 
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "3231": "緯創", "2891": "中信金"}
-STATIC_STOCK_NAME_FALLBACK = {
-    "3189": "景碩",
-    "8476": "台境",
-    "2801": "彰銀",
-    "2434": "統懋",
-    "8150": "南茂",
-    "6214": "精誠",
-    "2377": "微星",
-    "3035": "智原",
-}
 
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names():
@@ -196,65 +148,12 @@ def get_all_tw_stock_names():
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names()
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_stock_name_fallback(ticker):
-    code = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    if not code:
-        return ""
-    if code in STATIC_STOCK_NAME_FALLBACK:
-        return STATIC_STOCK_NAME_FALLBACK[code]
-    try:
-        res = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{code}", timeout=3)
-        data = res.json().get("data", {}) if res.status_code == 200 else {}
-        for key in ["companyName", "company_name", "name", "shortName", "symbolName", "stockName"]:
-            value = str(data.get(key, "")).strip()
-            if value and value != code:
-                return value
-    except Exception:
-        pass
-    try:
-        res = requests.get(f"https://tw.stock.yahoo.com/quote/{code}", timeout=3)
-        if res.status_code == 200:
-            title_match = re.search(r"<title>\s*([^<]+)", res.text)
-            title = title_match.group(1).strip() if title_match else ""
-            title = re.sub(r"\s*\(?%s(?:\.TW|\.TWO)?\)?.*$" % re.escape(code), "", title).strip()
-            title = title.split("|")[0].split("-")[0].strip()
-            if title and title != code and len(title) <= 12:
-                return title
-    except Exception:
-        pass
-    return ""
-
 def get_stock_name(ticker):
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    name = CURRENT_STOCK_NAMES.get(ticker_str, "")
-    if not name or name == ticker_str:
-        name = fetch_stock_name_fallback(ticker_str)
-    return name or ticker_str
+    return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
 
 def normalize_ticker(ticker):
     return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-
-def get_record_ticker(record):
-    if not isinstance(record, dict):
-        return ""
-    return normalize_ticker(record.get("代號") or record.get("隞??") or record.get("ticker") or record.get("ticker_raw") or "")
-
-def hydrate_record_identity(record):
-    if not isinstance(record, dict):
-        return record
-    fixed = dict(record)
-    ticker = get_record_ticker(fixed)
-    if not ticker:
-        return fixed
-    fixed["代號"] = ticker
-    fixed["隞??"] = ticker
-    name = str(fixed.get("名稱") or fixed.get("?迂") or "").strip()
-    if not name or name == ticker:
-        name = get_stock_name(ticker)
-    fixed["名稱"] = name
-    fixed["?迂"] = name
-    return fixed
 
 def is_realtime_score_record(record):
     if not isinstance(record, dict):
@@ -303,37 +202,6 @@ def get_market_state(now_tpe=None):
     if now_tpe <= end:
         return "open"
     return "closed"
-
-def is_postclose_scan_time(now_tpe=None):
-    now_tpe = now_tpe or datetime.now(TPE)
-    if now_tpe.weekday() >= 5:
-        return False
-    return now_tpe >= now_tpe.replace(hour=14, minute=35, second=0, microsecond=0)
-
-def parse_cloud_update_date(value):
-    if not value:
-        return None
-    try:
-        if hasattr(value, "astimezone"):
-            return value.astimezone(TPE).date()
-        text = str(value).strip()
-        has_tz = text.endswith("Z") or "+" in text[10:] or re.search(r"\sUTC$", text, re.IGNORECASE)
-        parsed = pd.to_datetime(text, errors="coerce", utc=has_tz)
-        if pd.isna(parsed):
-            return None
-        if has_tz:
-            return parsed.tz_convert(TPE).date()
-        if getattr(parsed, "tzinfo", None) is not None:
-            return parsed.tz_convert(TPE).date()
-        return parsed.date()
-    except Exception:
-        return None
-
-def is_scan_update_stale(updated_date=None, now_tpe=None):
-    now_tpe = now_tpe or datetime.now(TPE)
-    if not is_postclose_scan_time(now_tpe):
-        return False
-    return updated_date != now_tpe.date()
 
 def is_regular_market_open(now_tpe=None):
     return get_market_state(now_tpe) == "open"
@@ -457,25 +325,9 @@ def load_cloud_data(collection_name, document_name, default_data):
                 st.session_state.cloud_last_error = f"{target} 文件不存在"
             st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts}
             return default_data
-        doc_data = doc.to_dict()
-        value = doc_data.get('data', default_data)
+        value = doc.to_dict().get('data', default_data)
         st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
         if collection_name == "market_data":
-            updated_at = doc_data.get("update_time") or doc_data.get("updated_at") or ""
-            updated_date = parse_cloud_update_date(updated_at)
-            try:
-                if hasattr(updated_at, "astimezone"):
-                    updated_at = updated_at.astimezone(TPE).strftime("%Y-%m-%d %H:%M:%S")
-                else:
-                    updated_at = str(updated_at)
-            except Exception:
-                updated_at = str(updated_at)
-            st.session_state.cloud_daily_scan_meta = {
-                "count": len(value) if isinstance(value, list) else 0,
-                "updated": updated_at,
-                "updated_date": updated_date.isoformat() if updated_date else "",
-                "stale": is_scan_update_stale(updated_date),
-            }
             if isinstance(value, list) and len(value) == 0:
                 st.session_state.cloud_last_error = f"{target} 的 data 欄位是空清單"
             else:
@@ -493,7 +345,7 @@ def save_cloud_data(collection_name, document_name, data):
         st.session_state._cloud_doc_cache = {}
     st.session_state._cloud_doc_cache[cache_key] = {"value": data, "ts": time.time()}
     if db is None: return
-    try: db.collection(collection_name).document(document_name).set({'data': data, 'update_time': firestore.SERVER_TIMESTAMP})
+    try: db.collection(collection_name).document(document_name).set({'data': data})
     except: pass
 
 def load_analysis_cache(ticker, max_age_seconds=900):
@@ -541,17 +393,8 @@ def save_analysis_cache(ticker, payload):
 
 def hydrate_scan_results(force=False):
     if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
-        data = load_cloud_data("market_data", "daily_scan_strict", [])
-        scan_source = "strict"
-        if not isinstance(data, list) or len(data) == 0:
-            data = load_cloud_data("market_data", "daily_scan_watch", [])
-            scan_source = "watch"
-        if not isinstance(data, list) or len(data) == 0:
-            data = load_cloud_data("market_data", "daily_scan", [])
-            scan_source = "legacy"
-        st.session_state.scan_results = [hydrate_record_identity(x) for x in data] if isinstance(data, list) else []
-        st.session_state.scan_results_source = scan_source
-        st.session_state.scan_results_is_stale = bool(st.session_state.get("cloud_daily_scan_meta", {}).get("stale"))
+        data = load_cloud_data("market_data", "daily_scan", [])
+        st.session_state.scan_results = data if isinstance(data, list) else []
     return st.session_state.get("scan_results", [])
 
 def restore_nav_pool(min_score=60):
@@ -577,11 +420,9 @@ def get_radar_targets(records=None, limit=200):
     targets = []
     records = records or []
     for row in records[:limit]:
-        code = get_record_ticker(row)
+        code = normalize_ticker(row.get("代號", ""))
         if code:
             targets.append(code)
-    if len(targets) < MIN_CLOUD_SCAN_COUNT:
-        targets.extend(API_FALLBACK_RADAR_TICKERS)
     targets.extend(st.session_state.get("custom_pool", []))
     targets.extend(get_favorite_stock_set())
     targets.extend(DEFAULT_RADAR_TICKERS)
@@ -596,7 +437,6 @@ def get_radar_targets(records=None, limit=200):
 if 'page' not in st.session_state: st.session_state.page = "home"
 if 'current_stock' not in st.session_state: st.session_state.current_stock = "2330"
 if 'view_days' not in st.session_state: st.session_state.view_days = 30
-if 'backtest_days' not in st.session_state: st.session_state.backtest_days = BACKTEST_DISPLAY_DAYS
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
@@ -637,40 +477,12 @@ ENG_TO_TW_INDUSTRY = {
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/indicesReport/MI_5MINS_HIST", timeout=5)
-        if res.status_code != 200:
-            return None
-        official = []
-        for row in res.json():
-            raw_date = str(row.get("Date") or row.get("日期") or "")
-            raw_date = raw_date.replace("/", "").replace("-", "")
-            try:
-                if len(raw_date) == 7 and raw_date.isdigit():
-                    dt = pd.to_datetime(f"{int(raw_date[:3]) + 1911}-{raw_date[3:5]}-{raw_date[5:7]}")
-                elif len(raw_date) == 8 and raw_date.isdigit():
-                    dt = pd.to_datetime(f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}")
-                else:
-                    dt = pd.to_datetime(row.get("Date") or row.get("日期"))
-            except Exception:
-                continue
-            close = safe_num(row.get("ClosingIndex") or row.get("收盤指數"), 0)
-            if not (10000 < close < 100000):
-                continue
-            official.append({
-                "Date": dt,
-                "Open": safe_num(row.get("OpeningIndex") or row.get("開盤指數"), close),
-                "High": safe_num(row.get("HighestIndex") or row.get("最高指數"), close),
-                "Low": safe_num(row.get("LowestIndex") or row.get("最低指數"), close),
-                "Close": close,
-                "Volume": 0,
-            })
-        if len(official) < 20:
-            return None
-        df = pd.DataFrame(official).set_index("Date")
-        df = df[~df.index.duplicated(keep="last")].sort_index()
-        return df[["Open", "High", "Low", "Close", "Volume"]]
-    except Exception:
-        return None
+        df = yf.Ticker("^TWII").history(period="1y")
+        if not df.empty:
+            df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
+            df = df[~df.index.duplicated(keep='last')]
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    except: return None
 
 @st.cache_data(ttl=60, show_spinner=False) 
 def get_stock_data(ticker_number):
@@ -690,14 +502,13 @@ def get_stock_data(ticker_number):
     
     try:
         market_state = get_market_state()
-        now_tpe = datetime.now(timezone(timedelta(hours=8)))
-        is_postclose = now_tpe.weekday() < 5 and now_tpe >= now_tpe.replace(hour=13, minute=30, second=0, microsecond=0)
-        if base_ticker != "^TWII" and (market_state == "open" or is_postclose) and FUGLE_API_KEY:
+        if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
             res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
             if res.status_code == 200:
                 q = res.json()
                 c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
+                now_tpe = datetime.now(timezone(timedelta(hours=8)))
                 total = q.get('total', {}) or {}
                 live_volume = float(total.get('tradeVolume', 0) or 0)
                 live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
@@ -716,41 +527,6 @@ def get_stock_data(ticker_number):
                     if 0 < real_vwap < c_price * 2:
                         df.loc[dt_live, 'VWAP'] = real_vwap
     except: pass
-
-    if base_ticker != "^TWII" and FINMIND_TOKEN:
-        try:
-            last_date = pd.to_datetime(df.index.max()).date()
-            start_date = (last_date - timedelta(days=7)).strftime("%Y-%m-%d")
-            url = (
-                "https://api.finmindtrade.com/api/v4/data"
-                f"?dataset=TaiwanStockPrice&data_id={base_ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
-            )
-            res = requests.get(url, timeout=5).json()
-            rows = res.get("data", [])
-            if rows:
-                fm = pd.DataFrame(rows)
-                fm["date"] = pd.to_datetime(fm["date"])
-                fm = fm[fm["date"].dt.date > last_date]
-                if not fm.empty:
-                    fm = fm.rename(
-                        columns={
-                            "date": "Date",
-                            "open": "Open",
-                            "max": "High",
-                            "min": "Low",
-                            "close": "Close",
-                            "Trading_Volume": "Volume",
-                        }
-                    )
-                    fm = fm.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]]
-                    for col in ["Open", "High", "Low", "Close", "Volume"]:
-                        fm[col] = pd.to_numeric(fm[col], errors="coerce")
-                    fm = fm.dropna(subset=["Close"])
-                    if not fm.empty:
-                        df = pd.concat([df, fm])
-                        df = df[~df.index.duplicated(keep="last")].sort_index()
-        except Exception as e:
-            logging.warning(f"FinMind 日線補資料失敗 {ticker_number}: {e}")
 
     try:
         return apply_technical_indicators(df)
@@ -826,89 +602,16 @@ def get_finmind_chip_and_revenue(ticker):
 
 @st.cache_data(ttl=5, show_spinner=False) 
 def get_twii_quote():
-    tz_tpe = TPE
+    tz_tpe = timezone(timedelta(hours=8))
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     fallback_curr, fallback_change = 0, 0
-
-    def parse_twse_date(raw):
-        text = str(raw or "").strip().replace("/", "").replace("-", "")
-        try:
-            if len(text) == 7 and text.isdigit():
-                return pd.to_datetime(f"{int(text[:3]) + 1911}-{text[3:5]}-{text[5:7]}")
-            if len(text) == 8 and text.isdigit():
-                return pd.to_datetime(f"{text[:4]}-{text[4:6]}-{text[6:8]}")
-            return pd.to_datetime(raw)
-        except Exception:
-            return None
-
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/indicesReport/MI_5MINS_HIST", timeout=5)
-        if res.status_code == 200:
-            official = []
-            for row in res.json():
-                dt = parse_twse_date(row.get("Date") or row.get("日期") or row.get("date"))
-                close = safe_num(row.get("ClosingIndex") or row.get("收盤指數") or row.get("Close"), 0)
-                if dt is not None and 10000 < close < 100000:
-                    official.append((dt, close))
-            if len(official) >= 2:
-                official = sorted(official, key=lambda x: x[0])
-                curr_dt, curr = official[-1]
-                _, prev = official[-2]
-                if not is_scan_update_stale(curr_dt.date()):
-                    return curr, curr - prev, f"{curr_dt.strftime('%Y/%m/%d')} 盤後"
-    except Exception:
-        pass
-
-    try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=5)
-        if res.status_code == 200:
-            for row in res.json():
-                row_text = " ".join(str(v) for v in row.values())
-                if any(name in row_text for name in ["發行量加權股價指數", "TAIEX"]) and "報酬" not in row_text:
-                    curr = 0
-                    for key in ["ClosingIndex", "收盤指數", "收盤價", "指數", "Index"]:
-                        curr = safe_num(row.get(key), 0)
-                        if 10000 < curr < 100000:
-                            break
-                    change = 0
-                    for key in ["Change", "漲跌點數", "漲跌", "漲跌指數"]:
-                        change = safe_num(row.get(key), 0)
-                        if change:
-                            break
-                    sign = str(row.get("+/-") or row.get("漲跌(+/-)") or row.get("漲跌") or "").strip()
-                    if sign in ("-", "跌", "▼"):
-                        change = -abs(change)
-                    elif sign in ("+", "漲", "▲"):
-                        change = abs(change)
-                    dt = parse_twse_date(row.get("Date") or row.get("日期") or row.get("date"))
-                    if dt is not None:
-                        update_time_str = f"{dt.strftime('%Y/%m/%d')} 即時"
-                    if 10000 < curr < 100000:
-                        return curr, change, update_time_str
-    except Exception:
-        pass
-
-    try:
-        raise RuntimeError("legacy MI_INDEX parser disabled")
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=5)
-        if res.status_code == 200:
-            for row in res.json():
-                if row.get("指數") == "發行量加權股價指數":
-                    curr = safe_num(str(row.get("收盤指數", "")).replace(",", ""), 0)
-                    change = safe_num(str(row.get("漲跌點數", "")).replace(",", ""), 0)
-                    sign = str(row.get("漲跌", "")).strip()
-                    if sign in ("-", "－", "▼"):
-                        change = -abs(change)
-                    elif sign in ("+", "＋", "▲"):
-                        change = abs(change)
-                    roc_date = str(row.get("日期", ""))
-                    if len(roc_date) == 7:
-                        update_time_str = f"{int(roc_date[:3]) + 1911}/{roc_date[3:5]}/{roc_date[5:7]} 盤後"
-                    if 10000 < curr < 100000:
-                        return curr, change, update_time_str
-    except Exception:
-        pass
-    return None, None, "今日資料尚未更新"
+        df = yf.Ticker("^TWII").history(period="1mo").dropna(subset=['Close'])
+        if not df.empty and len(df) >= 2:
+            fallback_curr = float(df['Close'].iloc[-1])
+            fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
+    except: pass
+    return fallback_curr, fallback_change, update_time_str
 
 def is_plausible_txf_price(price, previous=None, reference_index=None):
     price = safe_num(price, None)
@@ -926,116 +629,18 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     return True
 
-def get_mega_txf_quote(reference_index=None):
-    if not MEGA_QUOTE_ENABLED:
-        return None
-    try:
-        url = MEGA_TXF_QUOTE_URL.format(symbol=MEGA_TXF_SYMBOL)
-        headers = {
-            "X-API-KEY": MEGA_API_KEY,
-            "X-SECRET-KEY": MEGA_SECRET_KEY,
-            "Authorization": f"Bearer {MEGA_API_KEY}",
-        }
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code != 200:
-            logging.warning("Mega TXF quote failed: HTTP %s", res.status_code)
-            return None
-        payload = res.json()
-        if isinstance(payload, list):
-            data = payload[0] if payload else {}
-        elif isinstance(payload, dict):
-            data = payload.get("data", payload)
-            if isinstance(data, list):
-                data = data[0] if data else {}
-        else:
-            data = {}
-        curr = safe_num(
-            data.get("price")
-            or data.get("lastPrice")
-            or data.get("last")
-            or data.get("close")
-            or data.get("Close"),
-            None,
-        )
-        change = safe_num(
-            data.get("change")
-            or data.get("changePrice")
-            or data.get("diff")
-            or data.get("priceChange"),
-            None,
-        )
-        prev = curr - change if curr is not None and change is not None else None
-        if curr is None or not is_plausible_txf_price(curr, prev, reference_index):
-            return None
-        ts = data.get("time") or data.get("timestamp") or data.get("datetime")
-        ts_text = str(ts) if ts else datetime.now(TPE).strftime("%Y/%m/%d %H:%M")
-        return curr, (change or 0), f"兆豐 {MEGA_TXF_SYMBOL}", ts_text
-    except Exception as e:
-        logging.warning("Mega TXF quote failed: %s", e)
-        return None
-
-@st.cache_resource(show_spinner=False)
-def get_shioaji_api():
-    if not SHIOAJI_API_KEY or not SHIOAJI_SECRET_KEY:
-        return None
-    try:
-        import shioaji as sj
-        api = sj.Shioaji(simulation=SHIOAJI_SIMULATION)
-        api.login(
-            api_key=SHIOAJI_API_KEY,
-            secret_key=SHIOAJI_SECRET_KEY,
-            fetch_contract=True,
-            subscribe_trade=False,
-            contracts_timeout=30000,
-        )
-        return api
-    except Exception as e:
-        logging.warning(f"Shioaji login failed: {e}")
-        return None
-
-def get_shioaji_txf_quote(reference_index=None):
-    api = get_shioaji_api()
-    if api is None:
-        return None
-    try:
-        try:
-            contract = api.Contracts.Futures.TXF.TXFR1
-        except Exception:
-            txf_contracts = list(api.Contracts.Futures.TXF)
-            contract = next((c for c in txf_contracts if str(getattr(c, "code", "")).startswith("TXF")), None)
-            if contract is None:
-                return None
-        snapshots = api.snapshots([contract])
-        if not snapshots:
-            return None
-        snap = snapshots[0]
-        curr = safe_num(getattr(snap, "close", None), None)
-        change = safe_num(getattr(snap, "change_price", None), None)
-        if curr is None:
-            return None
-        prev = curr - change if change is not None else None
-        if not is_plausible_txf_price(curr, prev, reference_index):
-            return None
-        ts = getattr(snap, "ts", None)
-        try:
-            ts_text = pd.to_datetime(ts).strftime("%Y/%m/%d %H:%M") if ts is not None else datetime.now(timezone(timedelta(hours=8))).strftime("%Y/%m/%d %H:%M")
-        except Exception:
-            ts_text = datetime.now(timezone(timedelta(hours=8))).strftime("%Y/%m/%d %H:%M")
-        return curr, (change or 0), "Shioaji TXFR1", ts_text
-    except Exception as e:
-        logging.warning(f"Shioaji TXF quote failed: {e}")
-        return None
-
 @st.cache_data(ttl=60, show_spinner=False)
 def get_txf_quote(reference_index=None):
-    mega_quote = get_mega_txf_quote(reference_index)
-    if mega_quote:
-        return mega_quote
-
-    shioaji_quote = get_shioaji_txf_quote(reference_index)
-    if shioaji_quote:
-        return shioaji_quote
-
+    for symbol in ["TXF.TW", "FITX.TW", "TX=F"]:
+        try:
+            df = yf.Ticker(symbol).history(period="5d").dropna(subset=['Close'])
+            if len(df) >= 2:
+                curr = float(df['Close'].iloc[-1])
+                prev = float(df['Close'].iloc[-2])
+                if is_plausible_txf_price(curr, prev, reference_index):
+                    return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
+        except Exception:
+            pass
     if FINMIND_TOKEN:
         try:
             start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
@@ -1056,9 +661,6 @@ def get_txf_quote(reference_index=None):
                             return curr, curr - prev, "FinMind TX", str(df["date"].iloc[-1])
         except Exception:
             pass
-
-    if MEGA_API_KEY and MEGA_SECRET_KEY and not MEGA_TXF_QUOTE_URL:
-        return None, None, "兆豐API", "缺少 MEGA_TXF_QUOTE_URL"
     return None, None, "資料源受限", "暫無資料"
 
 @st.cache_data(ttl=5, show_spinner=False)
@@ -1119,12 +721,6 @@ def get_global_macro_data():
 
 def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     macro_data = get_global_macro_data()
-    if twii_close is None or twii_change is None:
-        today = datetime.now(TPE).strftime('%Y/%m/%d')
-        next_dt = datetime.now(TPE) + timedelta(days=1)
-        while next_dt.weekday() >= 5:
-            next_dt += timedelta(days=1)
-        return "資料待更新", "TWSE 尚未提供今日可用大盤資料。", "中性觀察", "等大盤與期貨資料同步後再判斷。", today, next_dt.strftime('%Y/%m/%d'), 50, macro_data
     if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, macro_data
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
     if twii_close > 0:
@@ -1167,14 +763,11 @@ def render_index_board():
     try:
         twii_close, twii_change, twii_time_str = get_twii_quote()
         txf_close, txf_change, txf_symbol, txf_time = get_txf_quote(twii_close)
-        twii_available = twii_close is not None and twii_change is not None
-        twii_color = '#ef4444' if (twii_change or 0) >= 0 else '#22c55e'
+        twii_color = '#ef4444' if twii_change >= 0 else '#22c55e'
         txf_available = txf_close is not None and txf_change is not None
         txf_color = '#ef4444' if (txf_change or 0) >= 0 else '#22c55e'
-        twii_price_text = f"{twii_close:,.0f}" if twii_available else "--"
-        twii_change_text = f"{'+' if twii_change > 0 else ''}{twii_change:.0f}" if twii_available else "今日資料待更新"
-        txf_price_text = f"{txf_close:,.0f}" if txf_available else "--"
-        txf_change_text = f"{'+' if txf_change > 0 else ''}{txf_change:.0f}" if txf_available else "券商源/FinMind 未回傳"
+        txf_price_text = f"{txf_close:,.0f}" if txf_available else "資料源受限"
+        txf_change_text = f"{'↑' if txf_change > 0 else '↓'} {abs(txf_change):.0f}" if txf_available else "請改用 FinMind/券商源"
         twii_df_for_pred = get_stock_data("^TWII")
         today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt_str, risk_score, macro = open_pred_logic(twii_df_for_pred, twii_close, twii_change, twii_time_str)
         sox = macro.get('^SOX', {"price": None, "pct": None})
@@ -1182,14 +775,13 @@ def render_index_board():
         twd = macro.get('TWD=X', {"price": None, "pct": None})
         bar_color = "#22c55e" if risk_score < 40 else ("#facc15" if risk_score < 70 else "#ef4444")
         render_market_status_cards([
-            {"label": "台股加權", "value": twii_price_text, "sub": twii_change_text, "color": twii_color},
+            {"label": "台股加權", "value": f"{twii_close:,.0f}", "sub": f"{'+' if twii_change > 0 else ''}{twii_change:.0f}", "color": twii_color},
             {"label": f"台指期 ({txf_symbol})", "value": txf_price_text, "sub": txf_change_text, "color": txf_color},
             {"label": "費城半導體", "value": "--" if sox.get("price") is None else f"{sox.get('price'):,.1f}", "sub": "--" if sox.get("pct") is None else f"{sox.get('pct'):+.2f}%", "color": "#ef4444" if (sox.get("pct") or 0) >= 0 else "#22c55e"},
             {"label": "VIX", "value": "--" if vix.get("price") is None else f"{vix.get('price'):,.2f}", "sub": "--" if vix.get("pct") is None else f"{vix.get('pct'):+.2f}%", "color": "#22c55e" if vix.get("pct") is not None and vix.get("pct") <= 0 else "#ef4444"},
             {"label": "美元台幣", "value": "--" if twd.get("price") is None else f"{twd.get('price'):,.3f}", "sub": "--" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值"), "color": "#facc15"},
             {"label": "今日風險分數", "value": f"{risk_score}%", "sub": tmr_title, "color": bar_color},
         ])
-        st.session_state.market_risk_score = risk_score
         st.markdown(
             f"""
 <div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:12px 14px; margin:10px 0 14px 0;">
@@ -1290,16 +882,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     has_support = (lower_shadow > body_len * 1.5) and (effective_volume > avg_vol_5) and volume_confirmed
     hit_pressure = (upper_shadow > body_len * 1.5)
-    box_high, box_low, box_range_pct = 0.0, 0.0, 0.0
-    box_breakout = False
-    breakout_volume_ok = False
-    if len(df) >= 11:
-        box_window = df.iloc[-11:-1]
-        box_high = float(box_window["High"].max())
-        box_low = float(box_window["Low"].min())
-        box_range_pct = (box_high - box_low) / box_low * 100 if box_low > 0 else 0.0
-        breakout_volume_ok = est_vol_ratio >= 1.2
-        box_breakout = bool(box_range_pct < 12 and t_close > box_high and breakout_volume_ok and not hit_pressure)
     ma5_up_today = bool(len(df) >= 6 and float(df['Close'].iloc[-1]) > float(df['Close'].iloc[-6]))
     tomorrow_turn_price = float(df['Close'].iloc[-4]) if len(df) >= 4 else t_close
     bullish_count = sum([
@@ -1332,8 +914,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         entry_pattern = "假突破風險型"
     else:
         entry_pattern = "一般觀察型"
-    if box_breakout and entry_pattern == "一般觀察型":
-        entry_pattern = "整理突破型"
     data_quality, confidence = build_data_quality(
         price_status="realtime" if effective_intraday else "ok",
         volume_status="confirmed" if volume_confirmed else "estimated",
@@ -1342,15 +922,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         macro_status=macro.get("status", {}),
         txf_status=macro.get("status", {}).get("TX=F", "missing")
     )
-    ma20_val = float(t.get('20MA', t_close) or t_close)
-    atr_val = float(t.get('ATR', t_close * 0.03) or t_close * 0.03)
-    tomorrow_plan = {
-        "明日觸發": f"突破今日高點 {t_high:.2f} 且量能延續",
-        "觀察支撐": f"收盤 {t_close:.2f} / 20MA {ma20_val:.2f}",
-        "失效價": f"跌破 {min(t_low, ma20_val):.2f}",
-        "禁止追高價": f"開高超過 {t_close * 1.035:.2f} 不追",
-        "建議型態": entry_pattern,
-    }
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
@@ -1377,8 +948,6 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "VWAP_Dev": price_dev if price_dev_source == "real_vwap" else 0, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
         "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
         "Signal_Conflict": signal_conflict, "Conflict_Score": round(conflict_score, 2), "Entry_Pattern": entry_pattern,
-        "Box_Breakout": box_breakout, "Box_Days": 10, "Box_Range_Pct": round(box_range_pct, 2), "Breakout_Volume_OK": breakout_volume_ok,
-        "Tomorrow_Plan": tomorrow_plan,
         "ATR": round(t.get('ATR', t_close*0.03), 2),
         "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
         "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > price_anchor else "跌破均價線")
@@ -1546,33 +1115,25 @@ if st.session_state.page == "home":
         st.session_state.scan_results_is_local = True
     else:
         st.session_state.scan_results_is_local = False
-    st.session_state.scan_results = [hydrate_record_identity(x) for x in st.session_state.get("scan_results", [])]
-    cloud_scan_stale = st.session_state.get("scan_results_is_stale", False)
             
     if st.session_state.scan_results:
         fetch_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-        if st.session_state.get("scan_results_is_local"):
-            source_badge = "雲端名單空白，改用本機備援池即時計算"
-        elif cloud_scan_stale:
-            source_badge = "雲端名單已過期，正改用 API 重新計算"
-        else:
-            source_badge = "最新雲端資料庫讀取時間"
+        source_badge = "🧭 雲端名單空白，改用本機備援池即時計算" if st.session_state.get("scan_results_is_local") else "☁️ 最新雲端資料庫讀取時間"
         st.markdown(f"<div style='font-size:0.85rem; color:#64748b; margin-bottom:15px; font-weight:bold;'>{source_badge}：{fetch_time}</div>", unsafe_allow_html=True)
         if st.session_state.get("scan_results_is_local") and st.session_state.get("cloud_last_error"):
             st.caption(f"Firebase 狀態：{st.session_state.cloud_last_error}")
 
         st.markdown("<div class='terminal-card' style='margin-bottom:12px;'>", unsafe_allow_html=True)
-        st.markdown("<div class='section-title'>明日起漲觀察清單</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>雷達篩選器</div>", unsafe_allow_html=True)
         col_m1, col_m2 = st.columns([1.4, 1])
         with col_m1:
             st.caption("引擎模式")
-            radar_mode = st.radio("引擎模式：", ["盤後正式選股", "隔日追蹤 / 盤中確認"], horizontal=True, label_visibility="collapsed")
+            radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
         with col_m2:
             st.caption("自選群組")
-            favorite_mode = st.radio("自選群組：", ["全部清單", "只看自選群組"], horizontal=True, label_visibility="collapsed")
-            only_favorites = favorite_mode == "只看自選群組"
+            only_favorites = st.toggle("⭐ 只看自選群組", value=False)
         st.markdown("</div>", unsafe_allow_html=True)
-        requested_intraday = "盤中確認" in radar_mode
+        requested_intraday = "盤中" in radar_mode
         score_mode, score_mode_label, is_intraday = resolve_score_mode(requested_intraday)
         st.session_state.is_intraday = is_intraday
         st.session_state.score_mode_label = score_mode_label
@@ -1581,17 +1142,10 @@ if st.session_state.page == "home":
         
         cached_list = list(st.session_state.get('scan_results', []))
         use_local_fallback = st.session_state.get("scan_results_is_local", False)
-        cloud_scan_too_small = (not use_local_fallback and len(cached_list) < MIN_CLOUD_SCAN_COUNT)
         cloud_count = 0 if use_local_fallback else len(cached_list)
         
-        if is_intraday or use_local_fallback or cloud_scan_too_small or cloud_scan_stale:
-            if cloud_scan_stale:
-                spinner_text = "雲端盤後名單仍是舊日期，正在用 API 重新計算並回寫..."
-            elif cloud_scan_too_small:
-                spinner_text = "雲端名單不足，正在用 API 補算..."
-            else:
-                spinner_text = "即時計算中，正在掃描觀察清單..."
-            with st.spinner(spinner_text):
+        if is_intraday or use_local_fallback:
+            with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
                 fb_df = pd.DataFrame(cached_list)
                 targets = get_radar_targets(cached_list)
                 live_data = []
@@ -1599,7 +1153,7 @@ if st.session_state.page == "home":
                 def process_live(ticker):
                     df = get_stock_data(ticker)
                     if df is not None:
-                        base = next((x for x in cached_list if get_record_ticker(x) == str(ticker)), None)
+                        base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
                         analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS)
                         cached_data = analysis_cache.get("data") if analysis_cache else None
                         if is_intraday and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
@@ -1617,28 +1171,17 @@ if st.session_state.page == "home":
                             fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
-                            res = hydrate_record_identity(res)
                             bt_preview = calculate_historical_performance(df.tail(BACKTEST_LOOKBACK_DAYS), 1.5, 1.0)
                             res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
                             res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
-                            res["Score_Source"] = "盤中重算" if is_intraday else ("API備援重建" if (cloud_scan_too_small or cloud_scan_stale) else "本機備援重算")
+                            res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
                             save_analysis_cache(ticker, {"data": res, "fund": fund, "inst_data": inst_data})
                             return res
                     return None
                     
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                     for r in executor.map(process_live, targets):
                         if r: live_data.append(r)
-                if (cloud_scan_too_small or cloud_scan_stale) and len(live_data) >= MIN_CLOUD_SCAN_COUNT:
-                    live_data = sorted(live_data, key=lambda x: (safe_num(x.get("Score"), 0), safe_num(x.get("漲跌幅"), 0)), reverse=True)
-                    strict_live = [r for r in live_data if safe_num(r.get("Score"), 0) >= 60]
-                    watch_live = [r for r in live_data if 45 <= safe_num(r.get("Score"), 0) < 60]
-                    save_cloud_data("market_data", "daily_scan_strict", strict_live)
-                    save_cloud_data("market_data", "daily_scan_watch", watch_live)
-                    save_cloud_data("market_data", "daily_scan", live_data)
-                    st.session_state.scan_results = live_data
-                    st.session_state.scan_results_is_local = False
-                    st.session_state.scan_results_is_stale = False
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
             df_results = pd.DataFrame(cached_list)
@@ -1659,7 +1202,7 @@ if st.session_state.page == "home":
         col_f1, col_f2 = st.columns([1.6, 1])
         with col_f1:
             st.caption("產業過濾")
-            selected_theme = st.selectbox("產業過濾：", available_themes, label_visibility="collapsed")
+            selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         with col_f2:
             st.caption("排序")
             sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
@@ -1668,46 +1211,12 @@ if st.session_state.page == "home":
         industry_count = len(df_results)
             
         if not df_results.empty: 
-            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100, "Backtest_Samples": 0, "Est_Vol_Ratio": 0, "BIAS": 0, "RSI": 50, "Conflict_Score": 0, "收盤價": 0, "20MA": 0, "MACD柱": 0, "前日MACD柱": 0}.items():
+            df_results = df_results[df_results['Score'] >= 60]
+            score_count = len(df_results)
+            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
                 if col not in df_results.columns:
                     df_results[col] = default
                 df_results[col] = pd.to_numeric(df_results[col], errors="coerce").fillna(default)
-            market_risk_score = int(st.session_state.get("market_risk_score", 50))
-            score_threshold = 60 if market_risk_score < 40 else (65 if market_risk_score <= 70 else 75)
-            if "Entry_Pattern" not in df_results.columns:
-                df_results["Entry_Pattern"] = "一般觀察型"
-            if "Signal_Conflict" not in df_results.columns:
-                df_results["Signal_Conflict"] = "低"
-            risk_allowed_patterns = ["趨勢突破型", "回測支撐型", "整理突破型"]
-            df_pool = df_results.copy()
-            strict_results = df_pool[df_pool["Score"] >= score_threshold]
-            strict_results = strict_results[~strict_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
-            strict_results = strict_results[strict_results["Entry_Pattern"].isin(risk_allowed_patterns)]
-            strict_results = strict_results[(strict_results["Signal_Conflict"] != "高") & (strict_results["Conflict_Score"] <= 0.45)]
-            strict_results = strict_results[(strict_results["收盤價"] > strict_results["20MA"]) & (strict_results["MACD柱"] > strict_results["前日MACD柱"])]
-            strict_results = strict_results[(strict_results["Est_Vol_Ratio"] >= 1.1) & (strict_results["Est_Vol_Ratio"] <= 3.0)]
-            strict_results = strict_results[(strict_results["BIAS"] >= 0) & (strict_results["BIAS"] < 8) & (strict_results["RSI"] < 75)]
-            strict_results = strict_results[(strict_results["Backtest_Samples"] >= 10) & (strict_results["Confidence"] >= 70)]
-            strict_count = len(strict_results)
-
-            fallback_results = df_pool[df_pool["Score"] >= 60]
-            fallback_results = fallback_results[~fallback_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
-            fallback_results = fallback_results[fallback_results["Signal_Conflict"] != "高"]
-            fallback_results = fallback_results[fallback_results["Confidence"] >= 60]
-
-            strict_results = strict_results.copy()
-            fallback_results = fallback_results.copy()
-            if not strict_results.empty:
-                strict_results["List_Tag"] = "嚴格起漲"
-            if not fallback_results.empty:
-                fallback_results["List_Tag"] = "備援觀察"
-            if not strict_results.empty and not fallback_results.empty and "代號" in fallback_results.columns:
-                strict_codes = set(strict_results["代號"].astype(str).map(normalize_ticker))
-                fallback_results = fallback_results[~fallback_results["代號"].astype(str).map(normalize_ticker).isin(strict_codes)]
-
-            df_results = pd.concat([strict_results, fallback_results], ignore_index=True)
-            list_mode_note = "主清單+備援觀察" if strict_count > 0 else "備援觀察清單"
-            score_count = len(df_results)
             sort_map = {
                 "AI分數": ["Score", "漲跌幅"],
                 "歷史勝率": ["WinRate", "Score", "漲跌幅"],
@@ -1717,14 +1226,13 @@ if st.session_state.page == "home":
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
-            scan_source_label = "本機" if use_local_fallback else ("API備援" if cloud_scan_too_small else "雲端")
             
-            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 嚴格條件 {strict_count} 檔 → {list_mode_note} {score_count} 檔 | 門檻 {score_threshold} 分 / 風險 {market_risk_score}% | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔 | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
                     market_rows = [
-                        {"title": "掃描來源", "value": scan_source_label, "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
+                        {"title": "掃描來源", "value": "本機" if use_local_fallback else "雲端", "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
                         {"title": "目前模式", "value": "盤中" if is_intraday else "盤後", "sub": score_mode_label, "color": "#FACC15"},
                         {"title": "排序口徑", "value": sort_mode, "sub": selected_theme, "color": "#94A3B8"},
                     ]
@@ -1744,7 +1252,7 @@ if st.session_state.page == "home":
                         for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows()
                     ]
                     order_rows = [
-                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"現價 {safe_num(o.get('curr_price', o.get('buy_price', 0)), 0):.1f}", "sub": f"目標 {o.get('target_price', '--')} / 停損 {o.get('stop_price', '--')}", "color": "#60A5FA"}
+                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"}
                         for o in st.session_state.get("simulated_orders", [])[:3]
                     ]
                     render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
@@ -1977,7 +1485,7 @@ elif st.session_state.page == "analysis":
         atr_target_mult = 1.5
         dynamic_rrr = 1.5
 
-        backtest_df = df_chart.tail(st.session_state.backtest_days)
+        backtest_df = df_slice.tail(st.session_state.view_days)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
         if use_cached_list_score and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
@@ -2043,28 +1551,22 @@ elif st.session_state.page == "analysis":
         current_show_buy = chart_flag("show_buy", True)
         current_show_sup = chart_flag("show_sup", True)
         current_show_signals = chart_flag("show_signals", True)
-        def chart_card(label, url, active=True):
-            border = "#60A5FA" if active else "#1E293B"
-            bg = "rgba(96,165,250,.12)" if active else "#0F172A"
-            color = "#E2E8F0" if active else "#64748B"
-            glow = "box-shadow:0 0 0 1px rgba(96,165,250,.60),0 0 16px rgba(96,165,250,.16);" if active else ""
-            return (
-                f"<a href='{url}' style='display:flex;align-items:center;justify-content:center;"
-                f"min-height:46px;padding:10px 8px;border-radius:10px;border:1px solid {border};"
-                f"background:{bg};color:{color};text-decoration:none;font-weight:850;text-align:center;{glow}'>{label}</a>"
-            )
         day_cards = []
         for day in (30, 60, 90):
-            day_cards.append(chart_card(f"{day}日", chart_control_url(days=day), st.session_state.view_days == day))
+            active = " active" if st.session_state.view_days == day else ""
+            day_cards.append(f"<a class='chart-control-card{active}' href='{chart_control_url(days=day)}'>{day}日</a>")
         st.markdown(f"<div class='chart-control-grid'>{''.join(day_cards)}</div>", unsafe_allow_html=True)
+        buy_class = "active" if current_show_buy else "off"
+        sup_class = "active" if current_show_sup else "off"
+        sig_class = "active" if current_show_signals else "off"
         buy_url = chart_control_url(show_buy=not current_show_buy)
         sup_url = chart_control_url(show_sup=not current_show_sup)
         sig_url = chart_control_url(show_signals=not current_show_signals)
         st.markdown(
             f"<div class='chart-control-grid'>"
-            f"{chart_card('買進', buy_url, current_show_buy)}"
-            f"{chart_card('高低點', sup_url, current_show_sup)}"
-            f"{chart_card('符號', sig_url, current_show_signals)}"
+            f"<a class='chart-control-card {buy_class}' href='{buy_url}'>買進</a>"
+            f"<a class='chart-control-card {sup_class}' href='{sup_url}'>高低點</a>"
+            f"<a class='chart-control-card {sig_class}' href='{sig_url}'>符號</a>"
             f"</div>",
             unsafe_allow_html=True,
         )
