@@ -554,13 +554,14 @@ def get_stock_data(ticker_number):
     
     try:
         market_state = get_market_state()
-        if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
+        now_tpe = datetime.now(timezone(timedelta(hours=8)))
+        is_postclose = now_tpe.weekday() < 5 and now_tpe >= now_tpe.replace(hour=13, minute=30, second=0, microsecond=0)
+        if base_ticker != "^TWII" and (market_state == "open" or is_postclose) and FUGLE_API_KEY:
             url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
             res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
             if res.status_code == 200:
                 q = res.json()
                 c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
-                now_tpe = datetime.now(timezone(timedelta(hours=8)))
                 total = q.get('total', {}) or {}
                 live_volume = float(total.get('tradeVolume', 0) or 0)
                 live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
@@ -579,6 +580,41 @@ def get_stock_data(ticker_number):
                     if 0 < real_vwap < c_price * 2:
                         df.loc[dt_live, 'VWAP'] = real_vwap
     except: pass
+
+    if base_ticker != "^TWII" and FINMIND_TOKEN:
+        try:
+            last_date = pd.to_datetime(df.index.max()).date()
+            start_date = (last_date - timedelta(days=7)).strftime("%Y-%m-%d")
+            url = (
+                "https://api.finmindtrade.com/api/v4/data"
+                f"?dataset=TaiwanStockPrice&data_id={base_ticker}&start_date={start_date}&token={FINMIND_TOKEN}"
+            )
+            res = requests.get(url, timeout=5).json()
+            rows = res.get("data", [])
+            if rows:
+                fm = pd.DataFrame(rows)
+                fm["date"] = pd.to_datetime(fm["date"])
+                fm = fm[fm["date"].dt.date > last_date]
+                if not fm.empty:
+                    fm = fm.rename(
+                        columns={
+                            "date": "Date",
+                            "open": "Open",
+                            "max": "High",
+                            "min": "Low",
+                            "close": "Close",
+                            "Trading_Volume": "Volume",
+                        }
+                    )
+                    fm = fm.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]]
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        fm[col] = pd.to_numeric(fm[col], errors="coerce")
+                    fm = fm.dropna(subset=["Close"])
+                    if not fm.empty:
+                        df = pd.concat([df, fm])
+                        df = df[~df.index.duplicated(keep="last")].sort_index()
+        except Exception as e:
+            logging.warning(f"FinMind 日線補資料失敗 {ticker_number}: {e}")
 
     try:
         return apply_technical_indicators(df)
@@ -1321,22 +1357,24 @@ if st.session_state.page == "home":
             strict_results = strict_results[(strict_results["Backtest_Samples"] >= 10) & (strict_results["Confidence"] >= 70)]
             strict_count = len(strict_results)
 
-            if strict_count > 0:
-                df_results = strict_results
-                list_mode_note = "明日起漲嚴格條件"
-                list_tag = "嚴格起漲"
-            else:
-                fallback_results = df_pool[df_pool["Score"] >= 60]
-                fallback_results = fallback_results[~fallback_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
-                fallback_results = fallback_results[fallback_results["Signal_Conflict"] != "高"]
-                fallback_results = fallback_results[fallback_results["Confidence"] >= 60]
-                df_results = fallback_results
-                list_mode_note = "備援觀察清單"
-                list_tag = "備援觀察"
+            fallback_results = df_pool[df_pool["Score"] >= 60]
+            fallback_results = fallback_results[~fallback_results["Entry_Pattern"].isin(["過熱追高型", "假突破風險型"])]
+            fallback_results = fallback_results[fallback_results["Signal_Conflict"] != "高"]
+            fallback_results = fallback_results[fallback_results["Confidence"] >= 60]
+
+            strict_results = strict_results.copy()
+            fallback_results = fallback_results.copy()
+            if not strict_results.empty:
+                strict_results["List_Tag"] = "嚴格起漲"
+            if not fallback_results.empty:
+                fallback_results["List_Tag"] = "備援觀察"
+            if not strict_results.empty and not fallback_results.empty and "代號" in fallback_results.columns:
+                strict_codes = set(strict_results["代號"].astype(str).map(normalize_ticker))
+                fallback_results = fallback_results[~fallback_results["代號"].astype(str).map(normalize_ticker).isin(strict_codes)]
+
+            df_results = pd.concat([strict_results, fallback_results], ignore_index=True)
+            list_mode_note = "主清單+備援觀察" if strict_count > 0 else "備援觀察清單"
             score_count = len(df_results)
-            if not df_results.empty:
-                df_results = df_results.copy()
-                df_results["List_Tag"] = list_tag
             sort_map = {
                 "AI分數": ["Score", "漲跌幅"],
                 "歷史勝率": ["WinRate", "Score", "漲跌幅"],
