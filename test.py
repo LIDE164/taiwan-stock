@@ -533,7 +533,31 @@ def fetch_twse_index_history():
         if not df.empty:
             df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
             df = df[~df.index.duplicated(keep='last')]
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            try:
+                res = requests.get("https://openapi.twse.com.tw/v1/indicesReport/MI_5MINS_HIST", timeout=5)
+                if res.status_code == 200:
+                    rows = res.json()
+                    official = []
+                    for row in rows:
+                        roc_date = str(row.get("Date", ""))
+                        if len(roc_date) == 7:
+                            dt = pd.to_datetime(f"{int(roc_date[:3]) + 1911}-{roc_date[3:5]}-{roc_date[5:7]}")
+                            official.append({
+                                "Date": dt,
+                                "Open": safe_num(row.get("OpeningIndex"), 0),
+                                "High": safe_num(row.get("HighestIndex"), 0),
+                                "Low": safe_num(row.get("LowestIndex"), 0),
+                                "Close": safe_num(row.get("ClosingIndex"), 0),
+                                "Volume": 0,
+                            })
+                    if official:
+                        df_official = pd.DataFrame(official).set_index("Date")
+                        df = pd.concat([df, df_official])
+                        df = df[~df.index.duplicated(keep="last")].sort_index()
+            except Exception:
+                pass
+            return df
     except: return None
 
 @st.cache_data(ttl=60, show_spinner=False) 
@@ -693,6 +717,25 @@ def get_twii_quote():
     tz_tpe = timezone(timedelta(hours=8))
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
     fallback_curr, fallback_change = 0, 0
+    try:
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=5)
+        if res.status_code == 200:
+            for row in res.json():
+                if row.get("指數") == "發行量加權股價指數":
+                    curr = safe_num(str(row.get("收盤指數", "")).replace(",", ""), 0)
+                    change = safe_num(str(row.get("漲跌點數", "")).replace(",", ""), 0)
+                    sign = str(row.get("漲跌", "")).strip()
+                    if sign in ("-", "－", "▼"):
+                        change = -abs(change)
+                    elif sign in ("+", "＋", "▲"):
+                        change = abs(change)
+                    roc_date = str(row.get("日期", ""))
+                    if len(roc_date) == 7:
+                        update_time_str = f"{int(roc_date[:3]) + 1911}/{roc_date[3:5]}/{roc_date[5:7]} 盤後"
+                    if 10000 < curr < 100000:
+                        return curr, change, update_time_str
+    except Exception:
+        pass
     try:
         df = yf.Ticker("^TWII").history(period="1mo").dropna(subset=['Close'])
         if not df.empty and len(df) >= 2:
