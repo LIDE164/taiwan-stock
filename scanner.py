@@ -12,17 +12,16 @@ import numpy as np
 import streamlit as st
 
 # 引入共用核心演算法
-from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, build_score_input, calculate_historical_performance
+from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, build_score_input, calculate_historical_winrate
 from scoring import get_decision_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_secret(name, default=""):
     try:
-        value = st.secrets.get(name, "")
+        return st.secrets.get(name, default)
     except Exception:
-        value = ""
-    return value or os.getenv(name, default)
+        return default
 
 
 def init_firestore():
@@ -37,20 +36,6 @@ def init_firestore():
 
 db = init_firestore()
 FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
-
-FALLBACK_SCAN_POOL = [
-    "2330", "2317", "2454", "2308", "2382", "2412", "2881", "2882", "2891", "2886",
-    "2303", "3711", "2357", "2379", "3034", "3008", "3231", "3661", "3017", "3324",
-    "2345", "2360", "2356", "2327", "4938", "2376", "6669", "5269", "2395", "2059",
-    "2603", "2609", "2615", "2618", "2606", "2610", "2618", "2637", "2645", "5608",
-    "1301", "1303", "1326", "6505", "2002", "2014", "2027", "2105", "2201", "2207",
-    "1216", "1227", "1231", "1402", "1476", "1590", "1605", "1717", "1722", "1785",
-    "1802", "1904", "2006", "2049", "2408", "2409", "2449", "2498", "2515", "2542",
-    "2614", "2801", "2809", "2880", "2883", "2884", "2885", "2887", "2890", "2892",
-    "2912", "3037", "3045", "3094", "3105", "3189", "3406", "3443", "3481", "3533",
-    "3702", "4904", "5347", "5434", "5871", "5876", "6176", "6239", "6415", "8046",
-]
-MIN_SCAN_RESULTS_TO_OVERWRITE = 20
 
 ENG_TO_TW_INDUSTRY = {
     "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
@@ -129,31 +114,23 @@ def fetch_top_500():
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
     try:
         res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
-        res.raise_for_status()
         df_twse = pd.DataFrame(res.json())
         df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'], errors='coerce')
         all_stocks.append(df_twse[['Code', 'TradeVolume']])
-    except Exception as e:
-        logging.warning("上市成交量排行取得失敗，改用備援池: %s", e)
+    except: pass
     try:
         res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
-        res2.raise_for_status()
         df_tpex = pd.DataFrame(res2.json())
         df_tpex = df_tpex.rename(columns={'SecuritiesCompanyCode': 'Code', 'TradingVolume': 'TradeVolume'})
         df_tpex['TradeVolume'] = pd.to_numeric(df_tpex['TradeVolume'], errors='coerce')
         all_stocks.append(df_tpex[['Code', 'TradeVolume']])
-    except Exception as e:
-        logging.warning("上櫃成交量排行取得失敗，改用備援池: %s", e)
+    except: pass
 
     if all_stocks:
         df_all = pd.concat(all_stocks, ignore_index=True)
         df_all = df_all[df_all['Code'].str.match(r'^\d{4}$')]
-        ranked = df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
-        merged = list(dict.fromkeys(ranked + FALLBACK_SCAN_POOL))
-        logging.info("股票池完成：交易所 %s 檔，合併備援後 %s 檔", len(ranked), len(merged))
-        return merged
-    logging.warning("交易所股票池完全取得失敗，使用核心備援池 %s 檔", len(FALLBACK_SCAN_POOL))
-    return FALLBACK_SCAN_POOL
+        return df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
+    else: return ["2330", "2317", "2454", "3231", "2382"]
 
 def get_stock_data(ticker_number):
     try:
@@ -184,23 +161,14 @@ def get_institutional_trading(ticker):
             for col in ['外資', '投信', '自營商']:
                 if col not in pivot.columns: pivot[col] = 0
             pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
-            return [
-                {
-                    "日期": r["date"],
-                    "外資(張)": int(r["外資"]),
-                    "投信(張)": int(r["投信"]),
-                    "自營商(張)": int(r["自營商"]),
-                    "單日合計(張)": int(r["單日合計"]),
-                }
-                for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()
-            ]
+            return [{"單日合計(張)": int(r['單日合計'])} for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()]
     except: pass
     return []
 
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
-    result = calculate_historical_performance(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
-    return result.get("win_rate", 0.0), result.get("closed_signals", 0)
+    win_rate, _, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
+    return win_rate
 
 def should_run_postclose_scan(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
@@ -242,72 +210,32 @@ def run_daily_scan():
             
             if sc >= 45:
                 # ⭐ 同步將 WinRate 和 Whale_Net 存入資料庫
-                wr, sample_count = calc_winrate(df)
+                wr = calc_winrate(df)
                 inst = get_institutional_trading(stock)
                 whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3]]) if inst else 0
-                foreign_net = sum([int(str(x.get('外資(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
-                trust_net = sum([int(str(x.get('投信(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
-                dealer_net = sum([int(str(x.get('自營商(張)', 0)).replace(',', '')) for x in inst[:3]]) if inst else 0
 
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
-                    "收盤價": round(t_close, 2), "WinRate": wr, "Backtest_Samples": sample_count, "Whale_Net": whale_net,
-                    "Foreign_Net": foreign_net, "InvestmentTrust_Net": trust_net, "Dealer_Net": dealer_net,
-                    "Institutional_Detail": inst[:10],
+                    "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs,
-                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
-                    "Confidence": data.get("Confidence", 100),
-                    "Signal_Conflict": data.get("Signal_Conflict", "低"),
-                    "Conflict_Score": data.get("Conflict_Score", 0),
-                    "Entry_Pattern": data.get("Entry_Pattern", "一般觀察型"),
-                    "Est_Vol_Ratio": data.get("Est_Vol_Ratio", 0),
-                    "BIAS": data.get("BIAS", 0),
-                    "RSI": data.get("RSI", 50),
-                    "20MA": data.get("20MA", 0),
-                    "MACD柱": data.get("MACD柱", 0),
-                    "前日MACD柱": data.get("前日MACD柱", 0),
-                    "Box_Breakout": data.get("Box_Breakout", False),
-                    "Box_Range_Pct": data.get("Box_Range_Pct", 0),
-                    "Tomorrow_Plan": data.get("Tomorrow_Plan", {})
+                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp
                 }
         return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         for res in executor.map(process_stock, pool):
             if res: scan_results.append(res)
             
     scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
-    strict_results = [r for r in scan_results if r.get("Score", 0) >= 60]
-    watch_results = [r for r in scan_results if 45 <= r.get("Score", 0) < 60]
             
     if db is None:
         logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
         return scan_results
 
-    if len(scan_results) < MIN_SCAN_RESULTS_TO_OVERWRITE:
-        logging.error(
-            "掃描結果僅 %s 檔，低於安全覆蓋門檻 %s 檔，本次不覆蓋 Firebase daily_scan。",
-            len(scan_results),
-            MIN_SCAN_RESULTS_TO_OVERWRITE,
-        )
-        try:
-            old_doc = db.collection("market_data").document("daily_scan").get()
-            if old_doc.exists:
-                old_data = old_doc.to_dict().get("data", [])
-                if isinstance(old_data, list) and len(old_data) >= len(scan_results):
-                    logging.info("保留既有雲端名單 %s 檔。", len(old_data))
-                    return old_data
-        except Exception as e:
-            logging.warning("讀取既有雲端名單失敗: %s", e)
-        return scan_results
-
-    write_payload = {"update_time": firestore.SERVER_TIMESTAMP}
-    db.collection("market_data").document("daily_scan_strict").set({"data": strict_results, **write_payload})
-    db.collection("market_data").document("daily_scan_watch").set({"data": watch_results, **write_payload})
-    db.collection("market_data").document("daily_scan").set({"data": strict_results + watch_results, **write_payload})
-    logging.info(f"✅ 掃描完成！主清單 {len(strict_results)} 檔，備援觀察 {len(watch_results)} 檔。")
+    db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})
+    logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 
 if __name__ == "__main__":
