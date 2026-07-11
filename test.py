@@ -483,7 +483,7 @@ if 'stock' in st.query_params:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
-        df = yf.Ticker("^TWII").history(period="1y")
+        df = yf.Ticker("^TWII").history(period="2y")
         if not df.empty:
             df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
             df = df[~df.index.duplicated(keep='last')]
@@ -497,7 +497,7 @@ def _get_ohlcv_base(ticker_number):
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
         try:
-            d = yf.Ticker(sym).history(period="1y").dropna(subset=['Close'])
+            d = yf.Ticker(sym).history(period="2y").dropna(subset=['Close'])
             if len(d) >= 20:
                 d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
                 d = d[~d.index.duplicated(keep='last')]
