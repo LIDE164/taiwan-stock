@@ -74,6 +74,15 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif yoy > 15:
         add(2, f"✅ 月營收年增達 {yoy:.2f}%，營運動能強")
 
+    # 🛡️ 大盤環境過濾器 (Market Regime Filter)
+    twii_close = _num(fund_data.get("TWII_Close"), 0.0)
+    twii_ma20 = _num(fund_data.get("TWII_MA20"), 0.0)
+    if twii_close > 0 and twii_ma20 > 0:
+        if twii_close < twii_ma20:
+            add(-6, f"🚨 大盤偏空 (加權指數 {twii_close:.1f} 跌破月線 {twii_ma20:.1f}，防守第一)")
+        else:
+            add(2, f"🛡️ 大盤偏多 (加權指數 {twii_close:.1f} 站上月線 {twii_ma20:.1f}，多頭環境)")
+
     eps_f = _num(fund_data.get("EPS"), 0.0)
     if eps_f > 0:
         add(2, "✅ EPS 為正，具獲利支撐")
