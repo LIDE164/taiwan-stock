@@ -17,7 +17,7 @@ import logging
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
-from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
 from charts import draw_professional_chart
 from scoring import get_decision_score
 try:
@@ -282,8 +282,13 @@ if submit_search and search_input:
 
 st.sidebar.divider()
 st.sidebar.title("⏱️ 盤中即時跳動")
-auto_refresh = st.sidebar.toggle("🟢 開啟自動更新 (每30秒)", False)
-if auto_refresh: st_autorefresh(interval=30000, limit=None)
+_market_open_now = is_regular_market_open()
+if _market_open_now:
+    auto_refresh = st.sidebar.toggle("🟢 開啟自動更新 (每30秒)", False)
+    if auto_refresh: st_autorefresh(interval=30000, limit=None)
+else:
+    st.sidebar.toggle("🔴 非交易時段，無需自動刷新", False, disabled=True)
+    auto_refresh = False
 
 st.sidebar.divider()
 st.sidebar.title("🛒 模擬交易中心")
@@ -467,16 +472,7 @@ if 'stock' in st.query_params:
     st.session_state.page = "analysis"
     st.session_state.last_q_stock = q_stock
 
-ENG_TO_TW_INDUSTRY = {
-    "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
-    "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
-    "Building Materials": "玻璃陶瓷", "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意", 
-    "Technology": "電子科技", "Industrials": "工業", "Basic Materials": "原物料", "Consumer Cyclical": "非必需消費品", 
-    "Healthcare": "生技醫療", "Real Estate": "建材營造", "Utilities": "公用事業", "Energy": "能源", 
-    "Communication Services": "通信網路", "Auto Parts": "汽車工業", "Chemicals": "化學工業", 
-    "Textile Manufacturing": "紡織纖維", "Food": "食品工業", "Steel": "鋼鐵工業", "Rubber": "橡膠工業", 
-    "Plastics": "塑膠工業", "Biotechnology": "生技醫療", "Specialty Retail": "貿易百貨", "Consumer Defensive": "核心消費品"
-}
+# ENG_TO_TW_INDUSTRY 已統一定義於 analysis_core.py，此處不再重複定義
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
@@ -488,20 +484,31 @@ def fetch_twse_index_history():
             return df[['Open', 'High', 'Low', 'Close', 'Volume']]
     except: return None
 
-@st.cache_data(ttl=60, show_spinner=False) 
-def get_stock_data(ticker_number):
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _get_ohlcv_base(ticker_number):
+    """Layer 1: Fetch and cache raw OHLCV from yfinance (slow, cache 1hr)."""
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     def fetch_clean(sym):
         try:
             d = yf.Ticker(sym).history(period="1y").dropna(subset=['Close'])
-            if len(d) >= 20: 
+            if len(d) >= 20:
                 d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
                 d = d[~d.index.duplicated(keep='last')]
                 return d
         except: return None
+    if base_ticker == "^TWII":
+        return fetch_twse_index_history()
+    df = fetch_clean(f"{base_ticker}.TW")
+    if df is None: df = fetch_clean(f"{base_ticker}.TWO")
+    return df
 
-    df = fetch_twse_index_history() if base_ticker == "^TWII" else fetch_clean(f"{base_ticker}.TW")
-    if df is None and base_ticker != "^TWII": df = fetch_clean(f"{base_ticker}.TWO")
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_stock_data(ticker_number):
+    """Layer 2: Apply indicators & merge intraday quote (fast, cache 60s)."""
+    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    df = _get_ohlcv_base(ticker_number)
     if df is None: return None
     
     try:
@@ -548,26 +555,31 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
-        
+
         raw_sector = info.get("sector", "")
         if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
         elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
-        
-        if ind == "一般產業":
-            res_cnyes = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3).json()
-            if 'data' in res_cnyes and 'categoryName' in res_cnyes['data']: ind = res_cnyes['data']['categoryName']
-            
-        if 'trailingEps' in info and info['trailingEps'] is not None: eps_val = str(round(info['trailingEps'], 2))
+
+        if 'trailingEps' in info and info['trailingEps'] is not None:
+            eps_val = str(round(info['trailingEps'], 2))
     except: pass
-    
-    if eps_val == "無":
+
+    # 單次呼叫 CNYES API，同時取得產業名稱和 EPS，避免重複請求
+    if ind == "一般產業" or eps_val == "無":
         try:
-            res_api = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3).json()
-            if 'data' in res_api and 'eps' in res_api['data']: eps_val = f"{float(res_api['data']['eps']):.2f}"
+            res_cnyes = requests.get(
+                f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3
+            ).json()
+            cnyes_data = res_cnyes.get('data', {})
+            if ind == "一般產業" and 'categoryName' in cnyes_data:
+                ind = cnyes_data['categoryName']
+            if eps_val == "無" and 'eps' in cnyes_data:
+                try: eps_val = f"{float(cnyes_data['eps']):.2f}"
+                except: pass
         except: pass
 
     if eps_val != "無" and current_price > 0:
-        try: pe_val = str(round(float(current_price) / float(eps_val), 2)) if float(eps_val)>0 else "虧損"
+        try: pe_val = str(round(float(current_price) / float(eps_val), 2)) if float(eps_val) > 0 else "虧損"
         except: pass
     return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
 
@@ -1336,13 +1348,37 @@ if st.session_state.page == "home":
                     for o in st.session_state.get("simulated_orders", [])[:3]:
                         ticker = o.get('ticker')
                         curr_price_str = ""
+                        pl_str = ""
+                        days_str = ""
+                        stop_dist_str = ""
                         try:
                             if not df_results.empty and '代號' in df_results.columns:
                                 match = df_results[df_results['代號'].astype(str).apply(normalize_ticker) == normalize_ticker(ticker)]
                                 if not match.empty:
-                                    curr_price_str = f" 現價 {safe_num(match['收盤價'].values[0]):.1f}"
+                                    cp = safe_num(match['收盤價'].values[0])
+                                    bp = safe_num(o.get('buy_price', cp))
+                                    curr_price_str = f" 現價{cp:.1f}"
+                                    if bp > 0:
+                                        pl_pct = (cp - bp) / bp * 100
+                                        pl_str = f" {'▲' if pl_pct>=0 else '▼'}{abs(pl_pct):.1f}%"
                         except: pass
-                        order_rows.append({"title": f"{ticker} {o.get('name', '')}{curr_price_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"})
+                        try:
+                            from datetime import datetime as _dt
+                            buy_time = o.get('time', '')
+                            if buy_time:
+                                buy_dt = _dt.fromisoformat(buy_time[:10])
+                                hold_days = (datetime.now() - buy_dt).days
+                                days_str = f"持層{hold_days}天"
+                        except: pass
+                        try:
+                            sp = safe_num(o.get('stop_price', 0))
+                            cp_val = safe_num(o.get('curr_price', safe_num(o.get('buy_price', 0))))
+                            if sp > 0 and cp_val > 0:
+                                stop_dist = (cp_val - sp) / cp_val * 100
+                                stop_dist_str = f" 離停{stop_dist:.1f}%"
+                        except: pass
+                        sub_text = " | ".join(filter(None, [days_str, stop_dist_str, f"目標 {o.get('target_price', '--')}"]))
+                        order_rows.append({"title": f"{ticker} {o.get('name', '')}{curr_price_str}{pl_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": sub_text, "color": "#60A5FA"})
                     render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
                     render_home_side_panel("今日異動", mover_rows)
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")

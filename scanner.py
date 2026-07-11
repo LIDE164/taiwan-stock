@@ -12,7 +12,7 @@ import numpy as np
 import streamlit as st
 
 # 引入共用核心演算法
-from analysis_core import BACKTEST_LOOKBACK_DAYS, apply_technical_indicators, build_score_input, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_winrate
 from scoring import get_decision_score
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,28 +37,21 @@ def init_firestore():
 db = init_firestore()
 FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
-ENG_TO_TW_INDUSTRY = {
-    "Semiconductors": "半導體", "Consumer Electronics": "消費性電子", "Electronic Components": "電子零組件",
-    "Computer Hardware": "電腦及週邊設備", "Marine Shipping": "航運業", "Financial Services": "金融業",
-    "Building Materials": "玻璃陶瓷", "Electrical Equipment & Parts": "電機機械", "Software - Entertainment": "文化創意", 
-    "Technology": "電子科技", "Industrials": "工業", "Basic Materials": "原物料", "Consumer Cyclical": "非必需消費品", 
-    "Healthcare": "生技醫療", "Real Estate": "建材營造", "Utilities": "公用事業", "Energy": "能源", 
-    "Communication Services": "通信網路", "Auto Parts": "汽車工業", "Chemicals": "化學工業", 
-    "Textile Manufacturing": "紡織纖維", "Food": "食品工業", "Steel": "鋼鐵工業", "Rubber": "橡膠工業", 
-    "Plastics": "塑膠工業", "Biotechnology": "生技醫療", "Specialty Retail": "貿易百貨", "Consumer Defensive": "核心消費品"
-}
+# ENG_TO_TW_INDUSTRY 已移至 analysis_core.py 統一管理，此處直接 import
 
 INDUSTRY_CACHE = {}
 def build_industry_cache():
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     global INDUSTRY_CACHE
     logging.info("📦 正在建立全市場產業快取字典...")
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10, verify=False)
         if res.status_code == 200:
             for item in res.json(): INDUSTRY_CACHE[item['Code']] = item.get('Name', '')
     except: pass
     try:
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10, verify=False)
         if res2.status_code == 200:
             for item in res2.json(): INDUSTRY_CACHE[item['SecuritiesCompanyCode']] = item.get('CompanyName', '')
     except: pass
