@@ -134,19 +134,21 @@ render_app_style(is_light_mode)
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "3231": "緯創", "2891": "中信金"}
 
 @st.cache_data(ttl=86400)
-def get_all_tw_stock_names():
+def get_all_tw_stock_names_v2():
     names = STOCK_NAMES.copy()
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=5)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         if res.status_code == 200:
             for i in res.json(): names[i['Code']] = i['Name']
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=5)
+    except: pass
+    try:
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
         if res2.status_code == 200:
             for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
     except: pass
     return names
 
-CURRENT_STOCK_NAMES = get_all_tw_stock_names()
+CURRENT_STOCK_NAMES = get_all_tw_stock_names_v2()
 
 def get_stock_name(ticker):
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -1317,15 +1319,28 @@ if st.session_state.page == "home":
                     for _, row in df_disp.head(20).iterrows():
                         if normalize_ticker(row.get("代號", "")) in favorite_set:
                             code = normalize_ticker(row.get("代號", ""))
-                            fav_rows.append({"title": f"{code} {get_stock_name(code)}", "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
-                    mover_rows = [
-                        {"title": f"{normalize_ticker(r.get('代號', ''))} {get_stock_name(r.get('代號', ''))}", "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"}
-                        for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows()
-                    ]
-                    order_rows = [
-                        {"title": f"{o.get('ticker')} {o.get('name', '')}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"}
-                        for o in st.session_state.get("simulated_orders", [])[:3]
-                    ]
+                            name = get_stock_name(code)
+                            display_title = f"{code} {name}" if code != name else code
+                            fav_rows.append({"title": display_title, "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
+                    
+                    mover_rows = []
+                    for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows():
+                        code = normalize_ticker(r.get('代號', ''))
+                        name = get_stock_name(code)
+                        display_title = f"{code} {name}" if code != name else code
+                        mover_rows.append({"title": display_title, "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"})
+
+                    order_rows = []
+                    for o in st.session_state.get("simulated_orders", [])[:3]:
+                        ticker = o.get('ticker')
+                        curr_price_str = ""
+                        try:
+                            if not df_results.empty and '代號' in df_results.columns:
+                                match = df_results[df_results['代號'].astype(str).apply(normalize_ticker) == normalize_ticker(ticker)]
+                                if not match.empty:
+                                    curr_price_str = f" 現價 {safe_num(match['收盤價'].values[0]):.1f}"
+                        except: pass
+                        order_rows.append({"title": f"{ticker} {o.get('name', '')}{curr_price_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": f"目標 {o.get('target_price', '--')}", "color": "#60A5FA"})
                     render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
                     render_home_side_panel("今日異動", mover_rows)
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
