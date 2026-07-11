@@ -508,8 +508,9 @@ def _get_ohlcv_base(ticker_number):
 def get_stock_data(ticker_number):
     """Layer 2: Apply indicators & merge intraday quote (fast, cache 60s)."""
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    df = _get_ohlcv_base(ticker_number)
-    if df is None: return None
+    base_df = _get_ohlcv_base(ticker_number)
+    if base_df is None: return None
+    df = base_df.copy()  # 必須 copy，避免修改快取的唯讀 DataFrame
     
     try:
         market_state = get_market_state()
@@ -1363,12 +1364,11 @@ if st.session_state.page == "home":
                                         pl_str = f" {'▲' if pl_pct>=0 else '▼'}{abs(pl_pct):.1f}%"
                         except: pass
                         try:
-                            from datetime import datetime as _dt
                             buy_time = o.get('time', '')
                             if buy_time:
-                                buy_dt = _dt.fromisoformat(buy_time[:10])
+                                buy_dt = datetime.fromisoformat(buy_time[:10]).replace(tzinfo=None)
                                 hold_days = (datetime.now() - buy_dt).days
-                                days_str = f"持層{hold_days}天"
+                                days_str = f"持倉{hold_days}天"
                         except: pass
                         try:
                             sp = safe_num(o.get('stop_price', 0))
