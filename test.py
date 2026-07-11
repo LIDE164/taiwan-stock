@@ -629,8 +629,63 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     return True
 
+@st.cache_resource(show_spinner=False)
+def init_shioaji_api(api_key, secret_key, simulation):
+    try:
+        import shioaji as sj
+        api = sj.Shioaji(simulation=simulation)
+        api.login(api_key, secret_key)
+        return api
+    except Exception as e:
+        logging.error(f"Shioaji 登入失敗: {e}")
+        return None
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_txf_quote(reference_index=None):
+    shioaji_key = get_secret("SHIOAJI_API_KEY")
+    shioaji_secret = get_secret("SHIOAJI_SECRET_KEY")
+    shioaji_sim = get_secret("SHIOAJI_SIMULATION", "false").lower() == "true"
+    
+    if shioaji_key and shioaji_secret:
+        try:
+            api = init_shioaji_api(shioaji_key, shioaji_secret, shioaji_sim)
+            if api:
+                contract = None
+                try:
+                    contract = api.Contracts.Futures.TXF.TXFR1
+                except AttributeError:
+                    try:
+                        contract = api.Contracts.Futures['TXF']['TXFR1']
+                    except Exception:
+                        pass
+                
+                if contract:
+                    snapshots = api.snapshots([contract])
+                    if snapshots:
+                        snap = snapshots[0]
+                        curr = getattr(snap, "close", 0.0)
+                        change = getattr(snap, "change_price", 0.0)
+                        if curr > 0:
+                            snap_ts = getattr(snap, "ts", 0)
+                            import datetime as dt
+                            if snap_ts > 0:
+                                try:
+                                    ts_len = len(str(snap_ts))
+                                    if ts_len >= 16:
+                                        snap_time = dt.datetime.fromtimestamp(snap_ts / 1e9, tz=timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                                    else:
+                                        snap_time = dt.datetime.fromtimestamp(snap_ts, tz=timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                                except Exception:
+                                    snap_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                            else:
+                                snap_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                            
+                            prev = curr - change if change is not None else curr
+                            if is_plausible_txf_price(curr, prev, reference_index):
+                                return curr, change or 0.0, f"Shioaji TX ({contract.code})", snap_time
+        except Exception as e:
+            logging.error(f"Shioaji 取得期貨報價失敗: {e}")
+
     for symbol in ["TXF.TW", "FITX.TW", "TX=F"]:
         try:
             df = yf.Ticker(symbol).history(period="5d").dropna(subset=['Close'])
