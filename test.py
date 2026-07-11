@@ -284,10 +284,10 @@ st.sidebar.divider()
 st.sidebar.title("⏱️ 盤中即時跳動")
 _market_open_now = is_regular_market_open()
 if _market_open_now:
-    auto_refresh = st.sidebar.toggle("🟢 開啟自動更新 (每30秒)", False)
+    auto_refresh = st.sidebar.toggle("🟢 開啟自動更新 (每30秒)", False, key="auto_refresh_toggle")
     if auto_refresh: st_autorefresh(interval=30000, limit=None)
 else:
-    st.sidebar.toggle("🔴 非交易時段，無需自動刷新", False, disabled=True)
+    st.sidebar.caption("🔴 非交易時段，無需自動刷新")
     auto_refresh = False
 
 st.sidebar.divider()
