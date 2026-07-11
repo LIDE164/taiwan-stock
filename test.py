@@ -910,10 +910,12 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     fund['VIX'] = macro.get('^VIX', {}).get('price', 0)
     
     twii_df = fetch_twse_index_history()
-    if twii_df is not None and len(twii_df) >= 20:
+    if twii_df is not None and len(twii_df) >= 60:
         ma20_twii = twii_df['Close'].rolling(20).mean()
+        ma60_twii = twii_df['Close'].rolling(60).mean()
         fund['TWII_Close'] = float(twii_df['Close'].iloc[-1])
         fund['TWII_MA20'] = float(ma20_twii.iloc[-1])
+        fund['TWII_MA60'] = float(ma60_twii.iloc[-1])
         
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])

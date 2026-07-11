@@ -179,13 +179,15 @@ def run_daily_scan():
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
     build_industry_cache()
     
-    twii_close, twii_ma20 = 0.0, 0.0
+    twii_close, twii_ma20, twii_ma60 = 0.0, 0.0, 0.0
     try:
-        twii_df = yf.Ticker("^TWII").history(period="2mo")
-        if not twii_df.empty and len(twii_df) >= 20:
+        twii_df = yf.Ticker("^TWII").history(period="4mo")
+        if not twii_df.empty and len(twii_df) >= 60:
             twii_df['MA20'] = twii_df['Close'].rolling(20).mean()
+            twii_df['MA60'] = twii_df['Close'].rolling(60).mean()
             twii_close = float(twii_df['Close'].iloc[-1])
             twii_ma20 = float(twii_df['MA20'].iloc[-1])
+            twii_ma60 = float(twii_df['MA60'].iloc[-1])
     except Exception as e:
         logging.error("雷達獲取大盤加權指數失敗: %s", e)
     
@@ -206,7 +208,7 @@ def run_daily_scan():
 
             f_data = get_fundamental_and_industry_data(stock, t_close)
             bp, mom, yoy = get_finmind_chip_and_revenue(stock)
-            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy, "BigPlayer": bp, "TWII_Close": twii_close, "TWII_MA20": twii_ma20}
+            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy, "BigPlayer": bp, "TWII_Close": twii_close, "TWII_MA20": twii_ma20, "TWII_MA60": twii_ma60}
             data = build_score_input(df, fund)
             
             sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
