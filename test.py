@@ -1,4 +1,4 @@
-﻿# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單與營收籌碼回補防呆版)
+# 最後修改時間: 2026-07-07 (修復群組顯示、分數同步、雷達清單與營收籌碼回補防呆版)
 import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
@@ -971,8 +971,24 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
 
     return data
 
-def calculate_historical_winrate_interactive(df_slice, target_mult, stop_mult):
-    result = calculate_historical_performance(df_slice, target_mult, stop_mult)
+def calculate_historical_winrate_interactive(
+    df_slice, 
+    target_mult, 
+    stop_mult, 
+    score_threshold=60, 
+    enable_trailing=False, 
+    filter_low_conf=False, 
+    filter_high_conflict=False
+):
+    result = calculate_historical_performance(
+        df_slice, 
+        target_mult, 
+        stop_mult, 
+        score_threshold=score_threshold,
+        enable_trailing=enable_trailing,
+        filter_low_conf=filter_low_conf,
+        filter_high_conflict=filter_high_conflict
+    )
     return result["win_rate"], result["closed_signals"], result["wins"], result["buy_dates"], result
 
 def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
@@ -1481,13 +1497,48 @@ elif st.session_state.page == "analysis":
         st.markdown("---")
         
         st.markdown("##### 策略回測實驗室")
-        atr_stop_mult = 1.0
-        atr_target_mult = 1.5
-        dynamic_rrr = 1.5
+        
+        # 建立控制欄位讓使用者調整參數
+        col_bt1, col_bt2, col_bt3 = st.columns(3)
+        with col_bt1:
+            atr_target_mult = st.slider("停利 ATR 倍數", min_value=0.5, max_value=5.0, value=1.5, step=0.1, key="bt_target_mult")
+        with col_bt2:
+            atr_stop_mult = st.slider("停損 ATR 倍數", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key="bt_stop_mult")
+        with col_bt3:
+            score_thresh = st.slider("開倉分數門檻", min_value=40, max_value=80, value=60, step=5, key="bt_score_thresh")
+            
+        dynamic_rrr = round(atr_target_mult / atr_stop_mult, 2) if atr_stop_mult > 0 else 0.0
+
+        # 優化選項
+        col_opt1, col_opt2, col_opt3 = st.columns(3)
+        with col_opt1:
+            enable_trailing = st.checkbox("啟用移動止損 (Trailing Stop)", value=False, key="bt_enable_trailing")
+        with col_opt2:
+            filter_low_conf = st.checkbox("過濾低信心度 (< 60%)", value=False, key="bt_filter_low_conf")
+        with col_opt3:
+            filter_high_conflict = st.checkbox("過濾高多空衝突", value=False, key="bt_filter_high_conflict")
 
         backtest_df = df_slice.tail(st.session_state.view_days)
-        win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(backtest_df, atr_target_mult, atr_stop_mult)
-        if use_cached_list_score and atr_target_mult == 1.5 and atr_stop_mult == 1.0:
+        win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(
+            backtest_df, 
+            atr_target_mult, 
+            atr_stop_mult,
+            score_threshold=score_thresh,
+            enable_trailing=enable_trailing,
+            filter_low_conf=filter_low_conf,
+            filter_high_conflict=filter_high_conflict
+        )
+        
+        # 只有當所有回測設定均為系統預設時，才採用快取的歷史勝率以加速讀取
+        is_default_backtest = (
+            atr_target_mult == 1.5 and 
+            atr_stop_mult == 1.0 and 
+            score_thresh == 60 and 
+            not enable_trailing and 
+            not filter_low_conf and 
+            not filter_high_conflict
+        )
+        if use_cached_list_score and is_default_backtest:
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
         if is_intra:
             data['WinRate'] = win_rate

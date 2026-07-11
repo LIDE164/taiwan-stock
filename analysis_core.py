@@ -257,14 +257,14 @@ def is_strategy_signal(
     fund: Optional[Dict[str, Any]] = None,
     mode: str = "post",
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
-) -> Tuple[bool, int]:
+) -> Tuple[bool, int, Dict[str, Any]]:
     if df_slice is None or len(df_slice) < 20:
-        return False, 0
+        return False, 0, {}
     from scoring import get_decision_score
 
     data = build_score_input(df_slice, fund or {})
     score, _, _, _ = get_decision_score(data, fund or {}, mode=mode, with_reason=False)
-    return score >= score_threshold, score
+    return score >= score_threshold, score, data
 
 
 def summarize_winrate(wins: int, total: int) -> Dict[str, Any]:
@@ -311,11 +311,19 @@ def _trade_result(
     entry_price: float,
     *,
     fee_rate: float,
+    enable_trailing: bool = False,
+    atr_val: float = 0.0,
+    stop_mult: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     last_close = entry_price
     exit_price = entry_price
     exit_reason = "未出場"
     holding_days = 0
+    
+    current_stop_price = stop_price
+    highest_since_entry = entry_price
+    trailing_distance = entry_price - stop_price
+    
     for _, row in future_df.iterrows():
         holding_days += 1
         open_price = safe_float(row.get("Open"), last_close)
@@ -323,7 +331,12 @@ def _trade_result(
         high = safe_float(row.get("High"))
         close = safe_float(row.get("Close"))
 
-        if open_price <= stop_price:
+        if enable_trailing:
+            if high > highest_since_entry:
+                highest_since_entry = high
+                current_stop_price = max(current_stop_price, highest_since_entry - trailing_distance)
+
+        if open_price <= current_stop_price:
             exit_price = open_price
             exit_reason = "跳空停損"
             break
@@ -332,14 +345,14 @@ def _trade_result(
             exit_reason = "跳空停利"
             break
 
-        hit_stop = low <= stop_price
+        hit_stop = low <= current_stop_price
         hit_target = high >= target_price
         if hit_stop and hit_target:
-            exit_price = stop_price
+            exit_price = current_stop_price
             exit_reason = "同日先算停損"
             break
         if hit_stop:
-            exit_price = stop_price
+            exit_price = current_stop_price
             exit_reason = "停損"
             break
         if hit_target:
@@ -360,7 +373,7 @@ def _trade_result(
         "entry_price": round(entry_price, 2),
         "exit_price": round(exit_price, 2),
         "target_price": round(target_price, 2),
-        "stop_price": round(stop_price, 2),
+        "stop_price": round(current_stop_price, 2),
         "exit_reason": exit_reason,
         "holding_days": holding_days,
     }
@@ -396,6 +409,9 @@ def calculate_historical_performance(
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
     fee_rate: float = 0.001425,
     slippage_rate: float = 0.0005,
+    enable_trailing: bool = False,
+    filter_low_conf: bool = False,
+    filter_high_conflict: bool = False,
 ) -> Dict[str, Any]:
     empty = {
         "win_rate": 0.0,
@@ -430,8 +446,13 @@ def calculate_historical_performance(
             continue
 
         temp_df = df_slice.iloc[: actual_idx + 1]
-        signal, score = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
+        signal, score, signal_data = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
         if not signal:
+            continue
+
+        if filter_low_conf and signal_data.get("Confidence", 100) < 60:
+            continue
+        if filter_high_conflict and signal_data.get("Signal_Conflict") == "高":
             continue
 
         signal_row = temp_df.iloc[-1]
@@ -452,6 +473,9 @@ def calculate_historical_performance(
             stop_price,
             entry_price,
             fee_rate=fee_rate,
+            enable_trailing=enable_trailing,
+            atr_val=atr_val,
+            stop_mult=stop_mult,
         )
         if result is None:
             continue
@@ -512,6 +536,9 @@ def calculate_historical_winrate(
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
     fee_rate: float = 0.001425,
     slippage_rate: float = 0.0005,
+    enable_trailing: bool = False,
+    filter_low_conf: bool = False,
+    filter_high_conflict: bool = False,
 ) -> Tuple[float, int, int, List[Any]]:
     result = calculate_historical_performance(
         df_slice,
@@ -524,5 +551,8 @@ def calculate_historical_winrate(
         score_threshold=score_threshold,
         fee_rate=fee_rate,
         slippage_rate=slippage_rate,
+        enable_trailing=enable_trailing,
+        filter_low_conf=filter_low_conf,
+        filter_high_conflict=filter_high_conflict,
     )
     return result["win_rate"], result["closed_signals"], result["wins"], result["buy_dates"]
