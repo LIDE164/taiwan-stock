@@ -134,21 +134,23 @@ render_app_style(is_light_mode)
 STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2382": "廣達", "3231": "緯創", "2891": "中信金"}
 
 @st.cache_data(ttl=86400)
-def get_all_tw_stock_names_v2():
+def get_all_tw_stock_names_v3():
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     names = STOCK_NAMES.copy()
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10, verify=False)
         if res.status_code == 200:
             for i in res.json(): names[i['Code']] = i['Name']
     except: pass
     try:
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10, verify=False)
         if res2.status_code == 200:
             for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
     except: pass
     return names
 
-CURRENT_STOCK_NAMES = get_all_tw_stock_names_v2()
+CURRENT_STOCK_NAMES = get_all_tw_stock_names_v3()
 
 def get_stock_name(ticker):
     ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
