@@ -1632,7 +1632,7 @@ elif st.session_state.page == "analysis":
         with col_opt3:
             filter_high_conflict = st.checkbox("過濾高多空衝突", value=False, key="bt_filter_high_conflict")
 
-        backtest_df = df_slice.tail(st.session_state.view_days)
+        backtest_df = df_slice.tail(BACKTEST_LOOKBACK_DAYS)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(
             backtest_df, 
             atr_target_mult, 
