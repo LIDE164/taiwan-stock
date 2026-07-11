@@ -160,8 +160,8 @@ def get_institutional_trading(ticker):
 
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
-    win_rate, _, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
-    return win_rate
+    win_rate, closed_signals, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
+    return win_rate, closed_signals
 
 def should_run_postclose_scan(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
@@ -203,7 +203,7 @@ def run_daily_scan():
             
             if sc >= 45:
                 # ⭐ 同步將 WinRate 和 Whale_Net 存入資料庫
-                wr = calc_winrate(df)
+                wr, samples = calc_winrate(df)
                 inst = get_institutional_trading(stock)
                 whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3]]) if inst else 0
 
@@ -212,7 +212,7 @@ def run_daily_scan():
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
                     "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
-                    "Feature": feature, "Reasons": rs,
+                    "Feature": feature, "Reasons": rs, "Backtest_Samples": samples,
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp
                 }
         return None

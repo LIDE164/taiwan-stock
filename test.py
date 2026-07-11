@@ -1656,9 +1656,10 @@ elif st.session_state.page == "analysis":
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
         if is_intra:
             data['WinRate'] = win_rate
+            data['Backtest_Samples'] = closed_signals
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence", "Score_Source"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence", "Score_Source"]:
                         if k in data:
                             row[k] = data[k]
                     break
