@@ -449,12 +449,18 @@ if 'view_days' not in st.session_state: st.session_state.view_days = 30
 if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
-if 'simulated_orders' not in st.session_state:
+if 'simulated_orders' not in st.session_state or not isinstance(st.session_state.simulated_orders, list):
     st.session_state.simulated_orders = load_cloud_data("user_data", "simulated_orders", [])
-if 'fav_groups' not in st.session_state:
+if not isinstance(st.session_state.simulated_orders, list):
+    st.session_state.simulated_orders = []
+
+if 'fav_groups' not in st.session_state or not isinstance(st.session_state.fav_groups, dict):
     st.session_state.fav_groups = load_cloud_data("user_settings", "fav_groups", {"預設群組": ["1802", "2330", "1785"]})
+if not isinstance(st.session_state.fav_groups, dict):
+    st.session_state.fav_groups = {"預設群組": ["1802", "2330", "1785"]}
+
 st.session_state.fav_groups = {
-    name: [normalize_ticker(s) for s in stocks]
+    str(name): [normalize_ticker(s) for s in stocks] if isinstance(stocks, list) else []
     for name, stocks in st.session_state.fav_groups.items()
 }
 render_sidebar_favorites(fav_sidebar_slot)
