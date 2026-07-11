@@ -49,6 +49,7 @@ def render_app_style(is_light_mode=False):
         transition:border-color .18s ease, box-shadow .18s ease, background .18s ease;
     }}
     div[role="radiogroup"] label > div:first-child,
+    div[role="radiogroup"] label [data-testid="stWidgetSecondaryLabel"],
     div[role="radiogroup"] label input[type="radio"] {{
         display:none !important;
         opacity:0 !important;
