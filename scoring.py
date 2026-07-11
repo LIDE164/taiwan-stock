@@ -19,6 +19,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     adx = _num(data.get("ADX"))
     roc_20 = _num(data.get("ROC_20"))
     is_trending = adx >= 25
+    strong_trend = is_trending and roc_20 > 5
     macd_penalty = -1 if mode == "realtime" else -3
 
     def add(score, text):
@@ -77,14 +78,25 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     if eps_f > 0:
         add(2, "✅ EPS 為正，具獲利支撐")
     elif eps_f < 0:
-        add(-1, "⚠️ 基本面虧損")
+        if strong_trend:
+            add(0, "⚠️ 基本面虧損，但技術面極強，可能為轉機股")
+        else:
+            add(-1, "⚠️ 基本面虧損")
 
+    is_breakout = data.get("Box_Breakout", False) or data.get("紅吞", False)
+    
     if data.get("Volume_Confirmed") is False:
         add(-1, "⚠️ 盤中量能尚未確認，避免假量追高")
     elif vol_ratio >= 4:
-        add(-4, f"⚠️ 量能爆量 {vol_ratio:.1f} 倍，隔日賣壓風險升高")
+        if is_breakout:
+            add(1, f"🔥 突破伴隨爆量 {vol_ratio:.1f} 倍，視為關鍵換手")
+        else:
+            add(-4, f"⚠️ 量能爆量 {vol_ratio:.1f} 倍，隔日賣壓風險升高")
     elif vol_ratio > 3:
-        add(-2, f"⚠️ 量能過熱 {vol_ratio:.1f} 倍，避免追高")
+        if is_breakout:
+            add(2, f"🔥 突破出量 {vol_ratio:.1f} 倍，動能強勁")
+        else:
+            add(-2, f"⚠️ 量能過熱 {vol_ratio:.1f} 倍，避免追高")
     elif 1.2 <= vol_ratio <= 2.5:
         add(2, f"✅ 量能溫和放大 {vol_ratio:.1f} 倍")
     elif volume_5d > 0 and volume > volume_5d * 1.1:
@@ -118,23 +130,38 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif momentum_score <= 35:
         add(-2, f"⚠️ 趨勢品質偏弱 ({momentum_score:.0f}/100)")
 
-    if whale_net > 1000:
-        add(2, f"✅ 法人三日淨買 {whale_net:,.0f} 張")
-    elif whale_net < -1000:
-        add(-2, f"⚠️ 法人三日淨賣 {abs(whale_net):,.0f} 張")
+    whale_vol_ratio = 0
+    if volume_5d > 0:
+        whale_vol_ratio = (whale_net / (volume_5d * 3)) * 100
+        
+    if whale_vol_ratio > 5 or whale_net > 3000:
+        add(2, f"✅ 法人積極買超 (佔均量 {whale_vol_ratio:.1f}% 或 >3千張)")
+    elif whale_vol_ratio < -5 or whale_net < -3000:
+        add(-2, f"⚠️ 法人大量賣超 (佔均量 {whale_vol_ratio:.1f}% 或 <-3千張)")
+    elif whale_net > 500:
+        add(1, "✅ 法人微幅買超")
+    elif whale_net < -500:
+        add(-1, "⚠️ 法人微幅賣超")
 
     if j_value >= 80:
-        add(-3, "⚠️ KDJ 高檔過熱")
+        if not strong_trend:
+            add(-3, "⚠️ KDJ 高檔過熱")
     elif j_value <= 20 and close >= ma20:
         add(1, "✅ KDJ 低檔但仍守月線")
+        
     if rsi >= 75:
-        add(-2, "⚠️ RSI 過熱")
+        if not strong_trend:
+            add(-2, "⚠️ RSI 過熱")
     elif 45 <= rsi <= 65 and close >= ma20:
         add(1, "✅ RSI 位於健康動能區")
+        
     if close and bb_up and close >= bb_up * 0.98:
-        add(-2, "⚠️ 接近布林上軌壓力")
+        if not strong_trend:
+            add(-2, "⚠️ 接近布林上軌壓力")
+            
     if bias > 7:
-        add(-2, "⚠️ 正乖離過大")
+        if not strong_trend:
+            add(-2, "⚠️ 正乖離過大")
     if close and ma20 and close < ma20:
         add(-2, "⚠️ 跌破月線支撐")
     if vix >= 25:
