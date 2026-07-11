@@ -117,11 +117,11 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 st.sidebar.title("⚙️ 介面設定")
-is_light_mode = st.sidebar.toggle("🌞 黑白底色切換", False, key="toggle_theme_mode")
+is_light_mode = st.sidebar.toggle("黑白底色切換", False, key="toggle_theme_mode")
 if LOW_FIREBASE_READ_MODE:
     st.sidebar.caption("Firebase 低讀取模式：開啟")
 
-if st.sidebar.button("🗑️ 強制清除快取資料", use_container_width=True):
+if st.sidebar.button("強制清除快取資料", use_container_width=True):
     st.cache_data.clear()
     if "scan_results" in st.session_state: del st.session_state["scan_results"]
     if "scan_results_is_local" in st.session_state: del st.session_state["scan_results_is_local"]
@@ -284,7 +284,7 @@ st.sidebar.divider()
 st.sidebar.title("⏱️ 盤中即時跳動")
 _market_open_now = is_regular_market_open()
 if _market_open_now:
-    auto_refresh = st.sidebar.toggle("🟢 開啟自動更新 (每30秒)", False, key="auto_refresh_toggle")
+    auto_refresh = st.sidebar.toggle("開啟自動更新 (每30秒)", False, key="auto_refresh_toggle")
     if auto_refresh: st_autorefresh(interval=30000, limit=None)
 else:
     st.sidebar.caption("🔴 非交易時段，無需自動刷新")
@@ -292,7 +292,7 @@ else:
 
 st.sidebar.divider()
 st.sidebar.title("🛒 模擬交易中心")
-if st.sidebar.button("📋 經理人績效儀表板", use_container_width=True):
+if st.sidebar.button("經理人績效儀表板", use_container_width=True):
     st.session_state.page = "simulated_orders"; st.rerun()
 
 st.sidebar.divider()
@@ -882,7 +882,7 @@ def render_index_board():
 """,
             unsafe_allow_html=True,
         )
-        if st.button("🔄 手動更新即時大盤報價", use_container_width=True):
+        if st.button("手動更新即時大盤報價", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
     except: st.error(f"大盤儀表板加載中...")
@@ -1233,7 +1233,7 @@ if st.session_state.page == "home":
             radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
         with col_m2:
             st.caption("自選群組")
-            only_favorites = st.toggle("⭐ 只看自選群組", value=False)
+            only_favorites = st.toggle("只看自選群組", value=False)
         st.markdown("</div>", unsafe_allow_html=True)
         requested_intraday = "盤中" in radar_mode
         score_mode, score_mode_label, is_intraday = resolve_score_mode(requested_intraday)
@@ -1412,12 +1412,12 @@ elif st.session_state.page == "simulated_orders":
     
     col_home, col_clear = st.columns([1, 1])
     with col_home:
-        if st.button("🏠 回雷達總機", use_container_width=True):
+        if st.button("回雷達總機", use_container_width=True):
             st.query_params.clear()
             st.session_state.page = "home"
             st.rerun()
     with col_clear:
-        if st.button("🗑️ 清空所有紀錄", use_container_width=True):
+        if st.button("清空所有紀錄", use_container_width=True):
             st.session_state.simulated_orders = []
             save_cloud_data("user_data", "simulated_orders", [])
             st.success("已清除所有紀錄！"); st.rerun()
@@ -1496,7 +1496,7 @@ elif st.session_state.page == "simulated_orders":
                 html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>創高紀錄</span><span style='font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;'>{order['highest_price']:.1f}</span></div>"
                 html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>風報比參數</span><span style='font-size: 1rem; font-weight: bold; color: #34d399; font-family: monospace;'>1 : {order.get('rrr', 1.5)}</span></div></div>"
                 st.markdown(html, unsafe_allow_html=True)
-                if st.button(f"❌ 刪除此單 ({order['name']})", key=f"btn_del_{order['id']}_{idx}"):
+                if st.button(f"刪除此單 ({order['name']})", key=f"btn_del_{order['id']}_{idx}"):
                     st.session_state.delete_order_id = order['id']; st.rerun()
 
 # ==========================================
@@ -1515,14 +1515,14 @@ elif st.session_state.page == "analysis":
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        if p_stk and st.button(f"⬅ 上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
+        if p_stk and st.button(f"上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
     with c2:
-        if st.button("🏠 回雷達總機", use_container_width=True):
+        if st.button("回雷達總機", use_container_width=True):
             st.query_params.clear()
             st.session_state.page = "home"
             st.rerun()
     with c3:
-        if n_stk and st.button(f"下一檔 ➡", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
+        if n_stk and st.button(f"下一檔", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
     def set_view_days(days): st.session_state.view_days = days
     chart_days_param = str(st.query_params.get("days", st.session_state.view_days))
@@ -1611,7 +1611,7 @@ elif st.session_state.page == "analysis":
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b>{score_source_text}</div>", unsafe_allow_html=True)
         
         _, up_c, _ = st.columns([1, 2, 1])
-        force_refresh_analysis = up_c.button("🔄 更新個股即時數值", use_container_width=True)
+        force_refresh_analysis = up_c.button("更新個股即時數值", use_container_width=True)
         if force_refresh_analysis:
             st.session_state[force_key] = True
             st.cache_data.clear()
@@ -1712,7 +1712,7 @@ elif st.session_state.page == "analysis":
             with c3_c: st.warning("停損價必須低於現價")
         st.markdown("---")
         
-        if st.button("🛒 將此自訂策略加入模擬交易", use_container_width=True):
+        if st.button("將此自訂策略加入模擬交易", use_container_width=True):
             new_order = {
                 "id": str(int(time.time())), "ticker": target, "name": c_name, "buy_price": data['收盤價'],
                 "highest_price": data['收盤價'], "target_price": data['ATR_Target'], "stop_price": data['ATR_Stop'],
@@ -1771,7 +1771,7 @@ elif st.session_state.page == "analysis":
         new_group_name = st.text_input("新增群組名稱", placeholder="例如：短線觀察、波段核心", key=f"new_group_{target}")
         selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
         
-        if st.button("💾 儲存自選設定", use_container_width=True, type="primary"):
+        if st.button("儲存自選設定", use_container_width=True, type="primary"):
             new_fav = {k: list(v) for k, v in st.session_state.fav_groups.items()}
             if new_group_name.strip():
                 group_name = new_group_name.strip()
