@@ -1265,7 +1265,7 @@ if st.session_state.page == "home":
                             fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
-                            bt_preview = calculate_historical_performance(df.tail(BACKTEST_LOOKBACK_DAYS), 1.5, 1.0)
+                            bt_preview = calculate_historical_performance(df, 1.5, 1.0)
                             res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
                             res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
                             res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
@@ -1634,7 +1634,7 @@ elif st.session_state.page == "analysis":
 
         backtest_df = df_slice.tail(BACKTEST_LOOKBACK_DAYS)
         win_rate, closed_signals, wins, buy_dates, backtest_stats = calculate_historical_winrate_interactive(
-            backtest_df, 
+            df_slice, 
             atr_target_mult, 
             atr_stop_mult,
             score_threshold=score_thresh,

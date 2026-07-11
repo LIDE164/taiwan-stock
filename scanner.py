@@ -127,8 +127,8 @@ def fetch_top_500():
 
 def get_stock_data(ticker_number):
     try:
-        df = yf.Ticker(f"{ticker_number}.TW").history(period="1y").dropna(subset=['Close'])
-        if df.empty: df = yf.Ticker(f"{ticker_number}.TWO").history(period="1y").dropna(subset=['Close'])
+        df = yf.Ticker(f"{ticker_number}.TW").history(period="2y").dropna(subset=['Close'])
+        if df.empty: df = yf.Ticker(f"{ticker_number}.TWO").history(period="2y").dropna(subset=['Close'])
         if df.empty or len(df) < 20: return None
         
         df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
