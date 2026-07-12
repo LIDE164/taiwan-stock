@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import advanced_patterns
 
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,13 @@ def build_score_input(
         "建議型態": entry_pattern,
     }
 
+    adv_pattern = advanced_patterns.detect_pattern(work_df)
+    adv_pattern_str = ""
+    if adv_pattern:
+        sig = adv_pattern.get("Signal")
+        emoji = "🟢" if sig == "Buy" else "🔴" if sig == "Sell" else "⚫"
+        adv_pattern_str = f"{emoji} {adv_pattern.get('Pattern_Name')}"
+
     return {
         "ADX": safe_float(t.get("ADX")),
         "ROC_20": roc_20,
@@ -267,6 +275,7 @@ def build_score_input(
         "Tomorrow_Plan": tomorrow_plan,
         "Confidence": confidence,
         "Data_Quality": {"price": "ok", "volume": "confirmed", "source": "chart_history"},
+        "Advanced_Pattern": adv_pattern_str,
     }
 
 

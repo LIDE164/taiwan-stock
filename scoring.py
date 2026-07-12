@@ -200,7 +200,9 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         label = "⚪ 忽略"
 
     feature = "一般狀態"
-    if data.get("紅吞", False):
+    if data.get("Advanced_Pattern"):
+        feature = data.get("Advanced_Pattern")
+    elif data.get("紅吞", False):
         feature = "🔥 紅吞表態"
     elif data.get("回測有撐", False):
         feature = "💪 回檔有撐"
