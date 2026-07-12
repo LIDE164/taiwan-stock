@@ -225,8 +225,8 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
     fig.update_yaxes(range=[lowest * 0.8, highest * 1.15], row=1, col=1) # 拉開Y軸範圍確保底部的字顯示得出來
 
     # ===== 2. 成交量 =====
-    fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, opacity=0.85, name="VOL"), row=2, col=1)
     vol_series = pd.to_numeric(df_view['Volume'], errors='coerce').fillna(0)
+    fig.add_trace(go.Bar(x=x_vals, y=vol_series, marker_color=colors, opacity=0.85, name="VOL"), row=2, col=1)
     vol_valid = vol_series[vol_series > 0]
     vol_last = vol_valid.iloc[-1] if not vol_valid.empty else 0
     fig.add_annotation(

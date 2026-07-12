@@ -228,7 +228,12 @@ def build_score_input(
         "建議型態": entry_pattern,
     }
 
-    adv_pattern = advanced_patterns.detect_pattern(work_df)
+    try:
+        adv_pattern = advanced_patterns.detect_pattern(work_df)
+    except Exception as e:
+        print(f"Error in detect_pattern: {e}")
+        adv_pattern = {}
+        
     adv_pattern_str = ""
     if adv_pattern:
         sig = adv_pattern.get("Signal")
