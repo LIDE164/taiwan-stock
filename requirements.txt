@@ -7,3 +7,4 @@ beautifulsoup4
 streamlit-autorefresh
 firebase-admin
 shioaji
+scipy
