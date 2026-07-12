@@ -226,7 +226,8 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
 
     # ===== 2. 成交量 =====
     fig.add_trace(go.Bar(x=x_vals, y=df_view['Volume'], marker_color=colors, opacity=0.85, name="VOL"), row=2, col=1)
-    vol_valid = df_view[df_view['Volume'] > 0]['Volume']
+    vol_series = pd.to_numeric(df_view['Volume'], errors='coerce').fillna(0)
+    vol_valid = vol_series[vol_series > 0]
     vol_last = vol_valid.iloc[-1] if not vol_valid.empty else 0
     fig.add_annotation(
         xref="x domain", yref="y2 domain", x=0.01, y=0.95, text=f"VOL: {vol_last:,.0f}", 
