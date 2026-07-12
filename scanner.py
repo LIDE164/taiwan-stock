@@ -19,9 +19,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def get_secret(name, default=""):
     try:
-        return st.secrets.get(name, default)
+        if st.secrets and name in st.secrets:
+            return st.secrets[name]
     except Exception:
-        return default
+        pass
+    try:
+        import tomllib
+        secrets_path = os.path.join(".streamlit", "secrets.toml")
+        if os.path.exists(secrets_path):
+            with open(secrets_path, "rb") as f:
+                secrets = tomllib.load(f)
+                if name in secrets:
+                    return secrets[name]
+    except Exception:
+        pass
+    return os.getenv(name, default)
 
 
 def init_firestore():
