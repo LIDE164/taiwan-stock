@@ -225,7 +225,8 @@ def run_daily_scan():
             
             sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
             
-            if sc >= 45:
+            has_adv_pattern = bool(data.get("Advanced_Pattern"))
+            if sc >= 45 or has_adv_pattern:
                 # ⭐ 同步將 WinRate 和 Whale_Net 存入資料庫
                 wr, samples = calc_winrate(df)
                 inst = get_institutional_trading(stock)
@@ -237,7 +238,8 @@ def run_daily_scan():
                     "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs, "Backtest_Samples": samples,
-                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp
+                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
+                    "Advanced_Pattern": data.get("Advanced_Pattern", "")
                 }
         return None
 

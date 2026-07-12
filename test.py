@@ -1236,7 +1236,7 @@ if st.session_state.page == "home":
             radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
         with col_m2:
             st.caption("名單分類")
-            list_type = st.radio("名單分類：", ["量化雷達 (60分以上)", "形態選股 (不列入評分)"], horizontal=True, label_visibility="collapsed")
+            list_type = st.radio("名單分類：", ["量化雷達 (60分以上)", "形態選股 (不列入評分)", "進階形態選股"], horizontal=True, label_visibility="collapsed")
         with col_m3:
             st.caption("自選群組")
             only_favorites = st.toggle("只看自選群組", value=False)
@@ -1319,8 +1319,15 @@ if st.session_state.page == "home":
         industry_count = len(df_results)
             
         is_pattern_mode = (list_type == "形態選股 (不列入評分)")
+        is_adv_pattern_mode = (list_type == "進階形態選股")
         if not df_results.empty: 
-            if is_pattern_mode:
+            if is_adv_pattern_mode:
+                if 'Advanced_Pattern' in df_results.columns:
+                    df_results = df_results[df_results['Advanced_Pattern'].astype(str).str.strip() != ""]
+                else:
+                    df_results = df_results.iloc[0:0]
+                score_count = len(df_results)
+            elif is_pattern_mode:
                 if 'Feature' in df_results.columns:
                     df_results = df_results[df_results['Feature'].isin(["🔥 紅吞表態", "💪 回檔有撐", "📦 整理突破"])]
                 else:
