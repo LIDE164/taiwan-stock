@@ -77,11 +77,13 @@ except Exception as ui_import_error:
 
     def build_cards_html(df_disp, **kwargs):
         html = ""
+        no_score = kwargs.get("no_score", False)
         for _, row in df_disp.iterrows():
             code = row.get("代號", "")
             name = row.get("名稱", "")
             score = row.get("Score", 0)
-            html += f"<a href='/?stock={code}' class='stock-card-link'><div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'><b>{code} {name}</b><span style='float:right; color:#EF4444; font-weight:900;'>{score}分</span><br><span style='color:#94A3B8;'>歷史勝率 {row.get('WinRate', '--')}%｜樣本 {row.get('Backtest_Samples', '--')}</span></div></a>"
+            score_str = "形態觀察" if no_score else f"{score}分"
+            html += f"<a href='/?stock={code}' class='stock-card-link'><div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'><b>{code} {name}</b><span style='float:right; color:#60A5FA; font-weight:900;'>{score_str}</span><br><span style='color:#94A3B8;'>歷史勝率 {row.get('WinRate', '--')}%｜樣本 {row.get('Backtest_Samples', '--')}</span></div></a>"
         return html
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1187,7 +1189,7 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
 
     return tech_html + chip_html + fund_html
 
-def generate_cards_html(df_disp, is_intraday=False):
+def generate_cards_html(df_disp, is_intraday=False, no_score=False):
     return build_cards_html(
         df_disp,
         is_intraday=is_intraday,
@@ -1198,6 +1200,7 @@ def generate_cards_html(df_disp, is_intraday=False):
         safe_num=safe_num,
         is_realtime_score_record=is_realtime_score_record,
         score_mode_label=st.session_state.get("score_mode_label", "盤後正式分數"),
+        no_score=no_score,
     )
 
 # ==========================================
@@ -1227,11 +1230,14 @@ if st.session_state.page == "home":
 
         st.markdown("<div class='terminal-card' style='margin-bottom:12px;'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>雷達篩選器</div>", unsafe_allow_html=True)
-        col_m1, col_m2 = st.columns([1.4, 1])
+        col_m1, col_m2, col_m3 = st.columns([1.2, 1.4, 0.8])
         with col_m1:
             st.caption("引擎模式")
             radar_mode = st.radio("引擎模式：", ["盤後波段精算", "盤中動能快篩"], horizontal=True, label_visibility="collapsed")
         with col_m2:
+            st.caption("名單分類")
+            list_type = st.radio("名單分類：", ["量化雷達 (60分以上)", "形態選股 (不列入評分)"], horizontal=True, label_visibility="collapsed")
+        with col_m3:
             st.caption("自選群組")
             only_favorites = st.toggle("只看自選群組", value=False)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1312,9 +1318,18 @@ if st.session_state.page == "home":
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
         industry_count = len(df_results)
             
+        is_pattern_mode = (list_type == "形態選股 (不列入評分)")
         if not df_results.empty: 
-            df_results = df_results[df_results['Score'] >= 60]
-            score_count = len(df_results)
+            if is_pattern_mode:
+                if 'Feature' in df_results.columns:
+                    df_results = df_results[df_results['Feature'].isin(["🔥 紅吞表態", "💪 回檔有撐", "📦 整理突破"])]
+                else:
+                    df_results = df_results.iloc[0:0]
+                score_count = len(df_results)
+            else:
+                df_results = df_results[df_results['Score'] >= 60]
+                score_count = len(df_results)
+                
             for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
                 if col not in df_results.columns:
                     df_results[col] = default
@@ -1329,7 +1344,8 @@ if st.session_state.page == "home":
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔 | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
+            count_label = f"符合型態 {score_count} 檔" if is_pattern_mode else f"60分以上 {score_count} 檔"
+            st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → {count_label} | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
@@ -1340,8 +1356,9 @@ if st.session_state.page == "home":
                     ]
                     render_home_side_panel("市場總覽", market_rows)
                 with mid_dash:
-                    st.markdown("<div class='section-title'>AI 雷達清單</div>", unsafe_allow_html=True)
-                    st.markdown(generate_cards_html(df_disp, is_intraday), unsafe_allow_html=True)
+                    title_label = "形態選股清單 (不計分)" if is_pattern_mode else "AI 雷達清單"
+                    st.markdown(f"<div class='section-title'>{title_label}</div>", unsafe_allow_html=True)
+                    st.markdown(generate_cards_html(df_disp, is_intraday, no_score=is_pattern_mode), unsafe_allow_html=True)
                 with right_dash:
                     favorite_set = get_favorite_stock_set()
                     fav_rows = []

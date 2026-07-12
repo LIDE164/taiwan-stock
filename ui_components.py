@@ -297,6 +297,7 @@ def generate_cards_html(
     safe_num=float,
     is_realtime_score_record=None,
     score_mode_label="盤後正式分數",
+    no_score=False,
 ):
     cards_html = ""
     favorite_set = favorite_set or set()
@@ -340,7 +341,10 @@ def generate_cards_html(
         industry_name = record.get("產業", "一般產業")
         cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
         cards_html += f"<div style='font-size: 0.78rem; color: #94A3B8; margin-top: 5px;'>收盤 {record.get('收盤價', 0):.1f}｜<span style='color:{p_col};'>{change_sign}{record.get('漲跌幅', 0)}%</span>｜點擊解析</div></a></div>"
-        cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score}分</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
+        if no_score:
+            cards_html += f"<div style='text-align:right;'><div style='color:#60A5FA; font-size:1.15rem; font-weight:950;'>形態觀察</div><div style='color:#94a3b8; font-size:0.82rem; font-weight:900;'>不列入評分</div></div></div>"
+        else:
+            cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score}分</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
 
