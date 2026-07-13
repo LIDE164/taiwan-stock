@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from scipy.signal import argrelextrema
 
 def get_pivots(df: pd.DataFrame, order: int = 5) -> tuple:
     """找出給定資料的局部高低點(Pivots)"""
@@ -10,9 +9,15 @@ def get_pivots(df: pd.DataFrame, order: int = 5) -> tuple:
     prices_high = df['High'].values
     prices_low = df['Low'].values
     
-    # 尋找局部極大值與極小值的索引
-    high_idx = argrelextrema(prices_high, np.greater, order=order)[0]
-    low_idx = argrelextrema(prices_low, np.less, order=order)[0]
+    # 尋找局部極大值與極小值的索引 (使用 pandas rolling 取代 scipy.signal 以節省記憶體)
+    highs_series = df['High']
+    lows_series = df['Low']
+    
+    rolling_max = highs_series.rolling(window=2*order+1, center=True).max()
+    rolling_min = lows_series.rolling(window=2*order+1, center=True).min()
+    
+    high_idx = np.where(highs_series == rolling_max)[0]
+    low_idx = np.where(lows_series == rolling_min)[0]
     
     highs = [(int(i), float(prices_high[i])) for i in high_idx]
     lows = [(int(i), float(prices_low[i])) for i in low_idx]
