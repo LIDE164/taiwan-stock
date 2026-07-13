@@ -1287,7 +1287,7 @@ if st.session_state.page == "home":
                             return res
                     return None
                     
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     for r in executor.map(process_live, targets):
                         if r: live_data.append(r)
                 df_results = pd.DataFrame(live_data) if live_data else fb_df
