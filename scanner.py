@@ -38,9 +38,15 @@ def get_secret(name, default=""):
 
 def init_firestore():
     try:
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
+        firebase_admin.get_app()
         return firestore.client()
+    except ValueError:
+        try:
+            firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
+            return firestore.client()
+        except Exception as e:
+            logging.error("Firebase 初始化失敗: %s", e)
+            return None
     except Exception as e:
         logging.error("Firebase 初始化失敗: %s", e)
         return None

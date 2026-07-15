@@ -300,7 +300,9 @@ if st.sidebar.button("經理人績效儀表板", use_container_width=True):
 st.sidebar.divider()
 fav_sidebar_slot = st.sidebar.empty()
 
-if not firebase_admin._apps:
+try:
+    firebase_admin.get_app()
+except ValueError:
     try:
         cert_dict = dict(st.secrets["firebase"])
         cred = credentials.Certificate(cert_dict)
