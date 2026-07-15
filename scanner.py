@@ -212,6 +212,16 @@ def run_daily_scan():
     pool = list(set(fetch_top_500() + ["2330", "2317", "2454"]))
     scan_results = []
     
+    previous_streaks = {}
+    if db is not None:
+        try:
+            prev_doc = db.collection("market_data").document("daily_scan").get()
+            if prev_doc.exists:
+                prev_data = prev_doc.to_dict().get("data", [])
+                previous_streaks = {str(x.get("代號")): int(x.get("Streak", 0)) for x in prev_data}
+        except Exception as e:
+            logging.error("讀取歷史掃描名單失敗: %s", e)
+    
     def process_stock(stock):
         df = get_stock_data(stock)
         if df is not None:
@@ -245,7 +255,8 @@ def run_daily_scan():
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
                     "Feature": feature, "Reasons": rs, "Backtest_Samples": samples,
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
-                    "Advanced_Pattern": data.get("Advanced_Pattern", "")
+                    "Advanced_Pattern": data.get("Advanced_Pattern", ""),
+                    "Streak": previous_streaks.get(stock, 0) + 1
                 }
         return None
 

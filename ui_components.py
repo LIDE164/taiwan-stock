@@ -338,7 +338,9 @@ def generate_cards_html(
         cards_html += f"<a {stock_link} class='stock-card-link'>"
         adv_pattern = record.get("Advanced_Pattern", "")
         adv_badge = f"<span style='background-color: rgba(255,255,255,0.1); color: #e2e8f0; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(255,255,255,0.2);'>{adv_pattern}</span>" if adv_pattern else ""
-        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}</span>{adv_badge}"
+        streak = int(record.get("Streak", 0))
+        streak_badge = f"<span style='background-color: rgba(239,68,68,0.2); color: #fca5a5; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(239,68,68,0.3); margin-left: 4px;'>🔥連榜 {streak} 天</span>" if streak >= 2 else ""
+        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}{streak_badge}</span>{adv_badge}"
 
         industry_name = record.get("產業", "一般產業")
         cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
