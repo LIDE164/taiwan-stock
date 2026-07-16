@@ -196,7 +196,11 @@ def update_top10_tracker(top10_results):
         date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
         tracker_ref = db.collection("market_data").document("top10_tracker")
         doc = tracker_ref.get()
-        positions = doc.to_dict().get("positions", []) if doc.exists else []
+        positions = []
+        if doc.exists:
+            data_field = doc.to_dict().get("data", {})
+            # Fallback for old structure if necessary
+            positions = data_field.get("positions", doc.to_dict().get("positions", []))
         
         open_positions = [p for p in positions if p.get("status") == "OPEN"]
         closed_positions = [p for p in positions if p.get("status") != "OPEN"]
@@ -249,7 +253,7 @@ def update_top10_tracker(top10_results):
                 open_tickers.add(ticker)
                 
         all_positions = closed_positions + open_positions
-        tracker_ref.set({"positions": all_positions, "update_time": firestore.SERVER_TIMESTAMP})
+        tracker_ref.set({"data": {"positions": all_positions}, "update_time": firestore.SERVER_TIMESTAMP})
         logging.info("自動追蹤紀錄已更新，目前未平倉檔數: %d", len([p for p in all_positions if p.get("status")=="OPEN"]))
     except Exception as e:
         logging.error("更新 top10_tracker 失敗: %s", e)
