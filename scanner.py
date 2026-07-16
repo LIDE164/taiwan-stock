@@ -190,6 +190,70 @@ def should_run_postclose_scan(now_tpe=None):
     postclose_time = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
     return now_tpe >= postclose_time
 
+def update_top10_tracker(top10_results):
+    if db is None: return
+    try:
+        date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+        tracker_ref = db.collection("market_data").document("top10_tracker")
+        doc = tracker_ref.get()
+        positions = doc.to_dict().get("positions", []) if doc.exists else []
+        
+        open_positions = [p for p in positions if p.get("status") == "OPEN"]
+        closed_positions = [p for p in positions if p.get("status") != "OPEN"]
+        top10_tickers = {str(x["代號"]): x for x in top10_results}
+        
+        for p in open_positions:
+            ticker = str(p["ticker"])
+            cp = p.get("current_price")
+            if ticker in top10_tickers:
+                cp = top10_tickers[ticker]["收盤價"]
+            else:
+                df = get_stock_data(ticker)
+                if df is not None and not df.empty:
+                    cp = float(df.iloc[-1]['Close'])
+            
+            p["current_price"] = cp
+            if cp > p.get("highest_price", p["entry_price"]): p["highest_price"] = cp
+            if cp < p.get("lowest_price", p["entry_price"]): p["lowest_price"] = cp
+            
+            pnl_pct = (cp - p["entry_price"]) / p["entry_price"] * 100
+            p["pnl_pct"] = round(pnl_pct, 2)
+            
+            if pnl_pct >= 15.0:
+                p["status"] = "CLOSED_TP"
+                p["close_date"] = date_str
+                p["close_price"] = cp
+            elif pnl_pct <= -10.0:
+                p["status"] = "CLOSED_SL"
+                p["close_date"] = date_str
+                p["close_price"] = cp
+                
+        open_tickers = {str(p["ticker"]) for p in open_positions if p.get("status") == "OPEN"}
+        for x in top10_results:
+            ticker = str(x["代號"])
+            if ticker not in open_tickers:
+                new_pos = {
+                    "ticker": ticker,
+                    "name": x["名稱"],
+                    "entry_date": date_str,
+                    "entry_price": x["收盤價"],
+                    "status": "OPEN",
+                    "close_date": None,
+                    "close_price": None,
+                    "highest_price": x["收盤價"],
+                    "lowest_price": x["收盤價"],
+                    "current_price": x["收盤價"],
+                    "pnl_pct": 0.0
+                }
+                open_positions.append(new_pos)
+                open_tickers.add(ticker)
+                
+        all_positions = closed_positions + open_positions
+        tracker_ref.set({"positions": all_positions, "update_time": firestore.SERVER_TIMESTAMP})
+        logging.info("自動追蹤紀錄已更新，目前未平倉檔數: %d", len([p for p in all_positions if p.get("status")=="OPEN"]))
+    except Exception as e:
+        logging.error("更新 top10_tracker 失敗: %s", e)
+
 def run_daily_scan():
     if not should_run_postclose_scan():
         logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
@@ -271,6 +335,17 @@ def run_daily_scan():
         return scan_results
 
     db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})
+    
+    try:
+        top10 = scan_results[:10]
+        date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+        history_data = [{"代號": x["代號"], "名稱": x["名稱"], "收盤價": x["收盤價"], "Score": x["Score"]} for x in top10]
+        db.collection("top10_history").document(date_str).set({"data": history_data, "update_time": firestore.SERVER_TIMESTAMP})
+        logging.info("已記錄 %s 前十名歷史價格", date_str)
+        update_top10_tracker(top10)
+    except Exception as e:
+        logging.error("記錄歷史前十名失敗: %s", e)
+
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 

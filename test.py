@@ -296,6 +296,8 @@ st.sidebar.divider()
 st.sidebar.title("🛒 模擬交易中心")
 if st.sidebar.button("經理人績效儀表板", use_container_width=True):
     st.session_state.page = "simulated_orders"; st.rerun()
+if st.sidebar.button("🏆 Top 10 自動追蹤績效", use_container_width=True):
+    st.session_state.page = "top10_tracking"; st.rerun()
 
 st.sidebar.divider()
 fav_sidebar_slot = st.sidebar.empty()
@@ -1528,6 +1530,65 @@ elif st.session_state.page == "simulated_orders":
 # ==========================================
 # 🚀 進入單一個股解析頁面 
 # ==========================================
+# 🏆 Top 10 自動追蹤績效
+# ==========================================
+elif st.session_state.page == "top10_tracking":
+    st.markdown("<h2 style='text-align: center; color: #f59e0b; margin-bottom: 20px;'>🏆 Top 10 自動追蹤績效</h2>", unsafe_allow_html=True)
+    if st.button("回雷達總機", use_container_width=True):
+        st.session_state.page = "home"; st.rerun()
+    
+    st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>此頁面每日自動追蹤曾入榜「前 10 名」的強勢股後續表現。系統預設 <b>+15% 自動停利</b>、<b>-10% 自動停損</b>。若尚未觸及停利停損點，將會繼續顯示於「持有中」列表。</p></div>", unsafe_allow_html=True)
+    
+    tracker_data = load_cloud_data("market_data", "top10_tracker", {})
+    positions = tracker_data.get("positions", [])
+    
+    open_pos = [p for p in positions if p.get("status") == "OPEN"]
+    closed_pos = [p for p in positions if p.get("status") != "OPEN"]
+    
+    st.subheader("🟢 目前持有中 (未實現損益)")
+    if not open_pos:
+        st.info("目前沒有追蹤中的標的。")
+    else:
+        for p in sorted(open_pos, key=lambda x: x.get("pnl_pct", 0), reverse=True):
+            pnl = p.get("pnl_pct", 0)
+            color = "#ef4444" if pnl >= 0 else "#22c55e"
+            st.markdown(f"<div style='background-color:#1e293b; padding:15px; border-radius:8px; margin-bottom:10px; border-left:4px solid {color};'>"
+                        f"<div style='display:flex; justify-content:space-between;'>"
+                        f"<div><span style='font-size:1.1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span>"
+                        f"<span style='color:#94a3b8; font-size:0.8rem; margin-left:10px;'>進場: {p['entry_date']}</span></div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl}%</div>"
+                        f"</div>"
+                        f"<div style='color:#cbd5e1; font-size:0.85rem; margin-top:5px;'>"
+                        f"進場價: <b>{p['entry_price']}</b> ｜ 目前價: <b>{p.get('current_price', '--')}</b> ｜ 期間最高: <b>{p.get('highest_price', '--')}</b>"
+                        f"</div></div>", unsafe_allow_html=True)
+                        
+    st.subheader("🏁 歷史結算 (已出場)")
+    if not closed_pos:
+        st.info("目前尚無已結算的歷史紀錄。")
+    else:
+        wins = sum(1 for p in closed_pos if p.get("status") == "CLOSED_TP" or p.get("pnl_pct", 0) > 0)
+        win_rate = (wins / len(closed_pos)) * 100
+        avg_pnl = sum(p.get("pnl_pct", 0) for p in closed_pos) / len(closed_pos)
+        
+        st.markdown(f"<div style='display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;'>"
+                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>總勝率</div><div style='color:#38bdf8; font-size:1.5rem; font-weight:bold;'>{win_rate:.1f}%</div></div>"
+                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>平均結算報酬</div><div style='color:{'#ef4444' if avg_pnl>=0 else '#22c55e'}; font-size:1.5rem; font-weight:bold;'>{'+' if avg_pnl>0 else ''}{avg_pnl:.2f}%</div></div>"
+                    f"</div>", unsafe_allow_html=True)
+                    
+        for p in sorted(closed_pos, key=lambda x: x.get("close_date", ""), reverse=True):
+            pnl = p.get("pnl_pct", 0)
+            color = "#ef4444" if pnl >= 0 else "#22c55e"
+            status_text = "🎯 停利出場" if p.get("status") == "CLOSED_TP" else "🛑 停損出場"
+            st.markdown(f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; margin-bottom:10px; border:1px solid #1e293b; opacity:0.8;'>"
+                        f"<div style='display:flex; justify-content:space-between;'>"
+                        f"<div><span style='font-size:1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span> "
+                        f"<span style='color:{color}; font-size:0.8rem; border:1px solid {color}; padding:2px 6px; border-radius:4px; margin-left:8px;'>{status_text}</span></div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl}%</div>"
+                        f"</div>"
+                        f"<div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
+                        f"{p['entry_date']} 進場 ({p['entry_price']}) ➔ {p['close_date']} 出場 ({p.get('close_price', '--')})"
+                        f"</div></div>", unsafe_allow_html=True)
+
 elif st.session_state.page == "analysis":
     target = normalize_ticker(st.session_state.current_stock)
     st.session_state.current_stock = target
