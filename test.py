@@ -374,7 +374,9 @@ def load_cloud_doc(collection_name, document_name):
         value = doc.to_dict() or {}
         st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
         return value
-    except:
+    except Exception as e:
+        if collection_name == "market_data":
+            st.session_state.cloud_last_error = f"讀取 {target} 失敗：{e}"
         st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
         return {}
 
