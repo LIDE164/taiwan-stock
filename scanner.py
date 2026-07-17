@@ -281,12 +281,14 @@ def run_daily_scan():
     scan_results = []
     
     previous_streaks = {}
+    previous_ranks = {}
     if db is not None:
         try:
             prev_doc = db.collection("market_data").document("daily_scan").get()
             if prev_doc.exists:
                 prev_data = prev_doc.to_dict().get("data", [])
                 previous_streaks = {str(x.get("代號")): int(x.get("Streak", 0)) for x in prev_data}
+                previous_ranks = {str(x.get("代號")): idx + 1 for idx, x in enumerate(prev_data)}
         except Exception as e:
             logging.error("讀取歷史掃描名單失敗: %s", e)
     
@@ -324,7 +326,8 @@ def run_daily_scan():
                     "Feature": feature, "Reasons": rs, "Backtest_Samples": samples,
                     "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
                     "Advanced_Pattern": data.get("Advanced_Pattern", ""),
-                    "Streak": previous_streaks.get(stock, 0) + 1
+                    "Streak": previous_streaks.get(stock, 0) + 1,
+                    "Prev_Rank": previous_ranks.get(stock, 999)
                 }
         return None
 
@@ -333,6 +336,11 @@ def run_daily_scan():
             if res: scan_results.append(res)
             
     scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
+    
+    for idx, res in enumerate(scan_results):
+        curr_rank = idx + 1
+        res["Rank"] = curr_rank
+        res["Rank_Diff"] = res["Prev_Rank"] - curr_rank if res["Prev_Rank"] != 999 else "NEW"
             
     if db is None:
         logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
