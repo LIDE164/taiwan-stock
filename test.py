@@ -354,6 +354,30 @@ def load_cloud_data(collection_name, document_name, default_data):
         st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts}
     return default_data
 
+def load_cloud_doc(collection_name, document_name):
+    target = f"{collection_name}/{document_name}"
+    cache_key = f"{target}:doc"
+    now_ts = time.time()
+    if "_cloud_doc_cache" not in st.session_state:
+        st.session_state._cloud_doc_cache = {}
+    ttl = CLOUD_READ_TTL_SECONDS.get(target, 300)
+    cached_entry = st.session_state._cloud_doc_cache.get(cache_key)
+    if LOW_FIREBASE_READ_MODE and cached_entry and now_ts - cached_entry.get("ts", 0) <= ttl:
+        return cached_entry.get("value", {})
+    if db is None:
+        return {}
+    try:
+        doc = db.collection(collection_name).document(document_name).get()
+        if not doc.exists:
+            st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
+            return {}
+        value = doc.to_dict() or {}
+        st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
+        return value
+    except:
+        st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
+        return {}
+
 def save_cloud_data(collection_name, document_name, data):
     cache_key = f"{collection_name}:{document_name}"
     if "_cloud_doc_cache" not in st.session_state:
@@ -408,7 +432,9 @@ def save_analysis_cache(ticker, payload):
 
 def hydrate_scan_results(force=False):
     if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
-        data = load_cloud_data("market_data", "daily_scan", [])
+        scan_doc = load_cloud_doc("market_data", "daily_scan")
+        data = scan_doc.get("data", [])
+        st.session_state.scan_date = scan_doc.get("scan_date", "")
         st.session_state.scan_results = data if isinstance(data, list) else []
     return st.session_state.get("scan_results", [])
 
@@ -474,6 +500,11 @@ render_sidebar_favorites(fav_sidebar_slot)
 if 'stock' in st.query_params:
     q_stock = normalize_ticker(st.query_params['stock'])
     q_mode = str(st.query_params.get('mode', '')).lower()
+    q_target_date = str(st.query_params.get('target_date', '')).strip()
+    if q_target_date:
+        st.session_state.target_date = q_target_date
+    elif 'target_date' in st.session_state:
+        del st.session_state['target_date']
     if q_mode in ("intraday", "realtime"):
         _, q_score_mode_label, q_is_intraday = resolve_score_mode(True)
         st.session_state.is_intraday = q_is_intraday
@@ -517,40 +548,49 @@ def _get_ohlcv_base(ticker_number):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_stock_data(ticker_number):
+def get_stock_data(ticker_number, target_date=None):
     """Layer 2: Apply indicators & merge intraday quote (fast, cache 60s)."""
     base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
     base_df = _get_ohlcv_base(ticker_number)
     if base_df is None: return None
     df = base_df.copy()  # 必須 copy，避免修改快取的唯讀 DataFrame
     
-    try:
-        market_state = get_market_state()
-        if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
-            url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
-            res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
-            if res.status_code == 200:
-                q = res.json()
-                c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
-                now_tpe = datetime.now(timezone(timedelta(hours=8)))
-                total = q.get('total', {}) or {}
-                live_volume = float(total.get('tradeVolume', 0) or 0)
-                live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
-                real_vwap = live_value / live_volume if live_volume > 0 and live_value > 0 else 0
-                dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d'))
-                if dt_live not in df.index:
-                    new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
-                    if 0 < real_vwap < c_price * 2:
-                        new_row['VWAP'] = real_vwap
-                    df = pd.concat([df, new_row])
-                else:
-                    df.loc[dt_live, 'Close'] = c_price
-                    df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
-                    df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
-                    df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
-                    if 0 < real_vwap < c_price * 2:
-                        df.loc[dt_live, 'VWAP'] = real_vwap
-    except: pass
+    if target_date:
+        try:
+            cutoff = pd.to_datetime(target_date).tz_localize(None)
+            df.index = df.index.tz_localize(None)
+            df = df[df.index <= cutoff]
+        except Exception as e:
+            pass
+    else:
+        try:
+            market_state = get_market_state()
+            if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
+                url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
+                res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
+                if res.status_code == 200:
+                    q = res.json()
+                    c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
+                    now_tpe = datetime.now(timezone(timedelta(hours=8)))
+                    total = q.get('total', {}) or {}
+                    live_volume = float(total.get('tradeVolume', 0) or 0)
+                    live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
+                    real_vwap = live_value / live_volume if live_volume > 0 and live_value > 0 else 0
+                    dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d')).tz_localize(None)
+                    df.index = df.index.tz_localize(None)
+                    if dt_live not in df.index:
+                        new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
+                        if 0 < real_vwap < c_price * 2:
+                            new_row['VWAP'] = real_vwap
+                        df = pd.concat([df, new_row])
+                    else:
+                        df.loc[dt_live, 'Close'] = c_price
+                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
+                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
+                        df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
+                        if 0 < real_vwap < c_price * 2:
+                            df.loc[dt_live, 'VWAP'] = real_vwap
+        except: pass
 
     try:
         return apply_technical_indicators(df)
@@ -1205,6 +1245,7 @@ def generate_cards_html(df_disp, is_intraday=False, no_score=False):
         is_realtime_score_record=is_realtime_score_record,
         score_mode_label=st.session_state.get("score_mode_label", "盤後正式分數"),
         no_score=no_score,
+        target_date=st.session_state.get("scan_date", ""),
     )
 
 # ==========================================
@@ -1227,8 +1268,10 @@ if st.session_state.page == "home":
             
     if st.session_state.scan_results:
         fetch_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
-        source_badge = "🧭 雲端名單空白，改用本機備援池即時計算" if st.session_state.get("scan_results_is_local") else "☁️ 最新雲端資料庫讀取時間"
-        st.markdown(f"<div style='font-size:0.85rem; color:#64748b; margin-bottom:15px; font-weight:bold;'>{source_badge}：{fetch_time}</div>", unsafe_allow_html=True)
+        scan_date = st.session_state.get("scan_date", "")
+        source_badge = "🧭 雲端名單空白，改用本機備援池即時計算" if st.session_state.get("scan_results_is_local") else "☁️ 雲端名單掃描日期"
+        scan_date_str = f"{scan_date}" if scan_date else fetch_time
+        st.markdown(f"<div style='font-size:0.95rem; color:#facc15; margin-bottom:15px; font-weight:bold;'>{source_badge}：{scan_date_str}</div>", unsafe_allow_html=True)
         if st.session_state.get("scan_results_is_local") and st.session_state.get("cloud_last_error"):
             st.caption(f"Firebase 狀態：{st.session_state.cloud_last_error}")
 
@@ -1693,6 +1736,11 @@ elif st.session_state.page == "analysis":
             strategy_text = "偏多觀察，先等訊號確認不追價"
         else:
             strategy_text = "訊號不足，暫不主動進場"
+            
+        t_date = st.session_state.get("target_date")
+        if t_date:
+            st.warning(f"📌 **歷史快照模式**：您正在檢視 `{t_date}` 雷達掃描當下的技術型態與分數，此頁面已暫停即時更新。要查看即時資料，請點擊上方「回雷達總機」重新搜尋，或返回首頁。")
+            
         render_stock_hero(data, target, c_name, strategy_text)
         score_source_text = f"　｜　來源：<b>{data.get('Score_Source')}</b>" if data.get("Score_Source") else ""
         st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b>{score_source_text}</div>", unsafe_allow_html=True)

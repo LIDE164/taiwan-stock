@@ -346,7 +346,12 @@ def run_daily_scan():
         logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
         return scan_results
 
-    db.collection("market_data").document("daily_scan").set({"data": scan_results, "update_time": firestore.SERVER_TIMESTAMP})
+    scan_date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+    db.collection("market_data").document("daily_scan").set({
+        "data": scan_results, 
+        "scan_date": scan_date_str,
+        "update_time": firestore.SERVER_TIMESTAMP
+    })
     
     try:
         top10 = scan_results[:10]

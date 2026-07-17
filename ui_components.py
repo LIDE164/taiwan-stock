@@ -298,6 +298,7 @@ def generate_cards_html(
     is_realtime_score_record=None,
     score_mode_label="盤後正式分數",
     no_score=False,
+    target_date="",
 ):
     cards_html = ""
     favorite_set = favorite_set or set()
@@ -320,7 +321,8 @@ def generate_cards_html(
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(record.get("代號", ""))
         mode_param = "&mode=intraday" if is_intraday or is_realtime_score_record(record) else ""
-        stock_link = f'href="/?stock={ticker_code}{mode_param}" target="_self"'
+        date_param = f"&target_date={target_date}" if target_date else ""
+        stock_link = f'href="/?stock={ticker_code}{mode_param}{date_param}" target="_self"'
 
         disp_name = str(record.get("名稱", "")).strip()
         if not disp_name or disp_name == ticker_code or disp_name.isdigit():
