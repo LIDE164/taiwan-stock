@@ -1430,7 +1430,7 @@ if st.session_state.page == "home":
                         code = normalize_ticker(r.get('代號', ''))
                         name = get_stock_name(code)
                         display_title = f"{code} {name}" if code != name else code
-                        mover_rows.append({"title": display_title, "value": f"{safe_num(r.get('漲跌幅'), 0):+.2f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"})
+                        mover_rows.append({"title": display_title, "value": f"{safe_num(r.get('漲跌幅'), 0):+.1f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"})
 
                     order_rows = []
                     for o in st.session_state.get("simulated_orders", [])[:3]:
@@ -1465,7 +1465,8 @@ if st.session_state.page == "home":
                                 stop_dist_str = f" 離停{stop_dist:.1f}%"
                         except: pass
                         sub_text = " | ".join(filter(None, [days_str, stop_dist_str, f"目標 {o.get('target_price', '--')}"]))
-                        order_rows.append({"title": f"{ticker} {o.get('name', '')}{curr_price_str}{pl_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": sub_text, "color": "#60A5FA"})
+                        stock_name = o.get('name', '') or get_stock_name(ticker)
+                        order_rows.append({"title": f"{ticker} {stock_name}{curr_price_str}{pl_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": sub_text, "color": "#60A5FA"})
                     render_home_side_panel("我的自選", fav_rows, "目前顯示名單沒有自選股")
                     render_home_side_panel("今日異動", mover_rows)
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
@@ -1601,10 +1602,10 @@ elif st.session_state.page == "top10_tracking":
                         f"<div style='display:flex; justify-content:space-between;'>"
                         f"<div><span style='font-size:1.1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span>"
                         f"<span style='color:#94a3b8; font-size:0.8rem; margin-left:10px;'>進場: {p['entry_date']}</span></div>"
-                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl}%</div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl:.1f}%</div>"
                         f"</div>"
                         f"<div style='color:#cbd5e1; font-size:0.85rem; margin-top:5px;'>"
-                        f"進場價: <b>{p['entry_price']}</b> ｜ 目前價: <b>{p.get('current_price', '--')}</b> ｜ 期間最高: <b>{p.get('highest_price', '--')}</b>"
+                        f"進場價: <b>{p.get('entry_price', 0):.1f}</b> ｜ 目前價: <b>{p.get('current_price', 0):.1f}</b> ｜ 期間最高: <b>{p.get('highest_price', 0):.1f}</b>"
                         f"</div></div>", unsafe_allow_html=True)
                         
     st.subheader("🏁 歷史結算 (已出場)")
@@ -1628,10 +1629,10 @@ elif st.session_state.page == "top10_tracking":
                         f"<div style='display:flex; justify-content:space-between;'>"
                         f"<div><span style='font-size:1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span> "
                         f"<span style='color:{color}; font-size:0.8rem; border:1px solid {color}; padding:2px 6px; border-radius:4px; margin-left:8px;'>{status_text}</span></div>"
-                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl}%</div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl:.1f}%</div>"
                         f"</div>"
                         f"<div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
-                        f"{p['entry_date']} 進場 ({p['entry_price']}) ➔ {p['close_date']} 出場 ({p.get('close_price', '--')})"
+                        f"{p.get('entry_date', '')} 進場 ({p.get('entry_price', 0):.1f}) ➔ {p.get('close_date', '')} 出場 ({p.get('close_price', 0):.1f})"
                         f"</div></div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "analysis":
