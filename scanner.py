@@ -93,6 +93,14 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
     except: pass
     return {"EPS": eps_val, "Industry": ind}
 
+def is_financial_stock(stock, industry=""):
+    s = str(stock).strip().upper().replace(".TW", "").replace(".TWO", "")
+    ind = str(industry).strip()
+    if s.startswith("28"):
+        return True
+    financial_keywords = ["金融", "銀行", "保險", "金控", "證券", "期貨", "Financial"]
+    return any(k in ind for k in financial_keywords)
+
 def get_finmind_chip_and_revenue(ticker):
     big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
     base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
@@ -308,6 +316,8 @@ def run_daily_scan():
                 return None
 
             f_data = get_fundamental_and_industry_data(stock, t_close)
+            if is_financial_stock(stock, f_data.get('Industry', '')):
+                return None
             bp, mom, yoy = get_finmind_chip_and_revenue(stock)
             fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy, "BigPlayer": bp, "TWII_Close": twii_close, "TWII_MA20": twii_ma20, "TWII_MA60": twii_ma60}
             data = build_score_input(df, fund)

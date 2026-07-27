@@ -100,7 +100,7 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
-DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
+DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
     "market_data/daily_scan": 0,
@@ -160,6 +160,14 @@ def get_stock_name(ticker):
 
 def normalize_ticker(ticker):
     return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+
+def is_financial_stock(ticker, industry=""):
+    s = normalize_ticker(ticker)
+    ind = str(industry).strip()
+    if s.startswith("28"):
+        return True
+    financial_keywords = ["金融", "銀行", "保險", "金控", "證券", "期貨", "Financial"]
+    return any(k in ind for k in financial_keywords)
 
 def is_realtime_score_record(record):
     if not isinstance(record, dict):
@@ -444,16 +452,16 @@ def restore_nav_pool(min_score=60):
     records = hydrate_scan_results()
     if not records:
         return []
-    valid_results = [x for x in records if x.get('Score', 0) >= min_score]
+    valid_results = [x for x in records if x.get('Score', 0) >= min_score and not is_financial_stock(x.get('代號'), x.get('產業'))]
     if not valid_results:
-        valid_results = records
+        valid_results = [x for x in records if not is_financial_stock(x.get('代號'), x.get('產業'))]
     df_nav = pd.DataFrame(valid_results)
     if df_nav.empty or '代號' not in df_nav.columns:
         return []
     sort_cols = [c for c in ['Score', '漲跌幅'] if c in df_nav.columns]
     if sort_cols:
         df_nav = df_nav.sort_values(by=sort_cols, ascending=[False] * len(sort_cols))
-    df_nav = df_nav.head(100).copy()
+    df_nav = df_nav.head(10).copy()
     df_nav['代號'] = df_nav['代號'].astype(str).map(normalize_ticker)
     st.session_state.nav_pool_data = df_nav.to_dict('records')
     st.session_state.nav_pool = df_nav['代號'].tolist()
@@ -464,11 +472,11 @@ def get_radar_targets(records=None, limit=200):
     records = records or []
     for row in records[:limit]:
         code = normalize_ticker(row.get("代號", ""))
-        if code:
+        if code and not is_financial_stock(code, row.get("產業", "")):
             targets.append(code)
-    targets.extend(st.session_state.get("custom_pool", []))
-    targets.extend(get_favorite_stock_set())
-    targets.extend(DEFAULT_RADAR_TICKERS)
+    targets.extend([t for t in st.session_state.get("custom_pool", []) if not is_financial_stock(t)])
+    targets.extend([t for t in get_favorite_stock_set() if not is_financial_stock(t)])
+    targets.extend([t for t in DEFAULT_RADAR_TICKERS if not is_financial_stock(t)])
     seen, unique = set(), []
     for ticker in targets:
         code = normalize_ticker(ticker)
@@ -1368,6 +1376,11 @@ if st.session_state.page == "home":
             
         is_pattern_mode = (list_type == "形態選股 (不列入評分)")
         is_adv_pattern_mode = (list_type == "進階形態選股")
+        # 刪除金融股
+        if not df_results.empty and '代號' in df_results.columns:
+            is_fin_mask = df_results.apply(lambda r: is_financial_stock(r.get('代號'), r.get('產業')), axis=1)
+            df_results = df_results[~is_fin_mask]
+
         if not df_results.empty: 
             if is_adv_pattern_mode:
                 if 'Advanced_Pattern' in df_results.columns:
@@ -1394,7 +1407,7 @@ if st.session_state.page == "home":
                 "歷史勝率": ["WinRate", "Score", "漲跌幅"],
                 "資料信心": ["Confidence", "Score", "漲跌幅"],
             }
-            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(100)
+            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(10)
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
