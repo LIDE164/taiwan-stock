@@ -103,7 +103,7 @@ POST_ANALYSIS_CACHE_SECONDS = 21600
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "2891", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
-    "market_data/daily_scan": 21600,
+    "market_data/daily_scan": 0,
     "user_settings/fav_groups": 600,
     "user_data/simulated_orders": 600,
 }
