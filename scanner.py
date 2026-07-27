@@ -42,7 +42,10 @@ def init_firestore():
         return firestore.client()
     except ValueError:
         try:
-            firebase_admin.initialize_app(credentials.Certificate(dict(st.secrets["firebase"])))
+            firebase_secrets = get_secret("firebase")
+            if not firebase_secrets:
+                raise ValueError("無法讀取 firebase 金鑰設定")
+            firebase_admin.initialize_app(credentials.Certificate(dict(firebase_secrets)))
             return firestore.client()
         except Exception as e:
             logging.error("Firebase 初始化失敗: %s", e)

@@ -1259,9 +1259,8 @@ if st.session_state.page == "home":
     render_index_board()
     st.markdown("<br>", unsafe_allow_html=True)
     
-    if "scan_results" not in st.session_state or not st.session_state.scan_results:
-        with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."): 
-            hydrate_scan_results(force=True)
+    with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."): 
+        hydrate_scan_results(force=True)
     if not st.session_state.get("scan_results"):
         st.session_state.scan_results = [{"代號": t, "名稱": get_stock_name(t), "Score": 0, "產業": "一般產業"} for t in get_radar_targets([])]
         st.session_state.scan_results_is_local = True
