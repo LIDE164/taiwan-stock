@@ -269,8 +269,8 @@ def update_top10_tracker(top10_results):
     except Exception as e:
         logging.error("更新 top10_tracker 失敗: %s", e)
 
-def run_daily_scan():
-    if not should_run_postclose_scan():
+def run_daily_scan(force=False):
+    if not force and not should_run_postclose_scan():
         logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
         return []
     logging.info("🚀 開始執行全市場 500 檔雷達掃描...")

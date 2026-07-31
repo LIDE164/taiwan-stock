@@ -440,11 +440,40 @@ def save_analysis_cache(ticker, payload):
         return
     save_cloud_data("analysis_cache", normalize_ticker(ticker), compact)
 
+def get_latest_expected_scan_date():
+    now_tpe = datetime.now(timezone(timedelta(hours=8)))
+    if now_tpe.weekday() == 5:
+        last_trading = now_tpe - timedelta(days=1)
+    elif now_tpe.weekday() == 6:
+        last_trading = now_tpe - timedelta(days=2)
+    elif now_tpe.hour < 14 or (now_tpe.hour == 14 and now_tpe.minute < 30):
+        if now_tpe.weekday() == 0:
+            last_trading = now_tpe - timedelta(days=3)
+        else:
+            last_trading = now_tpe - timedelta(days=1)
+    else:
+        last_trading = now_tpe
+    return last_trading.strftime('%Y-%m-%d')
+
 def hydrate_scan_results(force=False):
     if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
         scan_doc = load_cloud_doc("market_data", "daily_scan")
         data = scan_doc.get("data", [])
-        st.session_state.scan_date = scan_doc.get("scan_date", "")
+        scan_date = scan_doc.get("scan_date", "")
+        
+        expected_date = get_latest_expected_scan_date()
+        if not data or (scan_date and scan_date < expected_date):
+            try:
+                from scanner import run_daily_scan
+                with st.spinner(f"⚡ 檢測到雲端資料日期 ({scan_date or '無'}) 非最新 ({expected_date})，正在為您自動執行全市場最新量化掃描..."):
+                    new_data = run_daily_scan(force=True)
+                    if new_data:
+                        data = new_data
+                        scan_date = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+            except Exception as e:
+                logging.error("開啟網頁自動同步最新資料失敗: %s", e)
+
+        st.session_state.scan_date = scan_date
         st.session_state.scan_results = data if isinstance(data, list) else []
     return st.session_state.get("scan_results", [])
 
