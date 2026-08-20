@@ -1,47 +1,66 @@
 name: 台股盤後自動掃描雷達
 
-# 設定觸發時間 (使用 UTC 時間，台灣時間減 8 小時)
-# 定時每日自動掃描 (台灣時間 14:00, 14:30, 15:00 盤後籌碼齊全時段, 以及 22:00 夜間重校)
+# 主排程於台灣時間 15:00 執行；22:00 僅作失敗備援。
+# 週一至週四掃描成交量前 300，週五擴大為 500；同日由 Firestore lease 保證冪等。
 on:
   schedule:
-    - cron: '0 6 * * *'   # 台灣時間 14:00
-    - cron: '30 6 * * *'  # 台灣時間 14:30
-    - cron: '0 7 * * *'   # 台灣時間 15:00 (籌碼最佳時段)
-    - cron: '0 14 * * *'  # 台灣時間 22:00
-  push:
-    branches:
-      - main
-      - master
+    - cron: '0 7 * * 1-5'   # 台灣時間 15:00
+    - cron: '0 14 * * 1-5'  # 台灣時間 22:00，若主排程完成會直接略過
   workflow_dispatch:
+    inputs:
+      scan_limit:
+        description: 手動掃描範圍（auto 依交易日自動選擇）
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - '300'
+          - '500'
+
+concurrency:
+  group: taiwan-stock-daily-scan
+  cancel-in-progress: false
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
     steps:
       - name: 取得程式碼
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 設定 Python 環境
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'
+          cache: pip
 
       - name: 安裝相依套件
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.lock
 
       - name: 建立環境變數與金鑰 (安全寫入版)
         env:
           SECRETS_CONTENT: ${{ secrets.STREAMLIT_SECRETS }}
         run: |
+          if [ -z "$SECRETS_CONTENT" ]; then
+            echo "STREAMLIT_SECRETS is not configured" >&2
+            exit 1
+          fi
           mkdir -p .streamlit
-          echo "$SECRETS_CONTENT" > .streamlit/secrets.toml
+          printf '%s' "$SECRETS_CONTENT" > .streamlit/secrets.toml
 
-      - name: 執行全市場掃描程式
+      - name: 執行每日 300／每週 500 掃描程式
+        env:
+          INPUT_SCAN_LIMIT: ${{ inputs.scan_limit }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            FORCE_SCAN=1 python scanner.py
+            if [ "$INPUT_SCAN_LIMIT" = "300" ] || [ "$INPUT_SCAN_LIMIT" = "500" ]; then
+              FORCE_SCAN=1 SCAN_LIMIT="$INPUT_SCAN_LIMIT" python scanner.py
+            else
+              FORCE_SCAN=1 python scanner.py
+            fi
           else
             python scanner.py
           fi

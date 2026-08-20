@@ -1,4 +1,8 @@
+import math
+
 import streamlit as st
+
+from app_security import build_stock_url, escape_html, safe_css_color
 
 
 def render_app_style(is_light_mode=False):
@@ -212,13 +216,13 @@ def credibility_label(sample_count):
 def render_market_status_cards(items):
     cards = []
     for item in items:
-        color = item.get("color", "#E2E8F0")
+        color = safe_css_color(item.get("color", "#E2E8F0"), "#E2E8F0")
         cards.append(
             f"""
 <div class="terminal-card market-status-card">
-  <div class="terminal-title">{item.get('label', '')}</div>
-  <div class="terminal-value" style="color:{color};">{item.get('value', '--')}</div>
-  <div class="terminal-sub" style="color:{color};">{item.get('sub', '')}</div>
+  <div class="terminal-title">{escape_html(item.get('label', ''))}</div>
+  <div class="terminal-value" style="color:{color};">{escape_html(item.get('value', '--'))}</div>
+  <div class="terminal-sub" style="color:{color};">{escape_html(item.get('sub', ''))}</div>
 </div>
 """
         )
@@ -226,19 +230,19 @@ def render_market_status_cards(items):
 
 
 def render_home_side_panel(title, rows, empty_text="暫無資料"):
-    st.markdown(f"<div class='section-title'>{title}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='section-title'>{escape_html(title)}</div>", unsafe_allow_html=True)
     if not rows:
-        st.markdown(f"<div class='terminal-card terminal-sub'>{empty_text}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='terminal-card terminal-sub'>{escape_html(empty_text)}</div>", unsafe_allow_html=True)
         return
     for row in rows[:6]:
         st.markdown(
             f"""
 <div class="terminal-card" style="padding:10px; margin-bottom:8px;">
   <div style="display:flex; justify-content:space-between; gap:8px;">
-    <b>{row.get('title', '')}</b>
-    <span style="color:{row.get('color', '#94A3B8')}; font-weight:900;">{row.get('value', '')}</span>
+    <b>{escape_html(row.get('title', ''))}</b>
+    <span style="color:{safe_css_color(row.get('color', '#94A3B8'))}; font-weight:900;">{escape_html(row.get('value', ''))}</span>
   </div>
-  <div class="terminal-sub">{row.get('sub', '')}</div>
+  <div class="terminal-sub">{escape_html(row.get('sub', ''))}</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -246,26 +250,42 @@ def render_home_side_panel(title, rows, empty_text="暫無資料"):
 
 
 def render_stock_hero(data, target, name, strategy_text):
-    score = data.get("Score", 0)
-    confidence = data.get("Confidence", 100)
-    change = data.get("漲跌幅", 0)
+    score = data.get("Score")
+    confidence = data.get("Confidence")
+    change = data.get("漲跌幅")
     p_color = change_color(change)
     rating = str(data.get("評級", "觀察")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
+    target_text = escape_html(target)
+    name_text = escape_html(name)
+    raw_industry = str(data.get('產業') or "").strip()
+    industry_text = escape_html("未分類" if raw_industry in ("", "一般產業", "無") else raw_industry)
+    score_mode_text = escape_html(data.get('Score_Mode', '盤後正式分數'))
+    rating_text = escape_html(rating)
+    strategy = escape_html(strategy_text)
+    change_number = None
+    try:
+        parsed_change = float(change)
+        change_number = parsed_change if math.isfinite(parsed_change) else None
+    except (TypeError, ValueError):
+        pass
+    change_text = "--" if change_number is None else f"{change_number:+.1f}%"
+    confidence_text = "--" if confidence is None else f"{confidence}%"
+    score_text = "--" if score is None else f"{score} 分"
     st.markdown(
         f"""
 <div class="hero-panel">
   <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
     <div>
-      <div style="font-size:1.8rem; font-weight:950; color:#E2E8F0;">{target} {name}</div>
-      <div class="terminal-sub">{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {confidence}%</div>
+      <div style="font-size:1.8rem; font-weight:950; color:#E2E8F0;">{target_text} {name_text}</div>
+      <div class="terminal-sub">{industry_text}｜{score_mode_text}｜資料信心 {confidence_text}</div>
     </div>
     <div style="text-align:right;">
-      <div style="font-size:1.9rem; font-weight:950; color:{p_color};">{data.get('收盤價', '--')} <span style="font-size:1rem;">{change:+.1f}%</span></div>
-      <div style="color:#94A3B8; font-weight:800;">AI 評級：<span style="color:#EF4444;">{rating} {score} 分</span></div>
+      <div style="font-size:1.9rem; font-weight:950; color:{p_color};">{data.get('收盤價', '--')} <span style="font-size:1rem;">{change_text}</span></div>
+      <div style="color:#94A3B8; font-weight:800;">量化評級：<span style="color:#EF4444;">{rating_text} {score_text}</span></div>
     </div>
   </div>
   <div style="margin-top:14px; padding:12px; border-radius:8px; background:rgba(30,41,59,0.55); border:1px solid rgba(51,65,85,0.7); color:#E2E8F0; font-weight:800;">
-    建議策略：{strategy_text}
+    建議策略：{strategy}
   </div>
 </div>
 """,
@@ -278,9 +298,9 @@ def render_metric_grid(metrics):
     for metric in metrics:
         html += (
             "<div class='terminal-card'>"
-            f"<div class='terminal-title'>{metric.get('label', '')}</div>"
-            f"<div class='terminal-value' style='color:{metric.get('color', '#E2E8F0')};'>{metric.get('value', '--')}</div>"
-            f"<div class='terminal-sub'>{metric.get('sub', '')}</div>"
+            f"<div class='terminal-title'>{escape_html(metric.get('label', ''))}</div>"
+            f"<div class='terminal-value' style='color:{safe_css_color(metric.get('color', '#E2E8F0'), '#E2E8F0')};'>{escape_html(metric.get('value', '--'))}</div>"
+            f"<div class='terminal-sub'>{escape_html(metric.get('sub', ''))}</div>"
             "</div>"
         )
     html += "</div>"
@@ -305,24 +325,36 @@ def generate_cards_html(
     simulated_set = simulated_set or set()
     is_realtime_score_record = is_realtime_score_record or (lambda record: False)
 
+    def optional_number(value):
+        try:
+            number = float(str(value).replace(",", ""))
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
     for _, r in df_disp.iterrows():
         record = r.to_dict() if hasattr(r, "to_dict") else dict(r)
-        p_val = record.get("漲跌", 0)
-        p_col = "#ef4444" if p_val >= 0 else "#22c55e"
-        p_bg = "rgba(239,68,68,0.1)" if p_val >= 0 else "rgba(34,197,94,0.1)"
-        change_sign = "+" if p_val > 0 else ""
+        p_val = optional_number(record.get("漲跌"))
+        change_pct = optional_number(record.get("漲跌幅"))
+        p_col = "#94a3b8" if p_val is None else ("#ef4444" if p_val >= 0 else "#22c55e")
+        change_sign = "+" if p_val is not None and p_val > 0 else ""
 
-        score = record.get("Score", 0)
-        s_col = "#ef4444" if score >= 60 else ("#facc15" if score >= 45 else "#22c55e")
-        rating = record.get("評級", "⚪ 忽略").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
-        score_mode = record.get("Score_Mode", score_mode_label)
-        score_source = record.get("Score_Source", "")
+        score = optional_number(record.get("Score"))
+        score_value = score if score is not None else 0
+        s_col = "#ef4444" if score_value >= 60 else ("#facc15" if score_value >= 45 else "#22c55e")
+        rating = str(record.get("評級", "⚪ 忽略")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
+        score_mode = str(record.get("Score_Mode", score_mode_label))
+        score_source = str(record.get("Score_Source", ""))
 
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(record.get("代號", ""))
-        mode_param = "&mode=intraday" if is_intraday or is_realtime_score_record(record) else ""
-        date_param = f"&target_date={target_date}" if target_date else ""
-        stock_link = f'href="/?stock={ticker_code}{mode_param}{date_param}" target="_self"'
+        link_params = {}
+        realtime_record = bool(is_intraday or is_realtime_score_record(record))
+        if realtime_record:
+            link_params["mode"] = "intraday"
+        if target_date and not realtime_record:
+            link_params["target_date"] = target_date
+        stock_link = f'href="{build_stock_url(ticker_code, **link_params)}" target="_self"'
 
         disp_name = str(record.get("名稱", "")).strip()
         if not disp_name or disp_name == ticker_code or disp_name.isdigit():
@@ -331,17 +363,22 @@ def generate_cards_html(
         sim_mark = " 🛒" if ticker_code in simulated_set else ""
         sample_count = record.get("Backtest_Samples", record.get("closed_signals", record.get("ClosedSignals", "--")))
         cred_text, cred_color = credibility_label(sample_count)
-        main_signal = record.get("Feature", "一般狀態")
-        rrr = record.get("RRR", 1.5)
+        main_signal = escape_html(record.get("Feature") or "資料不足")
+        rrr = optional_number(record.get("RRR"))
 
         cards_html += "<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
         cards_html += "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; position: relative; z-index: 10;'>"
         cards_html += "<div style='display: flex; align-items: flex-start; gap: 12px;'>"
         cards_html += f"<a {stock_link} class='stock-card-link'>"
-        adv_pattern = record.get("Advanced_Pattern", "")
+        adv_pattern = escape_html(record.get("Advanced_Pattern", ""))
         adv_badge = f"<span style='background-color: rgba(255,255,255,0.1); color: #e2e8f0; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(255,255,255,0.2);'>{adv_pattern}</span>" if adv_pattern else ""
         
         rank_diff = record.get("Rank_Diff", "NEW")
+        if rank_diff != "NEW":
+            try:
+                rank_diff = int(rank_diff)
+            except (TypeError, ValueError):
+                rank_diff = "NEW"
         if rank_diff == "NEW":
             streak_badge = f"<span style='background-color: rgba(59,130,246,0.2); color: #93c5fd; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(59,130,246,0.3); margin-left: 4px;'>🆕 新進榜</span>"
         elif rank_diff > 0:
@@ -351,33 +388,57 @@ def generate_cards_html(
         else:
             streak_badge = f"<span style='background-color: rgba(148,163,184,0.2); color: #cbd5e1; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(148,163,184,0.3); margin-left: 4px;'>➖ 持平</span>"
             
-        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{record.get('代號', '')} {disp_name}{fav_mark}{sim_mark}{streak_badge}</span>{adv_badge}"
+        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{escape_html(ticker_code)} {escape_html(disp_name)}{fav_mark}{sim_mark}{streak_badge}</span>{adv_badge}"
 
-        industry_name = record.get("產業", "一般產業")
+        raw_industry = str(record.get("產業") or "").strip()
+        industry_name = escape_html("未分類" if raw_industry in ("", "一般產業", "無") else raw_industry)
         cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
-        cards_html += f"<div style='font-size: 0.78rem; color: #94A3B8; margin-top: 5px;'>收盤 {record.get('收盤價', 0):.1f}｜<span style='color:{p_col};'>{change_sign}{record.get('漲跌幅', 0):.1f}%</span>｜點擊解析</div></a></div>"
+        close_value = optional_number(record.get("收盤價"))
+        close_text = "--" if close_value is None else f"{close_value:.1f}"
+        change_text = "--" if change_pct is None else f"{change_sign}{change_pct:.1f}%"
+        cards_html += f"<div style='font-size: 0.78rem; color: #94A3B8; margin-top: 5px;'>收盤 {close_text}｜<span style='color:{p_col};'>{change_text}</span>｜點擊解析</div></a></div>"
         if no_score:
             cards_html += f"<div style='text-align:right;'><div style='color:#60A5FA; font-size:1.15rem; font-weight:950;'>形態觀察</div><div style='color:#94a3b8; font-size:0.82rem; font-weight:900;'>不列入評分</div></div></div>"
         else:
-            cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score}分</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
+            score_display = "--" if score is None else f"{score:g}分"
+            cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score_display}</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
 
-        wr_val = record.get("WinRate", 0.0)
-        wr_col = "#ef4444" if wr_val >= 60 else ("#facc15" if wr_val >= 40 else "#22c55e")
-        confidence_val = safe_num(record.get("Confidence"), 100)
-        conf_col = "#4ade80" if confidence_val >= 80 else ("#facc15" if confidence_val >= 60 else "#94a3b8")
-        w_net = record.get("Whale_Net", 0)
-        w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
-        whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
+        try:
+            sample_value = float(str(sample_count).replace(",", ""))
+        except (TypeError, ValueError):
+            sample_value = 0.0
+        wr_val = safe_num(record.get("WinRate"), 0.0)
+        if sample_value <= 0:
+            wr_text = "--"
+            wr_col = "#94a3b8"
+        else:
+            wr_text = f"{wr_val}%"
+            wr_col = "#ef4444" if wr_val >= 60 else ("#facc15" if wr_val >= 40 else "#22c55e")
+        whale_raw = optional_number(record.get("Whale_Net"))
+        whale_days_value = optional_number(record.get("Whale_Net_Days"))
+        whale_days = int(whale_days_value) if whale_days_value is not None else 0
+        if whale_raw is None or whale_days <= 0:
+            w_net = None
+            w_col = "#94a3b8"
+            whale_str = "--"
+            whale_label = "法人資料"
+        else:
+            w_net = int(whale_raw)
+            w_col = "#ef4444" if w_net > 0 else ("#22c55e" if w_net < 0 else "#94a3b8")
+            whale_str = f"+{w_net:,}" if w_net > 0 else f"{w_net:,}"
+            whale_label = f"法人{whale_days}日"
 
         cards_html += "<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>歷史勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_val}%</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>樣本 / 可信度</span><span style='color: {cred_color}; font-weight: bold; font-family: monospace;'>{sample_count}｜{cred_text}</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>法人10日</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>RRR</span><span style='color: #60A5FA; font-weight: bold; font-family: monospace;'>1 : {rrr}</span></div></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>技術面勝率</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_text}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>樣本 / 可信度</span><span style='color: {cred_color}; font-weight: bold; font-family: monospace;'>{escape_html(sample_count)}｜{escape_html(cred_text)}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>{whale_label}</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div>"
+        rrr_text = "--" if rrr is None else f"1 : {rrr:g}"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>策略 RRR</span><span style='color: #60A5FA; font-weight: bold; font-family: monospace;'>{rrr_text}</span></div></div>"
         source_text = f"{score_mode}｜{score_source}" if score_source else score_mode
-        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{source_text}</div>"
+        backtest_scope = record.get("Backtest_Scope", "純技術面逐步前推")
+        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{escape_html(source_text)}｜回測：{escape_html(backtest_scope)}</div>"
         cards_html += "</div>"
 
     return cards_html

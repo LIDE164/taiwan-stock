@@ -42,6 +42,26 @@ def detect_breakout(df_view, levels):
             if c_curr < lvl and c_prev >= lvl: signals.append(("sell", date, high_p))
     return signals
 
+
+def detect_walk_forward_breakouts(df_view, lookback=60):
+    """Detect historical crossings using only levels known before each bar."""
+    signals = []
+    minimum_history = max(20, min(lookback, len(df_view)) // 3)
+    for i in range(minimum_history, len(df_view)):
+        history = df_view.iloc[max(0, i - lookback):i]
+        levels, _ = find_levels(history)
+        previous_close = df_view['Close'].iloc[i - 1]
+        row = df_view.iloc[i]
+        date = df_view.index[i].strftime('%Y-%m-%d')
+        for level in levels:
+            if row['Close'] > level and previous_close <= level:
+                signals.append(("buy", date, row['Low']))
+                break
+            if row['Close'] < level and previous_close >= level:
+                signals.append(("sell", date, row['High']))
+                break
+    return signals
+
 def compute_ai_signals(df):
     df = df.copy()
     if '20MA' not in df.columns: df['20MA'] = df['Close'].rolling(20).mean()
@@ -64,7 +84,7 @@ def compute_ai_signals(df):
             continue
         score_data = build_score_input(df.iloc[:i + 1], {})
         score, _, reasons, _ = get_decision_score(score_data, {}, mode="post", with_reason=True)
-        confidence = int(score_data.get("Confidence", 100))
+        confidence = int(score_data.get("Confidence", 0))
         pattern = score_data.get("Entry_Pattern", "一般觀察型")
         conflict = score_data.get("Signal_Conflict", "低")
         scores.append(score)
@@ -74,7 +94,7 @@ def compute_ai_signals(df):
         conflicts.append(conflict)
         reason_preview = "<br>".join(reasons[:4]) if reasons else "無主要理由"
         hover_texts.append(
-            f"AI分數: {score}<br>信心: {confidence}%<br>型態: {pattern}<br>衝突: {conflict}<br>{reason_preview}"
+            f"技術模型分數: {score}<br>信心: {confidence}%<br>型態: {pattern}<br>衝突: {conflict}<br>{reason_preview}"
         )
 
     df['ai_score'] = scores
@@ -86,7 +106,9 @@ def compute_ai_signals(df):
     return df
 
 def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False, show_buy_signal=True, show_sup_res=True, show_signals=True, buy_dates=None):
-    if buy_dates is None: buy_dates = []
+    use_backtest_entries = buy_dates is not None
+    if buy_dates is None:
+        buy_dates = []
 
     df = compute_ai_signals(df)
     df_view = df.tail(view_days).copy()
@@ -130,7 +152,7 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         bgcolor="rgba(0,0,0,0.6)", font=dict(color="white", size=12, weight="bold"), row=1, col=1
     )
     latest_ai = df_view.iloc[-1]
-    ai_status_text = f"AI型態: {latest_ai.get('ai_pattern', '一般觀察型')} | 信心 {int(latest_ai.get('ai_confidence', 0))}% | 衝突 {latest_ai.get('ai_conflict', '低')}"
+    ai_status_text = f"技術型態: {latest_ai.get('ai_pattern', '一般觀察型')} | 信心 {int(latest_ai.get('ai_confidence', 0))}% | 衝突 {latest_ai.get('ai_conflict', '低')}"
     fig.add_annotation(
         xref="x domain", yref="y domain", x=0.99, y=0.9, text=ai_status_text,
         showarrow=False, xanchor='right', yanchor='top',
@@ -180,7 +202,9 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         for lvl in levels:
             fig.add_hline(y=lvl, line_dash="dot", line_width=2, line_color="#c084fc", opacity=0.8, row=1, col=1)
 
-        signals = detect_breakout(df_view, levels)
+        # Historical labels must use levels available at that date; the current
+        # horizontal levels above may still use the whole visible window.
+        signals = detect_walk_forward_breakouts(df_view)
         buy_x, buy_y, sell_x, sell_y = [], [], [], []
         for typ, x, ref_p in signals:
             if typ == "buy": 
@@ -194,13 +218,13 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
         fig.add_hline(y=highest, line_dash="dash", line_color="#ef4444", row=1, col=1, annotation_text=f"高 {highest:.1f}", annotation_position="top right", annotation_font_color="#ef4444")
         fig.add_hline(y=lowest, line_dash="dash", line_color="#22c55e", row=1, col=1, annotation_text=f"低 {lowest:.1f}", annotation_position="bottom right", annotation_font_color="#22c55e")
 
-    # AI 滿分 100 模型與藍色箭頭標示
+    # 純技術面滿分 100 模型與藍色箭頭標示
     if show_buy_signal:
         ai_x, ai_y, ai_text, ai_colors, ai_hover = [], [], [], [], []
         for i in range(len(df_view)):
             row = df_view.iloc[i]
             date_key = df_view.index[i].strftime('%Y-%m-%d')
-            is_backtest_buy = date_key in buy_date_set if buy_date_set else bool(row.get('ai_buy', False))
+            is_backtest_buy = date_key in buy_date_set if use_backtest_entries else bool(row.get('ai_buy', False))
             if is_backtest_buy:
                 ai_x.append(x_vals[i])
                 ai_y.append(row['Low'] * 0.91) # 第三層偏移，保證絕對不會重疊
@@ -219,13 +243,13 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
                 marker=dict(symbol='triangle-up', size=12, color=ai_colors),
                 text=ai_text, textposition="bottom center", 
                 textfont=dict(color="#3b82f6", size=10, weight="bold"), 
-                name="AI買點", hovertext=ai_hover, hoverinfo='text'
+                name="回測進場點" if use_backtest_entries else "技術模型買點", hovertext=ai_hover, hoverinfo='text'
             ), row=1, col=1)
 
     fig.update_yaxes(range=[lowest * 0.8, highest * 1.15], row=1, col=1) # 拉開Y軸範圍確保底部的字顯示得出來
 
     # ===== 2. 成交量 =====
-    vol_series = pd.to_numeric(df_view['Volume'], errors='coerce').fillna(0)
+    vol_series = pd.to_numeric(df_view['Volume'], errors='coerce')
     fig.add_trace(go.Bar(x=x_vals, y=vol_series, marker_color=colors, opacity=0.85, name="VOL"), row=2, col=1)
     vol_valid = vol_series[vol_series > 0]
     vol_last = vol_valid.iloc[-1] if not vol_valid.empty else 0

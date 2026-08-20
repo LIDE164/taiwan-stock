@@ -1,5 +1,24 @@
 # scoring.py - 100 分量化決策核心
 
+import math
+
+
+REQUIRED_SCORE_FIELDS = (
+    "收盤價",
+    "5MA",
+    "20MA",
+    "BB_DN",
+    "BB_UP",
+    "成交量",
+    "5日均量",
+    "MACD柱",
+    "前日MACD柱",
+    "J值",
+    "RSI",
+    "Momentum_Score",
+    "Confidence",
+)
+
 
 def _num(value, default=0.0):
     try:
@@ -10,7 +29,28 @@ def _num(value, default=0.0):
         return default
 
 
+def _has_required_score_data(data):
+    if not isinstance(data, dict):
+        return False
+    for field in REQUIRED_SCORE_FIELDS:
+        if field not in data or data[field] is None:
+            return False
+        try:
+            value = float(str(data[field]).replace(",", ""))
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value):
+            return False
+        if field in {"收盤價", "5MA", "20MA", "BB_DN", "BB_UP"} and value <= 0:
+            return False
+    return True
+
+
 def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason=True):
+    if not _has_required_score_data(data):
+        reasons = ["⚠️ 必要技術資料不足，未產生量化評分"] if with_reason else []
+        return 0, "⚪ 資料不足", reasons, "資料不足"
+
     sc = 0
     rs = []
 
@@ -44,6 +84,12 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     rsi = _num(data.get("RSI"), 50)
     momentum_score = _num(data.get("Momentum_Score"), 50)
     whale_net = _num(data.get("Whale_Net"), 0)
+    if "Whale_Net" not in data and inst_data:
+        whale_net = sum(
+            _num(row.get("單日合計(張)", row.get("total", 0)))
+            for row in list(inst_data)[:3]
+            if isinstance(row, dict)
+        )
     confidence = _num(data.get("Confidence"), 100)
     tomorrow_turn_price = _num(data.get("明日5MA扣抵價"), 0)
     ma5_up = bool(data.get("5MA已上彎", data.get("5日線即將上彎", False)))
@@ -112,7 +158,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif 1.2 <= vol_ratio <= 2.5:
         add(2, f"✅ 量能溫和放大 {vol_ratio:.1f} 倍")
     elif volume_5d > 0 and volume > volume_5d * 1.1:
-        add(2, "✅ 量能放大，具主力進場特徵")
+        add(2, "✅ 成交量高於 5 日均量")
     else:
         add(-1, "⚠️ 量能未明顯放大")
 
@@ -144,7 +190,8 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
 
     whale_vol_ratio = 0
     if volume_5d > 0:
-        whale_vol_ratio = (whale_net / (volume_5d * 3)) * 100
+        # Institutional flow is stored in lots (張); Yahoo volume is shares (股).
+        whale_vol_ratio = ((whale_net * 1000) / (volume_5d * 3)) * 100
         
     if whale_vol_ratio > 5 or whale_net > 3000:
         add(2, f"✅ 法人積極買超 (佔均量 {whale_vol_ratio:.1f}% 或 >3千張)")

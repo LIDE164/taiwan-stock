@@ -12,6 +12,12 @@ BACKTEST_LOOKBACK_DAYS = 380
 BACKTEST_HOLD_DAYS = 9
 BACKTEST_MIN_GAP_DAYS = 5
 BACKTEST_SCORE_THRESHOLD = 60
+DEFAULT_BUY_COMMISSION_RATE = 0.001425
+DEFAULT_SELL_COMMISSION_RATE = 0.001425
+DEFAULT_SELL_TAX_RATE = 0.003
+DEFAULT_MIN_COMMISSION = 20.0
+DEFAULT_TRADE_SHARES = 1000
+BACKTEST_SCOPE = "純技術面逐步前推（不含歷史營收、EPS 與法人籌碼）"
 
 # 產業英中文對照 (單一來源，由 scanner.py 和 test.py 共用)
 ENG_TO_TW_INDUSTRY = {
@@ -39,6 +45,17 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return default
+
+
+def strict_float(value: Any) -> Optional[float]:
+    """Parse a finite number without inventing a replacement value."""
+    try:
+        if value is None or pd.isna(value):
+            return None
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return parsed if np.isfinite(parsed) else None
 
 
 def apply_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -85,13 +102,18 @@ def apply_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down.replace(0, np.nan)
-    df["RSI"] = (100 - (100 / (1 + rs))).fillna(50)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((ema_down == 0) & (ema_up > 0), 100)
+    rsi = rsi.mask((ema_up == 0) & (ema_down > 0), 0)
+    df["RSI"] = rsi.fillna(50)
 
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     df["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df["ATR"] = df["TR"].rolling(14).mean().bfill().fillna(close * 0.03)
+    atr_rolling = df["TR"].rolling(14, min_periods=14).mean()
+    atr_past_only = df["TR"].expanding(min_periods=1).mean()
+    df["ATR"] = atr_rolling.fillna(atr_past_only)
 
     up_move = high - high.shift(1)
     down_move = low.shift(1) - low
@@ -101,7 +123,7 @@ def apply_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(span=14, adjust=False).mean() / atr)
     minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(span=14, adjust=False).mean() / atr)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    df["ADX"] = dx.ewm(span=14, adjust=False).mean().bfill().fillna(20)
+    df["ADX"] = dx.ewm(span=14, adjust=False).mean().fillna(0)
 
     return df
 
@@ -122,8 +144,20 @@ def build_score_input(
     if len(work_df) < 2:
         return {}
 
+    required_columns = {
+        "Open", "High", "Low", "Close", "Volume", "5MA", "20MA",
+        "60MA", "BB_UP", "BB_DN", "MACD_Hist", "J", "RSI", "ADX",
+    }
+    if not required_columns.issubset(work_df.columns):
+        return {}
+    latest = work_df.iloc[-1]
+    if any(pd.isna(latest.get(column)) for column in required_columns):
+        return {}
+
     t = work_df.iloc[-1]
     p = work_df.iloc[-2]
+    if any(strict_float(p.get(column)) is None for column in ("Open", "Close", "MACD_Hist")):
+        return {}
     t_close = safe_float(t.get("Close"))
     t_open = safe_float(t.get("Open"), t_close)
     t_high = safe_float(t.get("High"), t_close)
@@ -235,8 +269,10 @@ def build_score_input(
         adv_pattern = {}
         
     adv_pattern_str = ""
+    adv_pattern_signal = ""
     if adv_pattern:
         sig = adv_pattern.get("Signal")
+        adv_pattern_signal = str(sig or "")
         emoji = "🟢" if sig == "Buy" else "🔴" if sig == "Sell" else "⚫"
         adv_pattern_str = f"{emoji} {adv_pattern.get('Pattern_Name')}"
 
@@ -281,6 +317,7 @@ def build_score_input(
         "Confidence": confidence,
         "Data_Quality": {"price": "ok", "volume": "confirmed", "source": "chart_history"},
         "Advanced_Pattern": adv_pattern_str,
+        "Advanced_Pattern_Signal": adv_pattern_signal,
     }
 
 
@@ -342,12 +379,17 @@ def _trade_result(
     stop_price: float,
     entry_price: float,
     *,
-    fee_rate: float,
+    fee_rate: Optional[float] = None,
+    buy_fee_rate: float = DEFAULT_BUY_COMMISSION_RATE,
+    sell_fee_rate: float = DEFAULT_SELL_COMMISSION_RATE,
+    sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
+    minimum_commission: float = DEFAULT_MIN_COMMISSION,
+    shares: int = DEFAULT_TRADE_SHARES,
+    exit_slippage_rate: float = 0.0,
     enable_trailing: bool = False,
     atr_val: float = 0.0,
     stop_mult: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
-    last_close = entry_price
     exit_price = entry_price
     exit_reason = "未出場"
     holding_days = 0
@@ -358,15 +400,17 @@ def _trade_result(
     
     for _, row in future_df.iterrows():
         holding_days += 1
-        open_price = safe_float(row.get("Open"), last_close)
-        low = safe_float(row.get("Low"))
-        high = safe_float(row.get("High"))
-        close = safe_float(row.get("Close"))
-
-        if enable_trailing:
-            if high > highest_since_entry:
-                highest_since_entry = high
-                current_stop_price = max(current_stop_price, highest_since_entry - trailing_distance)
+        open_price = strict_float(row.get("Open"))
+        low = strict_float(row.get("Low"))
+        high = strict_float(row.get("High"))
+        close = strict_float(row.get("Close"))
+        if (
+            open_price is None or low is None or high is None or close is None
+            or min(open_price, low, high, close) <= 0
+            or high < max(open_price, close)
+            or low > min(open_price, close)
+        ):
+            return None
 
         if open_price <= current_stop_price:
             exit_price = open_price
@@ -392,22 +436,46 @@ def _trade_result(
             exit_reason = "停利"
             break
 
-        last_close = close
+        # OHLC bars do not reveal whether the high or low occurred first.  Apply a
+        # newly raised trailing stop from the next bar to avoid same-bar lookahead.
+        if enable_trailing and high > highest_since_entry:
+            highest_since_entry = high
+            current_stop_price = max(current_stop_price, highest_since_entry - trailing_distance)
+
         exit_price = close
 
     if future_df.empty:
         return None
+    if exit_reason == "未出場":
+        exit_reason = "到期出場"
 
-    net_return = ((exit_price * (1 - fee_rate)) - (entry_price * (1 + fee_rate))) / (entry_price * (1 + fee_rate)) * 100
+    if fee_rate is not None:
+        # Backward-compatible alias retained for callers that previously used one
+        # symmetric commission rate. Transaction tax remains a separate sell cost.
+        buy_fee_rate = sell_fee_rate = max(0.0, float(fee_rate))
+    shares = max(1, int(shares))
+    minimum_commission = max(0.0, float(minimum_commission))
+    execution_exit_price = exit_price * (1 - max(0.0, float(exit_slippage_rate)))
+    entry_notional = entry_price * shares
+    exit_notional = execution_exit_price * shares
+    buy_fee = max(entry_notional * max(0.0, buy_fee_rate), minimum_commission if buy_fee_rate > 0 else 0.0)
+    sell_fee = max(exit_notional * max(0.0, sell_fee_rate), minimum_commission if sell_fee_rate > 0 else 0.0)
+    sell_tax = exit_notional * max(0.0, sell_tax_rate)
+    total_cost = buy_fee + sell_fee + sell_tax
+    net_profit = exit_notional - sell_fee - sell_tax - entry_notional - buy_fee
+    net_return = net_profit / (entry_notional + buy_fee) * 100
     return {
         "win": net_return > 0,
         "return_pct": round(net_return, 2),
         "entry_price": round(entry_price, 2),
         "exit_price": round(exit_price, 2),
+        "execution_exit_price": round(execution_exit_price, 2),
         "target_price": round(target_price, 2),
         "stop_price": round(current_stop_price, 2),
         "exit_reason": exit_reason,
         "holding_days": holding_days,
+        "transaction_cost": round(total_cost, 2),
+        "sell_tax": round(sell_tax, 2),
     }
 
 
@@ -417,7 +485,8 @@ def _trade_outcome(
     stop_price: float,
     entry_price: float,
     *,
-    fee_rate: float,
+    fee_rate: Optional[float] = None,
+    sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
 ) -> Optional[bool]:
     result = _trade_result(
         future_df,
@@ -425,6 +494,7 @@ def _trade_outcome(
         stop_price,
         entry_price,
         fee_rate=fee_rate,
+        sell_tax_rate=sell_tax_rate,
     )
     return None if result is None else bool(result["win"])
 
@@ -439,7 +509,12 @@ def calculate_historical_performance(
     min_gap_days: int = BACKTEST_MIN_GAP_DAYS,
     fund: Optional[Dict[str, Any]] = None,
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
-    fee_rate: float = 0.001425,
+    fee_rate: Optional[float] = None,
+    buy_fee_rate: float = DEFAULT_BUY_COMMISSION_RATE,
+    sell_fee_rate: float = DEFAULT_SELL_COMMISSION_RATE,
+    sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
+    minimum_commission: float = DEFAULT_MIN_COMMISSION,
+    shares: int = DEFAULT_TRADE_SHARES,
     slippage_rate: float = 0.0005,
     enable_trailing: bool = False,
     filter_low_conf: bool = False,
@@ -460,9 +535,19 @@ def calculate_historical_performance(
         "wilson_high": 0.0,
         "sample_confidence": "無樣本",
         "trades": [],
+        "backtest_scope": BACKTEST_SCOPE,
+        "validation_win_rate": 0.0,
+        "validation_samples": 0,
+        "validation_avg_return": 0.0,
     }
     if df_slice is None or len(df_slice) < 21:
         return empty
+
+    if fund:
+        logger.warning(
+            "calculate_historical_performance ignores a current fundamental snapshot; "
+            "point-in-time history is required to avoid look-ahead bias"
+        )
 
     recent = df_slice.tail(lookback_days)
     last_buy_idx = -999
@@ -478,7 +563,7 @@ def calculate_historical_performance(
             continue
 
         temp_df = df_slice.iloc[: actual_idx + 1]
-        signal, score, signal_data = is_strategy_signal(temp_df, fund or {}, score_threshold=score_threshold)
+        signal, score, signal_data = is_strategy_signal(temp_df, {}, score_threshold=score_threshold)
         if not signal:
             continue
 
@@ -490,9 +575,11 @@ def calculate_historical_performance(
         signal_row = temp_df.iloc[-1]
         entry_idx = actual_idx + 1
         entry_row = df_slice.iloc[entry_idx]
-        raw_entry_price = safe_float(entry_row.get("Open"), safe_float(entry_row.get("Close")))
+        raw_entry_price = strict_float(entry_row.get("Open"))
+        if raw_entry_price is None:
+            continue
         entry_price = raw_entry_price * (1 + slippage_rate)
-        atr_val = safe_float(signal_row.get("ATR"), entry_price * 0.03)
+        atr_val = safe_float(signal_row.get("ATR"), 0.0)
         if entry_price <= 0 or atr_val <= 0:
             continue
 
@@ -505,6 +592,12 @@ def calculate_historical_performance(
             stop_price,
             entry_price,
             fee_rate=fee_rate,
+            buy_fee_rate=buy_fee_rate,
+            sell_fee_rate=sell_fee_rate,
+            sell_tax_rate=sell_tax_rate,
+            minimum_commission=minimum_commission,
+            shares=shares,
+            exit_slippage_rate=slippage_rate,
             enable_trailing=enable_trailing,
             atr_val=atr_val,
             stop_mult=stop_mult,
@@ -541,6 +634,11 @@ def calculate_historical_performance(
         else:
             current_losses = 0
     winrate_stats = summarize_winrate(wins, len(trades))
+    validation_count = max(1, int(np.ceil(len(trades) * 0.3)))
+    validation_trades = trades[-validation_count:]
+    validation_wins = sum(1 for trade in validation_trades if trade["win"])
+    validation_stats = summarize_winrate(validation_wins, validation_count)
+    validation_returns = [safe_float(trade.get("return_pct")) for trade in validation_trades]
 
     return {
         "win_rate": winrate_stats["adjusted_win_rate"],
@@ -553,6 +651,10 @@ def calculate_historical_performance(
         "max_consecutive_losses": max_consecutive_losses,
         **winrate_stats,
         "trades": trades,
+        "backtest_scope": BACKTEST_SCOPE,
+        "validation_win_rate": validation_stats["adjusted_win_rate"],
+        "validation_samples": validation_count,
+        "validation_avg_return": round(float(np.mean(validation_returns)), 2),
     }
 
 
@@ -566,7 +668,12 @@ def calculate_historical_winrate(
     min_gap_days: int = BACKTEST_MIN_GAP_DAYS,
     fund: Optional[Dict[str, Any]] = None,
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
-    fee_rate: float = 0.001425,
+    fee_rate: Optional[float] = None,
+    buy_fee_rate: float = DEFAULT_BUY_COMMISSION_RATE,
+    sell_fee_rate: float = DEFAULT_SELL_COMMISSION_RATE,
+    sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
+    minimum_commission: float = DEFAULT_MIN_COMMISSION,
+    shares: int = DEFAULT_TRADE_SHARES,
     slippage_rate: float = 0.0005,
     enable_trailing: bool = False,
     filter_low_conf: bool = False,
@@ -582,6 +689,11 @@ def calculate_historical_winrate(
         fund=fund,
         score_threshold=score_threshold,
         fee_rate=fee_rate,
+        buy_fee_rate=buy_fee_rate,
+        sell_fee_rate=sell_fee_rate,
+        sell_tax_rate=sell_tax_rate,
+        minimum_commission=minimum_commission,
+        shares=shares,
         slippage_rate=slippage_rate,
         enable_trailing=enable_trailing,
         filter_low_conf=filter_low_conf,

@@ -4,25 +4,26 @@ from firebase_admin import credentials, firestore
 import yfinance as yf
 import streamlit as st
 import pandas as pd
-import requests
 import time
 import os
+import uuid
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import re
 import concurrent.futures
-import numpy as np
 import logging
+import math
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
-from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance
+from app_security import build_stock_url, escape_html, normalize_ticker, safe_iso_date, safe_mode, scoped_document_name
 from charts import draw_professional_chart
+from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
+from market_http import call_with_backoff, http_get
+from scan_state import build_scan_quality, latest_trading_date
 from scoring import get_decision_score
 try:
     from ui_components import (
-        credibility_label,
         generate_cards_html as build_cards_html,
         render_app_style,
         render_home_side_panel,
@@ -31,6 +32,7 @@ try:
         render_stock_hero,
     )
 except Exception as ui_import_error:
+    ui_import_error_text = str(ui_import_error)
     def credibility_label(sample_count):
         try:
             n = int(sample_count)
@@ -47,7 +49,7 @@ except Exception as ui_import_error:
     def render_app_style(is_light_mode=False):
         app_bg = "#f4f6f9" if is_light_mode else "#0b1120"
         st.markdown(f"<style>.stApp {{ background-color:{app_bg}; }} a.stock-card-link {{ text-decoration:none; color:inherit; display:block; }}</style>", unsafe_allow_html=True)
-        st.caption(f"UI 模組載入失敗，已使用內建備援版：{ui_import_error}")
+        st.caption(f"UI 模組載入失敗，已使用內建備援版：{ui_import_error_text}")
 
     def render_market_status_cards(items):
         cols = st.columns(len(items))
@@ -65,7 +67,7 @@ except Exception as ui_import_error:
 
     def render_stock_hero(data, target, name, strategy_text):
         st.markdown(f"## {target} {name}")
-        st.caption(f"{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {data.get('Confidence', 100)}%")
+        st.caption(f"{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {data.get('Confidence', 0)}%")
         st.metric("現價", data.get("收盤價", "--"), f"{data.get('漲跌幅', 0):+.2f}%")
         st.info(f"建議策略：{strategy_text}")
 
@@ -76,15 +78,20 @@ except Exception as ui_import_error:
                 st.metric(metric.get("label", ""), metric.get("value", "--"), metric.get("sub", ""))
 
     def build_cards_html(df_disp, **kwargs):
-        html = ""
+        card_html = ""
         no_score = kwargs.get("no_score", False)
         for _, row in df_disp.iterrows():
-            code = row.get("代號", "")
-            name = row.get("名稱", "")
+            code = normalize_ticker(row.get("代號", ""))
+            name = escape_html(row.get("名稱", ""))
             score = row.get("Score", 0)
-            score_str = "形態觀察" if no_score else f"{score}分"
-            html += f"<a href='/?stock={code}' class='stock-card-link'><div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'><b>{code} {name}</b><span style='float:right; color:#60A5FA; font-weight:900;'>{score_str}</span><br><span style='color:#94A3B8;'>歷史勝率 {row.get('WinRate', '--')}%｜樣本 {row.get('Backtest_Samples', '--')}</span></div></a>"
-        return html
+            score_text = "形態觀察" if no_score else f"{score}分"
+            card_html += (
+                f"<a href='{build_stock_url(code)}' class='stock-card-link'>"
+                "<div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'>"
+                f"<b>{escape_html(code)} {name}</b><span style='float:right; color:#60A5FA; font-weight:900;'>{escape_html(score_text)}</span><br>"
+                f"<span style='color:#94A3B8;'>技術面勝率 {escape_html(row.get('WinRate', '--'))}%｜樣本 {escape_html(row.get('Backtest_Samples', '--'))}</span></div></a>"
+            )
+        return card_html
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -100,12 +107,11 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
+ANALYSIS_CACHE_SCHEMA_VERSION = 2
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
-    "market_data/daily_scan": 0,
-    "user_settings/fav_groups": 600,
-    "user_data/simulated_orders": 600,
+    "market_data/daily_scan": 120,
 }
 
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
@@ -123,13 +129,15 @@ is_light_mode = st.sidebar.toggle("黑白底色切換", False, key="toggle_theme
 if LOW_FIREBASE_READ_MODE:
     st.sidebar.caption("Firebase 低讀取模式：開啟")
 
-if st.sidebar.button("強制清除快取資料", use_container_width=True):
-    st.cache_data.clear()
+if st.session_state.pop("_cache_clear_notice", False):
+    st.sidebar.success("已清除資料快取。")
+
+if st.sidebar.button("強制清除快取資料", width="stretch"):
+    st.session_state["_clear_data_caches_requested"] = True
     if "scan_results" in st.session_state: del st.session_state["scan_results"]
     if "scan_results_is_local" in st.session_state: del st.session_state["scan_results_is_local"]
     if "_cloud_doc_cache" in st.session_state: del st.session_state["_cloud_doc_cache"]
     if "_analysis_session_cache" in st.session_state: del st.session_state["_analysis_session_cache"]
-    st.sidebar.success("已清除暫存，請重整網頁！")
 
 render_app_style(is_light_mode)
 
@@ -137,29 +145,28 @@ STOCK_NAMES = { "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "230
 
 @st.cache_data(ttl=86400)
 def get_all_tw_stock_names_v3():
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     names = STOCK_NAMES.copy()
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10, verify=False)
+        res = http_get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res.raise_for_status()
         if res.status_code == 200:
             for i in res.json(): names[i['Code']] = i['Name']
-    except: pass
+    except Exception as e:
+        logging.warning("上市股票名稱取得失敗: %s", e)
     try:
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10, verify=False)
+        res2 = http_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2.raise_for_status()
         if res2.status_code == 200:
             for i in res2.json(): names[i['SecuritiesCompanyCode']] = i['CompanyName']
-    except: pass
+    except Exception as e:
+        logging.warning("上櫃股票名稱取得失敗: %s", e)
     return names
 
 CURRENT_STOCK_NAMES = get_all_tw_stock_names_v3()
 
 def get_stock_name(ticker):
-    ticker_str = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
+    ticker_str = normalize_ticker(ticker)
     return CURRENT_STOCK_NAMES.get(ticker_str, ticker_str)
-
-def normalize_ticker(ticker):
-    return str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
 
 def is_financial_stock(ticker, industry=""):
     s = normalize_ticker(ticker)
@@ -182,6 +189,74 @@ def safe_num(value, default=0.0):
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return default
+
+
+def optional_num(value):
+    """Return a finite numeric value or None; never turn missing data into zero."""
+    try:
+        if value is None or pd.isna(value):
+            return None
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+@st.fragment
+def render_analysis_k_chart(
+    df_slice,
+    latest_price,
+    buy_dates,
+    light_mode,
+    ticker,
+    initial_days=30,
+    initial_show_buy=True,
+    initial_show_sup=True,
+    initial_show_signals=True,
+):
+    """Render chart controls in isolation so period changes do not rerun analysis."""
+    ticker_key = normalize_ticker(ticker) or "stock"
+    day_key = f"k_chart_days_{ticker_key}"
+    flag_defaults = {
+        f"k_chart_buy_{ticker_key}": bool(initial_show_buy),
+        f"k_chart_sup_{ticker_key}": bool(initial_show_sup),
+        f"k_chart_signals_{ticker_key}": bool(initial_show_signals),
+    }
+    if day_key not in st.session_state:
+        st.session_state[day_key] = int(initial_days) if int(initial_days) in (30, 60, 90) else 30
+    for key, default in flag_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    selected_days = st.segmented_control(
+        "K 線期間",
+        options=[30, 60, 90],
+        format_func=lambda days: f"{days}日",
+        key=day_key,
+        required=True,
+        width="stretch",
+    )
+    st.session_state.view_days = int(selected_days)
+
+    control_columns = st.columns(3)
+    with control_columns[0]:
+        show_buy = st.toggle("買進訊號", key=f"k_chart_buy_{ticker_key}", width="stretch")
+    with control_columns[1]:
+        show_sup = st.toggle("高低點", key=f"k_chart_sup_{ticker_key}", width="stretch")
+    with control_columns[2]:
+        show_signals = st.toggle("圖表符號", key=f"k_chart_signals_{ticker_key}", width="stretch")
+
+    fig = draw_professional_chart(
+        df_slice,
+        latest_price,
+        int(selected_days),
+        light_mode,
+        show_buy,
+        show_sup,
+        show_signals,
+        buy_dates=buy_dates,
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "scrollZoom": True})
 
 def get_favorite_stock_set():
     favs = set()
@@ -226,25 +301,25 @@ def resolve_score_mode(request_intraday=False):
         return "realtime", "盤中參考分數", True
     return "post", "盤後正式分數", False
 
-def build_data_quality(price_status="ok", volume_status="ok", institutional_days=0, revenue_status="ok", macro_status=None, txf_status="ok"):
+def build_data_quality(
+    price_status="ok",
+    volume_status="ok",
+    institutional_days=0,
+    fundamental_status="unknown",
+    revenue_status="unknown",
+    macro_status=None,
+    txf_status="ok",
+):
     macro_status = macro_status or {}
-    quality = {
+    return build_scan_quality({
         "price": price_status,
         "volume": volume_status,
-        "institutional": f"{institutional_days}日" if institutional_days else "cached_or_missing",
+        "fundamental": fundamental_status,
+        "institutional": "ok" if institutional_days else "missing",
         "revenue": revenue_status,
         "macro": "ok" if macro_status and all(v == "ok" for v in macro_status.values()) else "partial",
         "txf": txf_status,
-    }
-    missing_count = 0
-    for status in [price_status, volume_status, revenue_status, txf_status]:
-        if status not in ("ok", "realtime", "confirmed", "estimated"):
-            missing_count += 1
-    missing_count += sum(1 for v in macro_status.values() if v != "ok")
-    if institutional_days == 0:
-        missing_count += 1
-    confidence = max(20, 100 - missing_count * 12)
-    return quality, confidence
+    }, institutional_days=institutional_days)
 
 def adjust_intraday_volume(volume, avg_volume_5d, is_intraday=False):
     volume = safe_num(volume)
@@ -268,22 +343,25 @@ def render_sidebar_favorites(container):
                 with st.expander(f"📁 {g_name} ({len(stocks)} 檔)"):
                     for s in stocks:
                         s_name = get_stock_name(s)
-                        st.markdown(f"- <a href='/?stock={s}' target='_self' style='text-decoration:none; color:{link_color}; font-weight:bold;'>{s} {s_name}</a>", unsafe_allow_html=True)
+                        st.markdown(f"- <a href='{build_stock_url(s)}' target='_self' style='text-decoration:none; color:{link_color}; font-weight:bold;'>{escape_html(s)} {escape_html(s_name)}</a>", unsafe_allow_html=True)
         else:
             st.info("尚未加入任何標的")
 
 st.sidebar.title("🔍 快速搜尋")
 with st.sidebar.form(key="search_form"):
     search_input = st.text_input("隱藏", placeholder="輸入股票代號或中文名稱...", label_visibility="collapsed")
-    submit_search = st.form_submit_button("送出搜尋", use_container_width=True)
+    submit_search = st.form_submit_button("送出搜尋", width="stretch")
     
 if submit_search and search_input:
     s_val = search_input.strip().replace(" ", "")
-    target_ticker = None
-    if re.match(r'^[A-Za-z0-9]+$', s_val): target_ticker = s_val.upper()
-    else:
+    target_ticker = normalize_ticker(s_val)
+    if not target_ticker:
+        target_ticker = None
+    if target_ticker is None:
         for code, name in CURRENT_STOCK_NAMES.items():
-            if s_val in name: target_ticker = code; break
+            if s_val in name:
+                target_ticker = normalize_ticker(code)
+                break
     if target_ticker:
         st.session_state.current_stock = target_ticker
         st.session_state.page = "analysis"
@@ -302,9 +380,9 @@ else:
 
 st.sidebar.divider()
 st.sidebar.title("🛒 模擬交易中心")
-if st.sidebar.button("經理人績效儀表板", use_container_width=True):
+if st.sidebar.button("經理人績效儀表板", width="stretch"):
     st.session_state.page = "simulated_orders"; st.rerun()
-if st.sidebar.button("🏆 Top 10 自動追蹤績效", use_container_width=True):
+if st.sidebar.button("🏆 Top 10 自動追蹤績效", width="stretch"):
     st.session_state.page = "top10_tracking"; st.rerun()
 
 st.sidebar.divider()
@@ -327,6 +405,36 @@ except Exception as e:
     db = None
     st.session_state.cloud_last_error = f"Firestore client 建立失敗：{e}"
 
+
+def resolve_user_document_names():
+    identity = {}
+    try:
+        user = st.user
+        if getattr(user, "is_logged_in", False):
+            identity = {"sub": user.get("sub", ""), "email": user.get("email", "")}
+    except Exception:
+        pass
+    namespace = get_secret("USER_DATA_NAMESPACE")
+    is_ephemeral = not identity and not namespace
+    if is_ephemeral:
+        if "_anonymous_user_scope" not in st.session_state:
+            st.session_state._anonymous_user_scope = uuid.uuid4().hex
+        fallback = st.session_state._anonymous_user_scope
+    else:
+        fallback = namespace
+    return (
+        scoped_document_name("simulated_orders", identity, fallback),
+        scoped_document_name("fav_groups", identity, fallback),
+        is_ephemeral,
+    )
+
+
+USER_ORDERS_DOC, USER_FAVORITES_DOC, USER_SCOPE_EPHEMERAL = resolve_user_document_names()
+CLOUD_READ_TTL_SECONDS[f"user_data/{USER_ORDERS_DOC}"] = 600
+CLOUD_READ_TTL_SECONDS[f"user_settings/{USER_FAVORITES_DOC}"] = 600
+if USER_SCOPE_EPHEMERAL:
+    st.sidebar.caption("匿名模式：自選與模擬單只綁定本次工作階段；設定登入或 USER_DATA_NAMESPACE 可跨工作階段保存。")
+
 def load_cloud_data(collection_name, document_name, default_data):
     target = f"{collection_name}/{document_name}"
     cache_key = f"{collection_name}:{document_name}"
@@ -346,10 +454,12 @@ def load_cloud_data(collection_name, document_name, default_data):
         if not doc.exists:
             if collection_name == "market_data":
                 st.session_state.cloud_last_error = f"{target} 文件不存在"
-            st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts}
+            st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts, "revision": 0}
             return default_data
-        value = doc.to_dict().get('data', default_data)
-        st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
+        payload = doc.to_dict() or {}
+        value = payload.get('data', default_data)
+        revision = int(payload.get("revision", 0) or 0)
+        st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts, "revision": revision}
         if collection_name == "market_data":
             if isinstance(value, list) and len(value) == 0:
                 st.session_state.cloud_last_error = f"{target} 的 data 欄位是空清單"
@@ -392,18 +502,53 @@ def save_cloud_data(collection_name, document_name, data):
     cache_key = f"{collection_name}:{document_name}"
     if "_cloud_doc_cache" not in st.session_state:
         st.session_state._cloud_doc_cache = {}
-    st.session_state._cloud_doc_cache[cache_key] = {"value": data, "ts": time.time()}
-    if db is None: return
-    try: db.collection(collection_name).document(document_name).set({'data': data})
-    except: pass
+    if db is None:
+        st.session_state.cloud_last_error = f"Firebase 未初始化，{collection_name}/{document_name} 僅保留於目前工作階段"
+        return False
+    try:
+        doc_ref = db.collection(collection_name).document(document_name)
+        cached_entry = st.session_state._cloud_doc_cache.get(cache_key)
+        expected_revision = cached_entry.get("revision") if isinstance(cached_entry, dict) else None
+        transaction = db.transaction()
 
-def load_analysis_cache(ticker, max_age_seconds=900):
-    cache_key = normalize_ticker(ticker)
+        @firestore.transactional
+        def save_if_current(transaction):
+            snapshot = doc_ref.get(transaction=transaction)
+            payload = snapshot.to_dict() or {} if snapshot.exists else {}
+            server_revision = int(payload.get("revision", 0) or 0)
+            if expected_revision is not None and server_revision != expected_revision:
+                raise RuntimeError("資料已在其他頁籤更新，請重新整理後再試")
+            next_revision = server_revision + 1
+            transaction.set(doc_ref, {
+                'data': data,
+                'revision': next_revision,
+                'updated_at': firestore.SERVER_TIMESTAMP,
+            })
+            return next_revision
+
+        next_revision = save_if_current(transaction)
+        st.session_state._cloud_doc_cache[cache_key] = {"value": data, "ts": time.time(), "revision": next_revision}
+        st.session_state.cloud_last_error = ""
+        return True
+    except Exception as e:
+        st.session_state.cloud_last_error = f"寫入 {collection_name}/{document_name} 失敗：{e}"
+        logging.error("寫入 %s/%s 失敗: %s", collection_name, document_name, e)
+        return False
+
+def _analysis_cache_key(ticker, context="latest"):
+    safe_context = safe_iso_date(context) or ("realtime" if context == "realtime" else "latest")
+    return f"{normalize_ticker(ticker)}__{safe_context}"
+
+
+def load_analysis_cache(ticker, max_age_seconds=900, context="latest"):
+    cache_key = _analysis_cache_key(ticker, context)
     if "_analysis_session_cache" not in st.session_state:
         st.session_state._analysis_session_cache = {}
     local_cached = st.session_state._analysis_session_cache.get(cache_key)
     if isinstance(local_cached, dict):
         try:
+            if local_cached.get("schema_version") != ANALYSIS_CACHE_SCHEMA_VERSION:
+                raise ValueError("legacy analysis cache")
             saved_at = datetime.fromisoformat(local_cached.get("saved_at", ""))
             if saved_at.tzinfo is None:
                 saved_at = saved_at.replace(tzinfo=timezone(timedelta(hours=8)))
@@ -418,6 +563,8 @@ def load_analysis_cache(ticker, max_age_seconds=900):
     if not isinstance(cached, dict):
         return None
     try:
+        if cached.get("schema_version") != ANALYSIS_CACHE_SCHEMA_VERSION:
+            return None
         saved_at = datetime.fromisoformat(cached.get("saved_at", ""))
         if saved_at.tzinfo is None:
             saved_at = saved_at.replace(tzinfo=timezone(timedelta(hours=8)))
@@ -428,53 +575,56 @@ def load_analysis_cache(ticker, max_age_seconds=900):
         return None
     return None
 
-def save_analysis_cache(ticker, payload):
+def save_analysis_cache(ticker, payload, context="latest"):
     if not isinstance(payload, dict):
         return
     compact = dict(payload)
+    compact["schema_version"] = ANALYSIS_CACHE_SCHEMA_VERSION
     compact["saved_at"] = datetime.now(timezone(timedelta(hours=8))).isoformat()
     if "_analysis_session_cache" not in st.session_state:
         st.session_state._analysis_session_cache = {}
-    st.session_state._analysis_session_cache[normalize_ticker(ticker)] = compact
+    cache_key = _analysis_cache_key(ticker, context)
+    st.session_state._analysis_session_cache[cache_key] = compact
     if LOW_FIREBASE_READ_MODE or db is None:
         return
-    save_cloud_data("analysis_cache", normalize_ticker(ticker), compact)
+    save_cloud_data("analysis_cache", cache_key, compact)
 
 def get_latest_expected_scan_date():
+    """Use actual TWII bars instead of guessing holidays from weekdays."""
+    df = fetch_twse_index_history()
+    if df is None or df.empty:
+        return ""
+    values = list(df.index)
     now_tpe = datetime.now(timezone(timedelta(hours=8)))
-    if now_tpe.weekday() == 5:
-        last_trading = now_tpe - timedelta(days=1)
-    elif now_tpe.weekday() == 6:
-        last_trading = now_tpe - timedelta(days=2)
-    elif now_tpe.hour < 14 or (now_tpe.hour == 14 and now_tpe.minute < 30):
-        if now_tpe.weekday() == 0:
-            last_trading = now_tpe - timedelta(days=3)
-        else:
-            last_trading = now_tpe - timedelta(days=1)
-    else:
-        last_trading = now_tpe
-    return last_trading.strftime('%Y-%m-%d')
+    latest = latest_trading_date(values)
+    today = now_tpe.strftime('%Y-%m-%d')
+    postclose = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
+    if latest == today and now_tpe < postclose and len(values) >= 2:
+        return latest_trading_date(values[:-1])
+    return latest
 
 def hydrate_scan_results(force=False):
-    if force or "scan_results" not in st.session_state or not st.session_state.scan_results:
+    now_ts = time.time()
+    last_sync = safe_num(st.session_state.get("scan_results_synced_at"), 0)
+    should_sync = (
+        force
+        or "scan_results" not in st.session_state
+        or not st.session_state.scan_results
+        or now_ts - last_sync >= CLOUD_READ_TTL_SECONDS["market_data/daily_scan"]
+    )
+    if should_sync:
         scan_doc = load_cloud_doc("market_data", "daily_scan")
         data = scan_doc.get("data", [])
         scan_date = scan_doc.get("scan_date", "")
-        
         expected_date = get_latest_expected_scan_date()
-        if not data or (scan_date and scan_date < expected_date):
-            try:
-                from scanner import run_daily_scan
-                with st.spinner(f"⚡ 檢測到雲端資料日期 ({scan_date or '無'}) 非最新 ({expected_date})，正在為您自動執行全市場最新量化掃描..."):
-                    new_data = run_daily_scan(force=True)
-                    if new_data:
-                        data = new_data
-                        scan_date = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
-            except Exception as e:
-                logging.error("開啟網頁自動同步最新資料失敗: %s", e)
-
+        st.session_state.scan_results_stale = bool(expected_date and (not scan_date or scan_date < expected_date))
+        st.session_state.expected_scan_date = expected_date
         st.session_state.scan_date = scan_date
+        st.session_state.scan_limit = scan_doc.get("scan_limit")
+        st.session_state.universe_size = scan_doc.get("universe_size")
+        st.session_state.scan_profile = scan_doc.get("scan_profile", "")
         st.session_state.scan_results = data if isinstance(data, list) else []
+        st.session_state.scan_results_synced_at = now_ts
     return st.session_state.get("scan_results", [])
 
 def restore_nav_pool(min_score=60):
@@ -521,14 +671,14 @@ if 'date_offset' not in st.session_state: st.session_state.date_offset = 0
 if 'custom_pool' not in st.session_state: st.session_state.custom_pool = ["2330", "2317", "2454", "2382", "3231", "2891"]
 
 if 'simulated_orders' not in st.session_state or not isinstance(st.session_state.simulated_orders, list):
-    st.session_state.simulated_orders = load_cloud_data("user_data", "simulated_orders", [])
+    st.session_state.simulated_orders = load_cloud_data("user_data", USER_ORDERS_DOC, [])
 if not isinstance(st.session_state.simulated_orders, list):
     st.session_state.simulated_orders = []
 
 if 'fav_groups' not in st.session_state or not isinstance(st.session_state.fav_groups, dict):
-    st.session_state.fav_groups = load_cloud_data("user_settings", "fav_groups", {"預設群組": ["1802", "2330", "1785"]})
+    st.session_state.fav_groups = load_cloud_data("user_settings", USER_FAVORITES_DOC, {"預設群組": []})
 if not isinstance(st.session_state.fav_groups, dict):
-    st.session_state.fav_groups = {"預設群組": ["1802", "2330", "1785"]}
+    st.session_state.fav_groups = {"預設群組": []}
 
 st.session_state.fav_groups = {
     str(name): [normalize_ticker(s) for s in stocks] if isinstance(stocks, list) else []
@@ -538,8 +688,8 @@ render_sidebar_favorites(fav_sidebar_slot)
 
 if 'stock' in st.query_params:
     q_stock = normalize_ticker(st.query_params['stock'])
-    q_mode = str(st.query_params.get('mode', '')).lower()
-    q_target_date = str(st.query_params.get('target_date', '')).strip()
+    q_mode = safe_mode(st.query_params.get('mode', ''))
+    q_target_date = safe_iso_date(st.query_params.get('target_date', ''))
     if q_target_date:
         st.session_state.target_date = q_target_date
     elif 'target_date' in st.session_state:
@@ -548,37 +698,44 @@ if 'stock' in st.query_params:
         _, q_score_mode_label, q_is_intraday = resolve_score_mode(True)
         st.session_state.is_intraday = q_is_intraday
         st.session_state.score_mode_label = q_score_mode_label
-    if st.session_state.get('last_q_stock') != q_stock:
-        st.session_state.date_offset = 0
-    st.session_state.current_stock = q_stock
-    st.session_state.page = "analysis"
-    st.session_state.last_q_stock = q_stock
+    if q_stock:
+        if st.session_state.get('last_q_stock') != q_stock:
+            st.session_state.date_offset = 0
+        st.session_state.current_stock = q_stock
+        st.session_state.page = "analysis"
+        st.session_state.last_q_stock = q_stock
 
 # ENG_TO_TW_INDUSTRY 已統一定義於 analysis_core.py，此處不再重複定義
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_twse_index_history():
     try:
-        df = yf.Ticker("^TWII").history(period="2y")
+        df = call_with_backoff(lambda: yf.Ticker("^TWII").history(period="2y"), attempts=3)
         if not df.empty:
             df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
             df = df[~df.index.duplicated(keep='last')]
             return df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    except: return None
+    except Exception as e:
+        logging.warning("加權指數歷史資料取得失敗: %s", e)
+        return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _get_ohlcv_base(ticker_number):
     """Layer 1: Fetch and cache raw OHLCV from yfinance (slow, cache 1hr)."""
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    base_ticker = normalize_ticker(ticker_number)
+    if not base_ticker:
+        return None
     def fetch_clean(sym):
         try:
-            d = yf.Ticker(sym).history(period="2y").dropna(subset=['Close'])
+            d = call_with_backoff(lambda: yf.Ticker(sym).history(period="2y"), attempts=2).dropna(subset=['Close'])
             if len(d) >= 20:
                 d.index = pd.to_datetime(d.index.strftime('%Y-%m-%d'))
                 d = d[~d.index.duplicated(keep='last')]
                 return d
-        except: return None
+        except Exception as e:
+            logging.debug("歷史行情取得失敗 %s: %s", sym, e)
+            return None
     if base_ticker == "^TWII":
         return fetch_twse_index_history()
     df = fetch_clean(f"{base_ticker}.TW")
@@ -589,7 +746,9 @@ def _get_ohlcv_base(ticker_number):
 @st.cache_data(ttl=60, show_spinner=False)
 def get_stock_data(ticker_number, target_date=None):
     """Layer 2: Apply indicators & merge intraday quote (fast, cache 60s)."""
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
+    base_ticker = normalize_ticker(ticker_number)
+    if not base_ticker:
+        return None
     base_df = _get_ohlcv_base(ticker_number)
     if base_df is None: return None
     df = base_df.copy()  # 必須 copy，避免修改快取的唯讀 DataFrame
@@ -600,126 +759,147 @@ def get_stock_data(ticker_number, target_date=None):
             df.index = df.index.tz_localize(None)
             df = df[df.index <= cutoff]
         except Exception as e:
-            pass
+            logging.warning("忽略無效歷史日期 %s: %s", target_date, e)
     else:
         try:
             market_state = get_market_state()
             if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
                 url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
-                res = requests.get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=3)
+                res = http_get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=5)
+                res.raise_for_status()
                 if res.status_code == 200:
                     q = res.json()
-                    c_price = float(q.get('closePrice', q.get('lastPrice', df['Close'].iloc[-1])))
+                    raw_close = q.get('closePrice', q.get('lastPrice'))
+                    raw_open = q.get('openPrice')
+                    raw_high = q.get('highPrice')
+                    raw_low = q.get('lowPrice')
                     now_tpe = datetime.now(timezone(timedelta(hours=8)))
                     total = q.get('total', {}) or {}
-                    live_volume = float(total.get('tradeVolume', 0) or 0)
+                    raw_volume = total.get('tradeVolume')
+                    if any(value is None for value in (raw_close, raw_open, raw_high, raw_low, raw_volume)):
+                        raise ValueError("Fugle 即時 OHLCV 欄位不完整")
+                    c_price = float(raw_close)
+                    open_price = float(raw_open)
+                    high_price = float(raw_high)
+                    low_price = float(raw_low)
+                    live_volume = float(raw_volume)
+                    if (
+                        min(c_price, open_price, high_price, low_price) <= 0
+                        or high_price < max(c_price, open_price)
+                        or low_price > min(c_price, open_price)
+                    ):
+                        raise ValueError("Fugle 即時 OHLCV 數值不合理")
                     live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
                     real_vwap = live_value / live_volume if live_volume > 0 and live_value > 0 else 0
                     dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d')).tz_localize(None)
                     df.index = df.index.tz_localize(None)
                     if dt_live not in df.index:
-                        new_row = pd.DataFrame({'Open': [float(q.get('openPrice', c_price))], 'High': [float(q.get('highPrice', c_price))], 'Low': [float(q.get('lowPrice', c_price))], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
+                        new_row = pd.DataFrame({'Open': [open_price], 'High': [high_price], 'Low': [low_price], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
                         if 0 < real_vwap < c_price * 2:
                             new_row['VWAP'] = real_vwap
                         df = pd.concat([df, new_row])
                     else:
                         df.loc[dt_live, 'Close'] = c_price
-                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), float(q.get('highPrice', c_price)))
-                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), float(q.get('lowPrice', c_price)))
+                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), high_price)
+                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), low_price)
                         df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
                         if 0 < real_vwap < c_price * 2:
                             df.loc[dt_live, 'VWAP'] = real_vwap
-        except: pass
+        except Exception as e:
+            logging.warning("Fugle 即時行情合併失敗 %s: %s", base_ticker, e)
 
     try:
         return apply_technical_indicators(df)
     except Exception as e:
-        logging.warning(f"技術指標計算失敗 {ticker_number}: {e}")
-        df['ATR'] = df['Close'] * 0.03
-        df['ADX'] = 20
-        df['RSI'] = 50
-        return df
+        logging.error("技術指標計算失敗 %s：%s；本次不產生分析", ticker_number, e)
+        return None
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_fundamental_and_industry_data(ticker_number, current_price=0):
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    eps_val, pe_val, ind = "無", "無", "一般產業"
+def _get_company_profile(base_ticker):
+    eps_val, ind = "無", "一般產業"
+    eps_period = "missing"
+    yahoo_ok = False
+    cnyes_ok = False
     try:
         info = yf.Ticker(f"{base_ticker}.TW").info
         if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
-
+        yahoo_ok = bool(info)
         raw_sector = info.get("sector", "")
         if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
         elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
-
         if 'trailingEps' in info and info['trailingEps'] is not None:
             eps_val = str(round(info['trailingEps'], 2))
-    except: pass
+            eps_period = "ttm"
+    except Exception as e:
+        logging.debug("Yahoo 基本面資料取得失敗 %s: %s", base_ticker, e)
 
     # 單次呼叫 CNYES API，同時取得產業名稱和 EPS，避免重複請求
     if ind == "一般產業" or eps_val == "無":
         try:
-            res_cnyes = requests.get(
+            response = http_get(
                 f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3
-            ).json()
+            )
+            response.raise_for_status()
+            res_cnyes = response.json()
             cnyes_data = res_cnyes.get('data', {})
+            cnyes_ok = bool(cnyes_data)
             if ind == "一般產業" and 'categoryName' in cnyes_data:
                 ind = cnyes_data['categoryName']
             if eps_val == "無" and 'eps' in cnyes_data:
-                try: eps_val = f"{float(cnyes_data['eps']):.2f}"
-                except: pass
-        except: pass
+                try:
+                    eps_val = f"{float(cnyes_data['eps']):.2f}"
+                    eps_period = "provider"
+                except (TypeError, ValueError):
+                    pass
+        except Exception as e:
+            logging.debug("CNYES 基本面資料取得失敗 %s: %s", base_ticker, e)
+
+    if eps_val != "無" and ind != "一般產業":
+        status = "ok"
+    elif yahoo_ok or cnyes_ok:
+        status = "partial"
+    else:
+        status = "missing"
+    return {"EPS": eps_val, "EPS_Period": eps_period, "Industry": ind, "_status": status}
+
+
+def get_fundamental_and_industry_data(ticker_number, current_price=0):
+    base_ticker = normalize_ticker(ticker_number)
+    profile = dict(_get_company_profile(base_ticker))
+    eps_val = profile.get("EPS", "無")
+    pe_val = "無"
 
     if eps_val != "無" and current_price > 0:
-        try: pe_val = str(round(float(current_price) / float(eps_val), 2)) if float(eps_val) > 0 else "虧損"
-        except: pass
-    return {"EPS": eps_val, "PE": pe_val, "Industry": ind}
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_finmind_chip_and_revenue(ticker):
-    big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
-    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    if not FINMIND_TOKEN:
-        return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
-    try:
-        start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
         try:
-            url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
-            res_chip = requests.get(url_chip, timeout=5).json()
-            if 'data' in res_chip and len(res_chip['data']) > 0:
-                latest_date = max([x.get('date', '') for x in res_chip['data']])
-                for x in res_chip['data']:
-                    if x.get('date') == latest_date and int(x.get('HoldingSharesLevel', 0)) >= 12:
-                        big_player_ratio += float(str(x.get('percent', 0)).replace(',', ''))
-        except: pass
+            pe_val = str(round(float(current_price) / float(eps_val), 2)) if float(eps_val) > 0 else "虧損"
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    profile["PE"] = pe_val
+    return profile
 
-        start_date_rev = (datetime.now() - timedelta(days=500)).strftime('%Y-%m-%d')
-        try:
-            url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
-            res_rev = requests.get(url_rev, timeout=5).json()
-            if 'data' in res_rev and len(res_rev['data']) > 0:
-                df_rev = pd.DataFrame(res_rev['data']).sort_values(by='date').reset_index(drop=True)
-                df_rev['revenue'] = pd.to_numeric(df_rev['revenue'], errors='coerce').fillna(0)
-                if len(df_rev) >= 2 and df_rev['revenue'].iloc[-2] > 0:
-                    mom = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-2]) / df_rev['revenue'].iloc[-2] * 100
-                if len(df_rev) >= 13 and df_rev['revenue'].iloc[-13] > 0:
-                    yoy = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-13]) / df_rev['revenue'].iloc[-13] * 100
-        except: pass
-    except: pass
-    return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
-
-@st.cache_data(ttl=5, show_spinner=False) 
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_finmind_chip_and_revenue_payload(ticker):
+    payload = fetch_revenue_growth(ticker, FINMIND_TOKEN)
+    return {
+        "mom": payload["mom"],
+        "yoy": payload["yoy"],
+        "period": payload.get("period", ""),
+        "source": payload.get("source", ""),
+        "status": {"revenue": payload["status"]},
+    }
+@st.cache_data(ttl=30, show_spinner=False)
 def get_twii_quote():
     tz_tpe = timezone(timedelta(hours=8))
     update_time_str = datetime.now(tz_tpe).strftime('%Y/%m/%d %H:%M:%S')
-    fallback_curr, fallback_change = 0, 0
+    latest_close, latest_change = None, None
     try:
         df = yf.Ticker("^TWII").history(period="1mo").dropna(subset=['Close'])
         if not df.empty and len(df) >= 2:
-            fallback_curr = float(df['Close'].iloc[-1])
-            fallback_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
-    except: pass
-    return fallback_curr, fallback_change, update_time_str
+            latest_close = float(df['Close'].iloc[-1])
+            latest_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
+    except Exception as e:
+        logging.warning("即時加權指數取得失敗: %s", e)
+    return latest_close, latest_change, update_time_str
 
 def is_plausible_txf_price(price, previous=None, reference_index=None):
     price = safe_num(price, None)
@@ -729,10 +909,6 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     if previous is not None and previous > 0 and abs(price - previous) / previous > 0.08:
         return False
-    if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.03:
-        return False
-    return True
-    # 台指期近月通常不應長時間偏離加權指數太多；超過 3% 多半是抓到錯合約/錯欄位。
     if reference_index is not None and reference_index > 10000 and abs(price - reference_index) / reference_index > 0.03:
         return False
     return True
@@ -773,7 +949,7 @@ def get_txf_quote(reference_index=None):
                         snap = snapshots[0]
                         curr = getattr(snap, "close", 0.0)
                         change = getattr(snap, "change_price", 0.0)
-                        if curr > 0:
+                        if curr > 0 and change is not None:
                             snap_ts = getattr(snap, "ts", 0)
                             import datetime as dt
                             if snap_ts > 0:
@@ -784,31 +960,31 @@ def get_txf_quote(reference_index=None):
                                     else:
                                         snap_time = dt.datetime.fromtimestamp(snap_ts, tz=timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
                                 except Exception:
-                                    snap_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                                    snap_time = "時間未提供"
                             else:
-                                snap_time = datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M')
+                                snap_time = "時間未提供"
                             
                             prev = curr - change if change is not None else curr
                             if is_plausible_txf_price(curr, prev, reference_index):
-                                return curr, change or 0.0, f"Shioaji TX ({contract.code})", snap_time
+                                return curr, change, f"Shioaji TX ({contract.code})", snap_time
         except Exception as e:
             logging.error(f"Shioaji 取得期貨報價失敗: {e}")
 
-    for symbol in ["TXF.TW", "FITX.TW", "TX=F"]:
-        try:
-            df = yf.Ticker(symbol).history(period="5d").dropna(subset=['Close'])
-            if len(df) >= 2:
-                curr = float(df['Close'].iloc[-1])
-                prev = float(df['Close'].iloc[-2])
-                if is_plausible_txf_price(curr, prev, reference_index):
-                    return curr, curr - prev, symbol, df.index[-1].strftime('%Y/%m/%d')
-        except Exception:
-            pass
     if FINMIND_TOKEN:
         try:
             start_date = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
-            url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesDaily&data_id=TX&start_date={start_date}&token={FINMIND_TOKEN}"
-            res = requests.get(url, timeout=5).json()
+            response = http_get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={
+                    "dataset": "TaiwanFuturesDaily",
+                    "data_id": "TX",
+                    "start_date": start_date,
+                    "token": FINMIND_TOKEN,
+                },
+                timeout=8,
+            )
+            response.raise_for_status()
+            res = response.json()
             rows = res.get("data", [])
             if rows:
                 df = pd.DataFrame(rows).sort_values(by="date")
@@ -822,34 +998,47 @@ def get_txf_quote(reference_index=None):
                         prev = float(df[close_col].iloc[-2])
                         if is_plausible_txf_price(curr, prev, reference_index):
                             return curr, curr - prev, "FinMind TX", str(df["date"].iloc[-1])
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("FinMind 台指期資料取得失敗 (%s)", type(e).__name__)
     return None, None, "資料源受限", "暫無資料"
 
-@st.cache_data(ttl=5, show_spinner=False)
-def get_stock_live_time(ticker): return datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
+def get_stock_data_time(df, is_intraday=False):
+    """Describe the actual last market bar without inventing a quote timestamp."""
+    if df is None or df.empty:
+        return "資料時間不明"
+    try:
+        data_date = pd.Timestamp(df.index[-1]).strftime("%Y/%m/%d")
+    except (TypeError, ValueError):
+        return "資料時間不明"
+    suffix = "盤中合併資料" if is_intraday else "日 K 資料"
+    return f"{data_date}（{suffix}）"
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_institutional_trading(ticker):
-    if not FINMIND_TOKEN:
-        return []
-    try:
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={(datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')}&token={FINMIND_TOKEN}"
-        res = requests.get(url, timeout=5).json()
-        if res.get('msg') == 'success' and len(res.get('data', [])) > 0:
-            df = pd.DataFrame(res['data'])
-            df['net'] = (df['buy'] - df['sell']) / 1000  
-            df['type'] = '其他'
-            df.loc[df['name'].str.contains('Foreign|外資', case=False, na=False), 'type'] = '外資'
-            df.loc[df['name'].str.contains('Trust|投信', case=False, na=False), 'type'] = '投信'
-            df.loc[df['name'].str.contains('Dealer|自營', case=False, na=False), 'type'] = '自營商'
-            pivot = df.groupby(['date', 'type'])['net'].sum().unstack(fill_value=0).reset_index()
-            for col in ['外資', '投信', '自營商']:
-                if col not in pivot.columns: pivot[col] = 0
-            pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
-            return [{"日期": r['date'][-5:].replace("-", "/"), "外資(張)": int(r['外資']), "投信(張)": int(r['投信']), "自營商(張)": int(r['自營商']), "單日合計(張)": int(r['單日合計'])} for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()]
-    except: pass
-    return []
+def get_institutional_trading(ticker, with_status=False):
+    rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
+    normalized = [{
+        "日期": row["date"][-5:].replace("-", "/"),
+        "外資(張)": row["foreign"],
+        "投信(張)": row["trust"],
+        "自營商(張)": row["dealer"],
+        "單日合計(張)": row["total"],
+        "_source": row.get("source", ""),
+    } for row in rows]
+    return (normalized, status) if with_status else normalized
+
+
+def get_analysis_support_data(ticker, current_price):
+    """Load source-aware fundamentals and chip data without inventing missing values."""
+    fund = get_fundamental_and_industry_data(ticker, current_price)
+    revenue = get_finmind_chip_and_revenue_payload(ticker)
+    fund["MoM"], fund["YoY"] = revenue["mom"], revenue["yoy"]
+    fund["Revenue_Period"] = revenue.get("period", "")
+    fund["Revenue_Source"] = revenue.get("source", "")
+    fund["_data_status"] = revenue["status"]
+    inst_data, inst_status = get_institutional_trading(ticker, with_status=True)
+    fund["_institutional_status"] = inst_status
+    fund["Institutional_Source"] = inst_data[0].get("_source", "") if inst_data else ""
+    return fund, inst_data
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_global_macro_data():
@@ -864,7 +1053,7 @@ def get_global_macro_data():
             else:
                 data[t] = {"price": None, "pct": None, "time": "暫無資料", "url": url, "status": "missing"}
                 data["status"][t] = "missing"
-        except:
+        except Exception:
             data[t] = {"price": None, "pct": None, "time": "暫無資料", "url": url, "status": "missing"}
             data["status"][t] = "missing"
     try:
@@ -884,23 +1073,29 @@ def get_global_macro_data():
 
 def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     macro_data = get_global_macro_data()
-    if twii_df is None or len(twii_df) < 2: return "資料不足", "無法分析", "資料不足", "無法預測", "", "", 50, macro_data
+    if twii_df is None or len(twii_df) < 2:
+        return "資料不足", "無法分析", "資料不足", "不產生風險指標", "", "下一交易日", None, macro_data
     t_open, t_close, p_close = twii_df['Open'].iloc[-1], twii_df['Close'].iloc[-1], twii_df['Close'].iloc[-2]
-    if twii_close > 0:
+    if safe_num(twii_close, 0) > 0:
         t_close = twii_close
-        p_close = twii_close - twii_change
+        p_close = twii_close - safe_num(twii_change, 0)
     
-    last_dt_str = twii_time_str.split(" ")[0] if twii_time_str else datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d')
-    next_dt = datetime.strptime(last_dt_str, '%Y/%m/%d') + timedelta(days=1) if '/' in last_dt_str else datetime.now(timezone(timedelta(hours=8)))
-    while next_dt.weekday() >= 5: next_dt += timedelta(days=1)
+    try:
+        last_dt_str = pd.Timestamp(twii_df.index[-1]).strftime("%Y/%m/%d")
+    except (TypeError, ValueError):
+        last_dt_str = "資料日期不明"
     
-    today_title, today_desc = "⚖️ 平盤震盪", "大盤開在平盤附近，量價關係呈現縮量，盤勢陷入震盪整理。"
+    today_title, today_desc = "⚖️ 開近平盤", "開盤接近前一日收盤；本描述只反映 OHLC 形態，不推測買賣原因。"
     if t_open > p_close * 1.003:
-        if t_close > t_open: today_title, today_desc = "🔥 開高走高", "受激勵跳空開高，配合量能放大，盤勢偏多。"
-        else: today_title, today_desc = "⚠️ 開高走低", "跳空開高後遭遇短線獲利了結賣壓，呈現高檔回落。"
+        if t_close > t_open:
+            today_title, today_desc = "🔥 開高走高", "開盤高於前收 0.3% 以上，且收盤高於開盤。"
+        else:
+            today_title, today_desc = "⚠️ 開高走低", "開盤高於前收 0.3% 以上，但收盤低於或等於開盤。"
     elif t_open < p_close * 0.997:
-        if t_close > t_open: today_title, today_desc = "💪 開低走高", "開低但低檔承接買盤強勁，出現開低走高收紅K。"
-        else: today_title, today_desc = "🩸 開低走低", "大盤弱勢開低，恐慌指數上升引發停損賣壓，盤勢偏空。"
+        if t_close > t_open:
+            today_title, today_desc = "💪 開低走高", "開盤低於前收 0.3% 以上，但收盤高於開盤。"
+        else:
+            today_title, today_desc = "🩸 開低走低", "開盤低於前收 0.3% 以上，且收盤低於或等於開盤。"
 
     risk_score = 50 
     if t_close < (twii_df['5MA'].iloc[-1] if '5MA' in twii_df.columns else t_close): risk_score += 15
@@ -913,22 +1108,28 @@ def open_pred_logic(twii_df, twii_close, twii_change, twii_time_str=""):
     if vix_price is not None and vix_price > 20: risk_score += 20
     if twd_pct is not None and twd_pct > 0.4: risk_score += 8
     if txf_pct is not None and txf_pct < -0.5: risk_score += 10
+    # Missing feeds lower coverage; they are not evidence that market risk rose.
     missing_macro = sum(1 for v in macro_data.get("status", {}).values() if v != "ok")
-    risk_score += missing_macro * 3
     risk_score = max(5, min(95, int(risk_score))) 
     
-    if risk_score < 40: tmr_title, tmr_desc = "偏多風險傾向", f"台股短均仍有支撐，外部風險未明顯升高；留意台指期與匯率是否延續。"
-    elif risk_score < 70: tmr_title, tmr_desc = "中性震盪風險", f"外部變數或短線位置未完全同步，建議用支撐/壓力區間觀察，不用單點預測開盤。"
-    else: tmr_title, tmr_desc = "偏空警戒風險", f"短線或外部風險因子偏弱，隔日先觀察支撐是否守住，避免追高。"
-    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, next_dt.strftime('%Y/%m/%d'), risk_score, macro_data
+    if risk_score < 40:
+        tmr_title, tmr_desc = "較低風險區", "依目前可用的短均與外部市場規則計算；這是風險指標，不是漲跌機率。"
+    elif risk_score < 70:
+        tmr_title, tmr_desc = "中性風險區", "部分條件未同步或資料不完整；這是風險指標，不是開盤預測。"
+    else:
+        tmr_title, tmr_desc = "較高風險區", "目前可用條件觸發較多風險規則；這不代表下一交易日必然下跌。"
+    if missing_macro:
+        tmr_desc += f" 另有 {missing_macro} 項外部資料缺漏，未納入風險加減分。"
+    return today_title, today_desc, tmr_title, tmr_desc, last_dt_str, "下一交易日", risk_score, macro_data
 
 def render_index_board():
     try:
         twii_close, twii_change, twii_time_str = get_twii_quote()
         txf_close, txf_change, txf_symbol, txf_time = get_txf_quote(twii_close)
-        twii_color = '#ef4444' if twii_change >= 0 else '#22c55e'
+        twii_available = twii_close is not None and twii_change is not None
+        twii_color = '#94a3b8' if not twii_available else ('#ef4444' if twii_change >= 0 else '#22c55e')
         txf_available = txf_close is not None and txf_change is not None
-        txf_color = '#ef4444' if (txf_change or 0) >= 0 else '#22c55e'
+        txf_color = '#94a3b8' if not txf_available else ('#ef4444' if txf_change >= 0 else '#22c55e')
         txf_price_text = f"{txf_close:,.0f}" if txf_available else "資料源受限"
         txf_change_text = f"{'↑' if txf_change > 0 else '↓'} {abs(txf_change):.0f}" if txf_available else "請改用 FinMind/券商源"
         twii_df_for_pred = get_stock_data("^TWII")
@@ -936,41 +1137,56 @@ def render_index_board():
         sox = macro.get('^SOX', {"price": None, "pct": None})
         vix = macro.get('^VIX', {"price": None, "pct": None})
         twd = macro.get('TWD=X', {"price": None, "pct": None})
-        bar_color = "#22c55e" if risk_score < 40 else ("#facc15" if risk_score < 70 else "#ef4444")
+        risk_available = risk_score is not None
+        bar_color = (
+            "#94a3b8" if not risk_available
+            else "#22c55e" if risk_score < 40
+            else "#facc15" if risk_score < 70
+            else "#ef4444"
+        )
+        risk_width = risk_score if risk_available else 0
         render_market_status_cards([
-            {"label": "台股加權", "value": f"{twii_close:,.0f}", "sub": f"{'+' if twii_change > 0 else ''}{twii_change:.0f}", "color": twii_color},
+            {
+                "label": "台股加權",
+                "value": f"{twii_close:,.0f}" if twii_available else "--",
+                "sub": f"{'+' if twii_change > 0 else ''}{twii_change:.0f}" if twii_available else "資料不足",
+                "color": twii_color,
+            },
             {"label": f"台指期 ({txf_symbol})", "value": txf_price_text, "sub": txf_change_text, "color": txf_color},
             {"label": "費城半導體", "value": "--" if sox.get("price") is None else f"{sox.get('price'):,.1f}", "sub": "--" if sox.get("pct") is None else f"{sox.get('pct'):+.2f}%", "color": "#ef4444" if (sox.get("pct") or 0) >= 0 else "#22c55e"},
             {"label": "VIX", "value": "--" if vix.get("price") is None else f"{vix.get('price'):,.2f}", "sub": "--" if vix.get("pct") is None else f"{vix.get('pct'):+.2f}%", "color": "#22c55e" if vix.get("pct") is not None and vix.get("pct") <= 0 else "#ef4444"},
             {"label": "美元台幣", "value": "--" if twd.get("price") is None else f"{twd.get('price'):,.3f}", "sub": "--" if twd.get("pct") is None else ("台幣貶值" if twd.get("pct") > 0 else "台幣升值"), "color": "#facc15"},
-            {"label": "今日風險分數", "value": f"{risk_score}%", "sub": tmr_title, "color": bar_color},
+            {"label": "規則型風險指標", "value": f"{risk_score}/100" if risk_available else "--", "sub": "非漲跌機率" if risk_available else "資料不足", "color": bar_color},
         ])
         st.markdown(
             f"""
 <div style="background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:12px 14px; margin:10px 0 14px 0;">
   <div style="display:flex; justify-content:space-between; gap:14px; align-items:center; flex-wrap:wrap;">
     <div style="flex:1; min-width:260px;">
-      <span style="color:#FACC15; font-weight:900;">盤勢分析 ({last_dt_str})</span>
-      <span style="color:#E2E8F0; font-weight:900; margin-left:10px;">{today_title}</span>
-      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{today_desc}</span>
+      <span style="color:#FACC15; font-weight:900;">盤勢分析 ({escape_html(last_dt_str)})</span>
+      <span style="color:#E2E8F0; font-weight:900; margin-left:10px;">{escape_html(today_title)}</span>
+      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{escape_html(today_desc)}</span>
     </div>
     <div style="flex:1; min-width:260px;">
-      <span style="color:#60A5FA; font-weight:900;">次日開盤 ({next_dt_str})</span>
-      <span style="color:{bar_color}; font-weight:900; margin-left:10px;">{tmr_title}</span>
-      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{tmr_desc}</span>
+      <span style="color:#60A5FA; font-weight:900;">風險觀察 ({escape_html(next_dt_str)})</span>
+      <span style="color:{bar_color}; font-weight:900; margin-left:10px;">{escape_html(tmr_title)}</span>
+      <span style="color:#94A3B8; margin-left:8px; font-size:0.86rem;">{escape_html(tmr_desc)}</span>
     </div>
   </div>
   <div style="width:100%; height:8px; background-color:#1E293B; border-radius:6px; overflow:hidden; margin-top:10px;">
-    <div style="width:{risk_score}%; height:100%; background-color:{bar_color};"></div>
+    <div style="width:{risk_width}%; height:100%; background-color:{bar_color};"></div>
   </div>
 </div>
 """,
             unsafe_allow_html=True,
         )
-        if st.button("手動更新即時大盤報價", use_container_width=True):
-            st.cache_data.clear()
+        if st.button("手動更新即時大盤報價", width="stretch"):
+            get_twii_quote.clear()
+            get_txf_quote.clear()
+            get_global_macro_data.clear()
+            fetch_twse_index_history.clear()
             st.rerun()
-    except: st.error(f"大盤儀表板加載中...")
+    except Exception: st.error("大盤儀表板加載中...")
 
 def get_dynamic_theme(ticker, industry):
     ind = str(industry).strip() if pd.notna(industry) and industry != "無" else "一般產業"
@@ -978,23 +1194,62 @@ def get_dynamic_theme(ticker, industry):
         if kw in ind: return (ind, ic)
     return (ind, "🏷️")
 
-@st.cache_data(ttl=5, show_spinner=False) 
-def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fund=None, cached_doc=None, is_intraday=False):
-    if df is None or len(df) < 5: return None
+@st.cache_data(ttl=5, show_spinner=False)
+def analyze_today(
+    df,
+    ticker_number,
+    inst_data=None,
+    is_light_mode=False,
+    pre_fund=None,
+    cached_doc=None,
+    is_intraday=False,
+    historical_date="",
+):
+    if df is None or len(df) < 20:
+        return None
+    required_columns = {
+        "Open", "High", "Low", "Close", "Volume", "5MA", "20MA",
+        "60MA", "BB_UP", "BB_DN", "MACD_Hist", "K", "D", "J", "RSI", "ATR", "ADX",
+    }
+    if not required_columns.issubset(df.columns):
+        logging.error("%s 缺少必要技術欄位，本次不產生分析", ticker_number)
+        return None
     t, p = df.iloc[-1], df.iloc[-2]
+    if any(safe_num(t.get(column), None) is None for column in required_columns):
+        logging.error("%s 最新技術欄位含缺值，本次不產生分析", ticker_number)
+        return None
+    if any(optional_num(p.get(column)) is None for column in ("Open", "Close", "MACD_Hist")):
+        logging.error("%s 前一交易日必要欄位含缺值，本次不產生分析", ticker_number)
+        return None
     score_mode, score_mode_label, effective_intraday = resolve_score_mode(is_intraday)
+    historical_date = safe_iso_date(historical_date)
     
     if pre_fund:
-        fund = pre_fund
+        fund = dict(pre_fund)
+    elif historical_date:
+        fund = {
+            "EPS": "無", "EPS_Period": "missing", "PE": "無",
+            "Industry": "一般產業", "_status": "missing",
+            "MoM": None, "YoY": None, "_data_status": {"revenue": "missing"},
+        }
     else:
-        fund = get_fundamental_and_industry_data(ticker_number, round(t['Close'], 2))
-        bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker_number)
-        fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
+        fund, loaded_inst_data = get_analysis_support_data(ticker_number, round(t['Close'], 2))
+        if inst_data is None:
+            inst_data = loaded_inst_data
         
-    macro = get_global_macro_data()
-    fund['VIX'] = macro.get('^VIX', {}).get('price', 0)
+    if historical_date:
+        macro = {
+            "status": {"^SOX": "missing", "^VIX": "missing", "TWD=X": "missing", "TX=F": "missing"}
+        }
+        fund['VIX'] = None
+    else:
+        macro = get_global_macro_data()
+        fund['VIX'] = macro.get('^VIX', {}).get('price')
     
     twii_df = fetch_twse_index_history()
+    if historical_date and twii_df is not None:
+        cutoff = pd.Timestamp(historical_date)
+        twii_df = twii_df[pd.to_datetime(twii_df.index).tz_localize(None) <= cutoff]
     if twii_df is not None and len(twii_df) >= 60:
         ma20_twii = twii_df['Close'].rolling(20).mean()
         ma60_twii = twii_df['Close'].rolling(60).mean()
@@ -1008,7 +1263,8 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
     red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
     black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
 
-    whale_tag, whale_net_buy = "主力觀望", 0
+    whale_net_buy = None
+    whale_net_days = 0
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
     inst_days = len(inst_data) if inst_data else 0
     # 法人資料有幾天算幾天，避免少於 3 天時把籌碼歸零
@@ -1021,24 +1277,36 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:sample_days]])
         d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:sample_days]])
         whale_net_buy = f_net + t_net + d_net
-    elif cached_doc:
-        whale_net_buy = cached_doc.get('Whale_Net', 0)
+        whale_net_days = sample_days
+    elif historical_date and cached_doc:
+        whale_net_buy = cached_doc.get('Whale_Net')
+        whale_net_days = int(safe_num(cached_doc.get('Whale_Net_Days'), 0))
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
-    ohlc_avg = (t_open + t_high + t_low + t_close) / 4
-    price_anchor = safe_num(t.get('VWAP'), 0)
-    price_dev_source = "real_vwap" if price_anchor > 0 else "ohlc_avg"
-    if price_anchor <= 0:
-        price_anchor = ohlc_avg
-    price_dev = (t_close - price_anchor) / price_anchor * 100 if price_anchor > 0 else 0
+    price_anchor = safe_num(t.get('VWAP'), None)
+    has_real_vwap = price_anchor is not None and price_anchor > 0
+    price_dev_source = "real_vwap" if has_real_vwap else "missing"
+    price_dev = (t_close - price_anchor) / price_anchor * 100 if has_real_vwap else None
     if effective_intraday and len(df) >= 6:
         avg_vol_5 = df['Volume'].iloc[-6:-1].mean()
     else:
         avg_vol_5 = df['Volume'].tail(5).mean()
     effective_volume, est_vol_ratio, volume_confirmed = adjust_intraday_volume(t['Volume'], avg_vol_5, effective_intraday)
     
-    intraday_score = max(10, min(99, int(40 + (price_dev*10) + (20 if est_vol_ratio>1.5 else (10 if est_vol_ratio>1.0 else -10)))))
-    flow = "大單敲進" if est_vol_ratio > 1.5 and t_close > price_anchor else "內外盤拉扯"
+    intraday_score = None
+    if effective_intraday and has_real_vwap:
+        intraday_score = max(
+            10,
+            min(99, int(40 + (price_dev * 10) + (20 if est_vol_ratio > 1.5 else (10 if est_vol_ratio > 1.0 else -10)))),
+        )
+    if not effective_intraday:
+        flow = "盤後不適用"
+    elif not has_real_vwap:
+        flow = "VWAP 資料不足"
+    elif est_vol_ratio > 1.5 and t_close > price_anchor:
+        flow = "量價偏強（非大單判定）"
+    else:
+        flow = "量價未同步轉強"
 
     body_len = abs(t_close - t_open)
     lower_shadow = min(t_close, t_open) - t_low
@@ -1085,20 +1353,23 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         entry_pattern = "假突破風險型"
     else:
         entry_pattern = "一般觀察型"
+    source_status = fund.get("_data_status", {}) if isinstance(fund.get("_data_status", {}), dict) else {}
     data_quality, confidence = build_data_quality(
         price_status="realtime" if effective_intraday else "ok",
         volume_status="confirmed" if volume_confirmed else "estimated",
         institutional_days=inst_days,
-        revenue_status="ok" if "MoM" in fund and "YoY" in fund else "missing",
+        fundamental_status=fund.get("_status", "unknown"),
+        revenue_status=source_status.get("revenue", "unknown"),
         macro_status=macro.get("status", {}),
         txf_status=macro.get("status", {}).get("TX=F", "missing")
     )
 
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
+        "Data_Date": pd.Timestamp(df.index[-1]).strftime("%Y-%m-%d"),
         "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
         "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
-        "成交量": int(effective_volume), "原始成交量": int(t['Volume']), "5日均量": int(avg_vol_5),
+        "成交量": int(t['Volume']), "估算成交量": int(effective_volume), "原始成交量": int(t['Volume']), "5日均量": int(avg_vol_5),
         "5MA": round(t.get('5MA', t_close), 2), "10MA": round(t.get('10MA', t_close), 2), 
         "20MA": round(t.get('20MA', t_close), 2), "60MA": round(t.get('60MA', t_close), 2),
         "BB_UP": round(t.get('BB_UP', t_close), 2), "BB_DN": round(t.get('BB_DN', t_close), 2), 
@@ -1106,7 +1377,12 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "K": round(t.get('K', 50), 2), "D": round(t.get('D', 50), 2), "J值": round(t.get('J', 50), 2),
         "ADX": round(t.get('ADX', 0), 1), "RSI": round(t.get('RSI', 50), 1),
         "ROC_20": round((t_close - float(df['Close'].iloc[-20])) / float(df['Close'].iloc[-20]) * 100 if len(df)>=20 else 0, 2), 
-        "MoM": fund.get('MoM', 0), "YoY": fund.get('YoY', 0), 
+        "MoM": fund.get('MoM'), "YoY": fund.get('YoY'),
+        "Revenue_Status": source_status.get("revenue", "unknown"),
+        "Revenue_Period": fund.get("Revenue_Period", ""),
+        "Revenue_Source": fund.get("Revenue_Source", ""),
+        "Institutional_Status": fund.get("_institutional_status", "ok" if inst_days else "missing"),
+        "Institutional_Source": fund.get("Institutional_Source", ""),
         "ForeignNet10d": f_net_10d, "TrustNet10d": t_net_10d, "DealerNet10d": d_net_10d, 
         "紅吞": bool(red_mask.iloc[-1]), "黑吞": bool(black_mask.iloc[-1]),
         "訊號": t_close > t.get('20MA', t_close), 
@@ -1114,14 +1390,24 @@ def analyze_today(df, ticker_number, inst_data=None, is_light_mode=False, pre_fu
         "反彈遇壓": hit_pressure,
         "5MA已上彎": ma5_up_today, "明日5MA扣抵價": round(tomorrow_turn_price, 2),
         "5日線即將上彎": ma5_up_today,
-        "Whale_Net": whale_net_buy, "Theme_Name": theme_name, "Theme_Icon": theme_icon,
-        "Price_Dev": price_dev, "Price_Dev_Source": price_dev_source, "Ohlc_Avg_Dev": price_dev if price_dev_source == "ohlc_avg" else 0,
-        "VWAP_Dev": price_dev if price_dev_source == "real_vwap" else 0, "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed, "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
+        "Whale_Net": whale_net_buy, "Whale_Net_Days": whale_net_days,
+        "Theme_Name": theme_name, "Theme_Icon": theme_icon,
+        "Price_Dev": price_dev, "Price_Dev_Source": price_dev_source, "Ohlc_Avg_Dev": None,
+        "VWAP_Dev": price_dev if has_real_vwap else None,
+        "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed,
+        "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
         "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
         "Signal_Conflict": signal_conflict, "Conflict_Score": round(conflict_score, 2), "Entry_Pattern": entry_pattern,
-        "ATR": round(t.get('ATR', t_close*0.03), 2),
-        "ATR_Target": round(t_close + (t.get('ATR', t_close*0.03)*1.5), 1), "ATR_Stop": round(t_close - (t.get('ATR', t_close*0.03)*1.0), 1),
-        "RRR": 1.5, "Intraday_Signal": "強勢越過均價線" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed else ("穩守均價線" if t_close > price_anchor else "跌破均價線")
+        "ATR": round(float(t['ATR']), 2),
+        "ATR_Target": round(t_close + (float(t['ATR']) * 1.5), 1),
+        "ATR_Stop": round(t_close - float(t['ATR']), 1),
+        "RRR": 1.5,
+        "Intraday_Signal": (
+            "VWAP 資料不足" if not has_real_vwap
+            else "量價站上 VWAP" if t_close > price_anchor and est_vol_ratio > 1.3 and volume_confirmed
+            else "價格站上 VWAP" if t_close > price_anchor
+            else "價格低於 VWAP"
+        ),
     }
     
     sc, label, rs, feature = get_decision_score(
@@ -1168,29 +1454,40 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(30,41,59,0.5)"
     b_col = "#ddd" if is_light_mode else "#1e293b"
 
-    if sc >= 60: text_desc = "目前系統判定該股具備強大的波段上漲動能，各項技術與資金指標皆已表態，屬於勝率較高之強勢多頭格局，建議可設定好停損後伺機介入。"
-    elif sc >= 45: text_desc = "目前該股動能逐漸加溫，但可能有部分指標過熱或尚未完全突破，屬於偏多觀察階段，建議留意後續量能變化。"
-    else: text_desc = "目前該股動能偏弱或陷入盤整，風險大於預期報酬，建議維持空手觀望，等待更明確的型態出現。"
+    if sc <= 0:
+        text_desc = "必要資料不足，本次不產生量化判斷。"
+    elif sc >= 60:
+        text_desc = "目前可用的規則型技術條件偏強；分數不是勝率或報酬保證，仍需等待價格與量能確認。"
+    elif sc >= 45:
+        text_desc = "目前可用的規則型條件偏多，但仍有未確認項目；建議等待後續訊號。"
+    else:
+        text_desc = "目前可用的規則型條件不足，暫不形成主動進場判斷。"
     
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
-    quality = data.get("Data_Quality", {})
-    confidence = data.get("Confidence", 100)
-    missing_quality = [k for k, v in quality.items() if v not in ("ok", "realtime", "confirmed") and not str(v).endswith("日")]
-    quality_text = "資料完整" if not missing_quality else "需留意：" + "、".join(missing_quality)
+    quality = data.get("Data_Quality", {}) if isinstance(data.get("Data_Quality", {}), dict) else {}
+    confidence = safe_num(data.get("Confidence"), 0)
+    missing_quality = [
+        key for key, value in quality.items()
+        if value not in ("ok", "realtime", "confirmed")
+        and not str(value).endswith(("d", "日"))
+    ]
+    quality_text = "資料完整" if not missing_quality else "需留意：" + "、".join(str(key) for key in missing_quality)
     tech_html += f"<div style='display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; font-size:0.82rem;'>"
     tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>信心 {confidence}%</span>"
-    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>{quality_text}</span>"
+    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>{escape_html(quality_text)}</span>"
     tech_html += f"</div>"
     
     tech_html += f"<ul style='line-height: 1.6; margin-top: 10px; font-size: 0.95rem; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
     for r in data.get('Reasons', []):
+        r = str(r)
+        safe_reason = escape_html(r)
         if "✅" in r or "🔥" in r or "🚀" in r or "💰" in r or "📈" in r or "🏦" in r or "👑" in r or "🧨" in r: 
-            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#ef4444; font-weight:bold;'>{r}</span></li>"
+            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#ef4444; font-weight:bold;'>{safe_reason}</span></li>"
         elif "⚠️" in r or "🚨" in r or "🩸" in r or "📦" in r: 
-            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#22c55e;'><b>{r}</b></span></li>"
+            tech_html += f"<li style='margin-bottom: 5px;'><span style='color:#22c55e;'><b>{safe_reason}</b></span></li>"
         else:
-            tech_html += f"<li style='margin-bottom: 5px;'>{r}</li>"
+            tech_html += f"<li style='margin-bottom: 5px;'>{safe_reason}</li>"
     tech_html += f"</ul>"
     
     tech_html += f"<div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #60a5fa; font-size: 0.95rem; color: {t_text_c}; margin-top: 15px;'><b>【總結】</b>{text_desc}</div>"
@@ -1199,19 +1496,28 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     chip_res_text = "中立觀望"
     tables_html = ""
     th_color = "#ccc" if not is_light_mode else "#555"
-    def get_c(val): return "#ef4444" if val > 0 else ("#22c55e" if val < 0 else t_text_c)
+    def get_c(val): return "#ef4444" if safe_num(val) > 0 else ("#22c55e" if safe_num(val) < 0 else t_text_c)
 
-    f_net = data.get('ForeignNet10d', 0)
-    t_net = data.get('TrustNet10d', 0)
-    d_net = data.get('DealerNet10d', 0)
+    f_net = int(safe_num(data.get('ForeignNet10d', 0)))
+    t_net = int(safe_num(data.get('TrustNet10d', 0)))
+    d_net = int(safe_num(data.get('DealerNet10d', 0)))
+    institutional_status = str(data.get("Institutional_Status") or f_data.get("_institutional_status") or "unknown")
+    institutional_source = str(
+        data.get("Institutional_Source")
+        or f_data.get("Institutional_Source")
+        or (inst_data[0].get("_source", "") if inst_data and isinstance(inst_data[0], dict) else "")
+    )
     
     if inst_data:
         sample_days = min(3, len(inst_data))
-        f_net_today = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:sample_days]])
-        t_net_today = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:sample_days]])
-        if f_net_today > 0 and t_net_today > 0: chip_res_text = "🔥 外資跟投信都在買，籌碼正集中到大戶法人手上，走勢穩定。"
-        elif f_net_today < 0 and t_net_today < 0: chip_res_text = "⚠️ 外資跟投信同步倒貨，籌碼有鬆動流向散戶的疑慮。"
-        else: chip_res_text = "⚖️ 法人多空步調不一，一方買一方賣，籌碼處於換手震盪階段。"
+        f_net_today = sum(int(safe_num(x.get('外資(張)', 0))) for x in inst_data[:sample_days] if isinstance(x, dict))
+        t_net_today = sum(int(safe_num(x.get('投信(張)', 0))) for x in inst_data[:sample_days] if isinstance(x, dict))
+        if f_net_today > 0 and t_net_today > 0:
+            chip_res_text = f"近 {sample_days} 個可用交易日，外資與投信合計皆為買超；不推論後續走勢。"
+        elif f_net_today < 0 and t_net_today < 0:
+            chip_res_text = f"近 {sample_days} 個可用交易日，外資與投信合計皆為賣超；不推論籌碼流向對象。"
+        else:
+            chip_res_text = f"近 {sample_days} 個可用交易日，外資與投信方向不一致。"
 
         tables_html += f"<div style='display: flex; gap: 15px; flex-wrap: wrap; margin-top: 15px; width: 100%;'>"
         tables_html += f"<div style='flex: 1; min-width: 260px; border: 1px solid {b_col}; border-radius: 6px; padding: 15px; background-color: {sum_bg};'>"
@@ -1226,10 +1532,25 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         tables_html += f"<tr style='background-color: {sum_bg}; color: {th_color};'><th style='border: 1px solid {b_col}; padding: 8px 4px;'>日期</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>外資</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>投信</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>自營商</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>合計</th></tr>"
         
         for row in inst_data[:5]:
-            tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{row['日期']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['外資(張)'])}; font-weight: 500;'>{row['外資(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['投信(張)'])}; font-weight: 500;'>{row['投信(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['自營商(張)'])}; font-weight: 500;'>{row['自營商(張)']}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(row['單日合計(張)'])}; font-weight: 500;'>{row['單日合計(張)']}</td></tr>"
-        tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: FinMind API</div></div></div>"
+            foreign = int(safe_num(row.get('外資(張)', 0)))
+            trust = int(safe_num(row.get('投信(張)', 0)))
+            dealer = int(safe_num(row.get('自營商(張)', 0)))
+            total = int(safe_num(row.get('單日合計(張)', 0)))
+            tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{escape_html(row.get('日期', ''))}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(foreign)}; font-weight: 500;'>{foreign}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(trust)}; font-weight: 500;'>{trust}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(dealer)}; font-weight: 500;'>{dealer}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(total)}; font-weight: 500;'>{total}</td></tr>"
+        source_label = escape_html(institutional_source or "來源未標示")
+        tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: {source_label}</div></div></div>"
     else:
-        tables_html = f"<div style='color: {t_text_c}; font-size: 0.9rem; padding: 10px; border: 1px dashed {b_col}; border-radius: 6px;'>目前暫無籌碼資料，籌碼信心偏低，請以技術與基本面交叉確認。</div>"
+        status_messages = {
+            "missing": "資料來源未設定且官方備援未取得資料",
+            "empty": "官方來源查無此標的近期法人資料",
+            "error": "法人資料來源暫時連線或解析失敗",
+            "partial": "法人資料僅取得部分日期",
+        }
+        missing_reason = status_messages.get(institutional_status, "法人資料狀態尚未確認")
+        tables_html = (
+            f"<div style='color: {t_text_c}; font-size: 0.9rem; padding: 10px; border: 1px dashed {b_col}; border-radius: 6px;'>"
+            f"目前暫無籌碼資料（{escape_html(missing_reason)}）；不以 0 張代替。</div>"
+        )
 
     chip_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     chip_html += f"<h4 style='color: #facc15; margin-top: 0; font-size: 1.2rem;'>🏦 籌碼面分析</h4>{tables_html}"
@@ -1238,15 +1559,59 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     fund_bullets = []
     eps = f_data.get('EPS', '無')
     pe = f_data.get('PE', '無')
-    ind = f_data.get('Industry', '一般產業')
+    ind = str(f_data.get('Industry', '一般產業'))
     
-    yahoo_news_url = f"https://tw.stock.yahoo.com/quote/{data['代號']}/news"
-    fund_bullets.append(f"⚪ <b>產業趨勢/題材</b>：隸屬【{ind}】板塊，受惠於市場趨勢發展。 <a href='{yahoo_news_url}' target='_blank' style='color:#60a5fa; text-decoration:none;'>[🔗Yahoo新聞解析]</a>")
-    
-    mom_c = "#ef4444" if data.get('MoM', 0) > 0 else ("#22c55e" if data.get('MoM', 0) < 0 else t_text_c)
-    yoy_c = "#ef4444" if data.get('YoY', 0) > 0 else ("#22c55e" if data.get('YoY', 0) < 0 else t_text_c)
-    fund_bullets.append(f"⚪ <b>最新月營收動能</b>：月增 (MoM) <span style='color:{mom_c}; font-weight:bold;'>{data.get('MoM', 0):.2f}%</span>，年增 (YoY) <span style='color:{yoy_c}; font-weight:bold;'>{data.get('YoY', 0):.2f}%</span>。")
-    fund_bullets.append(f"⚪ <b>當季EPS</b>：<b>{eps}</b> 元。 | <b>本益比 (PE)</b>：<b>{pe}</b> 倍。")
+    ticker_code = normalize_ticker(data.get('代號', ''))
+    yahoo_news_url = f"https://tw.stock.yahoo.com/quote/{ticker_code}/news"
+    if ind and ind not in ("一般產業", "無"):
+        industry_text = f"資料源分類為【{escape_html(ind)}】；分類本身不代表受惠或成長。"
+    else:
+        industry_text = "產業分類資料不足。"
+    fund_bullets.append(
+        f"⚪ <b>產業分類</b>：{industry_text} "
+        f"<a href='{yahoo_news_url}' target='_blank' rel='noopener noreferrer' "
+        "style='color:#60a5fa; text-decoration:none;'>[查看相關新聞]</a>"
+    )
+
+    mom_raw = data.get('MoM')
+    yoy_raw = data.get('YoY')
+    mom_value = safe_num(mom_raw, None)
+    yoy_value = safe_num(yoy_raw, None)
+    revenue_period = str(data.get("Revenue_Period") or f_data.get("Revenue_Period") or "")
+    revenue_source = str(data.get("Revenue_Source") or f_data.get("Revenue_Source") or "")
+    revenue_status = str(data.get("Revenue_Status") or f_data.get("_data_status", {}).get("revenue", "unknown"))
+    # Legacy snapshots did not retain period/source provenance; do not present their old zeros as verified growth.
+    if not revenue_period and not revenue_source:
+        mom_value = yoy_value = None
+        if revenue_status == "ok":
+            revenue_status = "unverified"
+    revenue_meta = "、".join(part for part in (revenue_period, revenue_source) if part)
+    if mom_value is None and yoy_value is None:
+        status_messages = {
+            "missing": "來源未設定",
+            "empty": "官方來源查無此標的營收",
+            "error": "來源暫時連線或解析失敗",
+            "partial": "比較基期不足",
+            "unverified": "舊資料缺少月份與來源，已停用",
+        }
+        reason = status_messages.get(revenue_status, "資料不足")
+        fund_bullets.append(f"⚪ <b>最新月營收動能</b>：{escape_html(reason)}，不以 0% 代替。")
+    else:
+        mom_text = "--" if mom_value is None else f"{mom_value:.2f}%"
+        yoy_text = "--" if yoy_value is None else f"{yoy_value:.2f}%"
+        mom_c = "#ef4444" if mom_value is not None and mom_value > 0 else ("#22c55e" if mom_value is not None and mom_value < 0 else t_text_c)
+        yoy_c = "#ef4444" if yoy_value is not None and yoy_value > 0 else ("#22c55e" if yoy_value is not None and yoy_value < 0 else t_text_c)
+        fund_bullets.append(
+            f"⚪ <b>最新月營收動能</b>：MoM <span style='color:{mom_c}; font-weight:bold;'>{mom_text}</span>，"
+            f"YoY <span style='color:{yoy_c}; font-weight:bold;'>{yoy_text}</span>。"
+            f" <span style='color:#94a3b8; font-size:0.82rem;'>({escape_html(revenue_meta)})</span>"
+        )
+    eps_period = f_data.get("EPS_Period", "missing")
+    eps_label = "近四季 EPS（TTM）" if eps_period == "ttm" else "EPS（資料源口徑）"
+    fund_bullets.append(
+        f"⚪ <b>{eps_label}</b>：<b>{escape_html(eps)}</b> 元。 | "
+        f"<b>依該 EPS 計算的 PE</b>：<b>{escape_html(pe)}</b> 倍。"
+    )
     
     try: 
         eps_f, float_pe = float(eps), float(pe) if pe != "無" else 999
@@ -1255,15 +1620,18 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
         elif any(k in ind for k in ["金融", "銀行", "保險"]): pe_low, pe_high = 8, 16
         elif any(k in ind for k in ["航運", "鋼鐵", "營建"]): pe_low, pe_high = 6, 14
         valuation = "偏低" if float_pe < pe_low else ("合理" if float_pe <= pe_high else "偏高")
-        growth = "轉強" if data.get('YoY', 0) > 10 and data.get('MoM', 0) > 0 else ("持平" if data.get('YoY', 0) >= 0 else "衰退")
+        if mom_value is None or yoy_value is None:
+            growth = "資料不足"
+        else:
+            growth = "轉強" if yoy_value > 10 and mom_value > 0 else ("非負成長" if yoy_value >= 0 else "年減")
         profit = "穩定" if eps_f > 0 else "虧損/不足"
         if eps_f <= 0:
-            fund_res = f"🩸 估值：資料不足｜成長：{growth}｜獲利：{profit}，需嚴防營運風險。"
+            fund_res = f"⚪ 估值：資料不足｜成長：{growth}｜獲利：{profit}。"
         elif valuation == "偏高":
-            fund_res = f"⚠️ 估值：{valuation}（產業參考 {pe_low}-{pe_high} 倍）｜成長：{growth}｜獲利：{profit}，需留意追高風險。"
+            fund_res = f"⚠️ 規則型估值參考：{valuation}（程式區間 {pe_low}-{pe_high} 倍，非市場共識）｜成長：{growth}｜獲利：{profit}。"
         else:
-            fund_res = f"🔥 估值：{valuation}（產業參考 {pe_low}-{pe_high} 倍）｜成長：{growth}｜獲利：{profit}，基本面支撐較完整。"
-    except: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
+            fund_res = f"規則型估值參考：{valuation}（程式區間 {pe_low}-{pe_high} 倍，非市場共識）｜成長：{growth}｜獲利：{profit}。"
+    except Exception: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
 
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     fund_html += f"<h4 style='color: #c084fc; margin-top: 0; font-size: 1.2rem;'>📑 基本面分析</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
@@ -1287,6 +1655,25 @@ def generate_cards_html(df_disp, is_intraday=False, no_score=False):
         target_date=st.session_state.get("scan_date", ""),
     )
 
+
+if st.session_state.pop("_clear_data_caches_requested", False):
+    for cached_function in [
+        get_all_tw_stock_names_v3,
+        fetch_twse_index_history,
+        _get_ohlcv_base,
+        get_stock_data,
+        _get_company_profile,
+        get_finmind_chip_and_revenue_payload,
+        get_twii_quote,
+        get_txf_quote,
+        get_institutional_trading,
+        get_global_macro_data,
+        analyze_today,
+    ]:
+        cached_function.clear()
+    st.session_state["_cache_clear_notice"] = True
+    st.rerun()
+
 # ==========================================
 # 🚀 頁面路由控制中心
 # ==========================================
@@ -1296,8 +1683,8 @@ if st.session_state.page == "home":
     render_index_board()
     st.markdown("<br>", unsafe_allow_html=True)
     
-    with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."): 
-        hydrate_scan_results(force=True)
+    with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."):
+        hydrate_scan_results()
     if not st.session_state.get("scan_results"):
         st.session_state.scan_results = [{"代號": t, "名稱": get_stock_name(t), "Score": 0, "產業": "一般產業"} for t in get_radar_targets([])]
         st.session_state.scan_results_is_local = True
@@ -1309,7 +1696,18 @@ if st.session_state.page == "home":
         scan_date = st.session_state.get("scan_date", "")
         source_badge = "🧭 雲端名單空白，改用本機備援池即時計算" if st.session_state.get("scan_results_is_local") else "☁️ 雲端名單掃描日期"
         scan_date_str = f"{scan_date}" if scan_date else fetch_time
-        st.markdown(f"<div style='font-size:0.95rem; color:#facc15; margin-bottom:15px; font-weight:bold;'>{source_badge}：{scan_date_str}</div>", unsafe_allow_html=True)
+        scan_limit = st.session_state.get("scan_limit")
+        universe_size = st.session_state.get("universe_size")
+        if safe_num(universe_size) > 0:
+            scope_text = f"｜實際掃描 {int(universe_size)} 檔"
+        elif safe_num(scan_limit) > 0:
+            scope_text = f"｜設定掃描 {int(scan_limit)} 檔"
+        else:
+            scope_text = ""
+        st.markdown(f"<div style='font-size:0.95rem; color:#facc15; margin-bottom:15px; font-weight:bold;'>{escape_html(source_badge)}：{escape_html(scan_date_str)}{escape_html(scope_text)}</div>", unsafe_allow_html=True)
+        if st.session_state.get("scan_results_stale"):
+            expected = st.session_state.get("expected_scan_date", "")
+            st.warning(f"雲端掃描資料尚未更新至最新交易日 {expected}；前台不會啟動全市場掃描，請等待背景排程完成。")
         if st.session_state.get("scan_results_is_local") and st.session_state.get("cloud_last_error"):
             st.caption(f"Firebase 狀態：{st.session_state.cloud_last_error}")
 
@@ -1347,7 +1745,8 @@ if st.session_state.page == "home":
                     df = get_stock_data(ticker)
                     if df is not None:
                         base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
-                        analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS)
+                        cache_context = "realtime" if is_intraday else "latest"
+                        analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS, context=cache_context)
                         cached_data = analysis_cache.get("data") if analysis_cache else None
                         if is_intraday and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
                             cached_data = dict(cached_data)
@@ -1358,17 +1757,21 @@ if st.session_state.page == "home":
                             fund = analysis_cache.get("fund")
                             inst_data = analysis_cache.get("inst_data", [])
                         else:
-                            inst_data = get_institutional_trading(ticker)
-                            fund = get_fundamental_and_industry_data(ticker, df['Close'].iloc[-1])
-                            bp_ratio, mom, yoy = get_finmind_chip_and_revenue(ticker)
-                            fund['BigPlayer'], fund['MoM'], fund['YoY'] = bp_ratio, mom, yoy
+                            fund, inst_data = get_analysis_support_data(ticker, df['Close'].iloc[-1])
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
                             bt_preview = calculate_historical_performance(df, 1.5, 1.0)
                             res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
                             res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
+                            res["Validation_WinRate"] = bt_preview.get("validation_win_rate", 0.0)
+                            res["Validation_Samples"] = bt_preview.get("validation_samples", 0)
+                            res["Backtest_Scope"] = bt_preview.get("backtest_scope", BACKTEST_SCOPE)
                             res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
-                            save_analysis_cache(ticker, {"data": res, "fund": fund, "inst_data": inst_data})
+                            save_analysis_cache(
+                                ticker,
+                                {"data": res, "fund": fund, "inst_data": inst_data},
+                                context=cache_context,
+                            )
                             return res
                     return None
                     
@@ -1398,7 +1801,7 @@ if st.session_state.page == "home":
             selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         with col_f2:
             st.caption("排序")
-            sort_mode = st.radio("排序：", ["AI分數", "歷史勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
+            sort_mode = st.radio("排序：", ["量化分數", "技術面勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
         industry_count = len(df_results)
@@ -1410,10 +1813,19 @@ if st.session_state.page == "home":
             is_fin_mask = df_results.apply(lambda r: is_financial_stock(r.get('代號'), r.get('產業')), axis=1)
             df_results = df_results[~is_fin_mask]
 
+        for col in ("Score", "漲跌幅", "WinRate", "Confidence"):
+            if col not in df_results.columns:
+                df_results[col] = float("nan")
+            else:
+                df_results[col] = pd.to_numeric(df_results[col], errors="coerce")
+
         if not df_results.empty: 
             if is_adv_pattern_mode:
                 if 'Advanced_Pattern' in df_results.columns:
-                    df_results = df_results[df_results['Advanced_Pattern'].astype(str).str.strip() != ""]
+                    if 'Advanced_Pattern_Signal' in df_results.columns:
+                        df_results = df_results[df_results['Advanced_Pattern_Signal'].astype(str) == "Buy"]
+                    else:
+                        df_results = df_results[df_results['Advanced_Pattern'].astype(str).str.startswith("🟢")]
                 else:
                     df_results = df_results.iloc[0:0]
                 score_count = len(df_results)
@@ -1427,13 +1839,9 @@ if st.session_state.page == "home":
                 df_results = df_results[df_results['Score'] >= 60]
                 score_count = len(df_results)
                 
-            for col, default in {"Score": 0, "漲跌幅": 0, "WinRate": 0, "Confidence": 100}.items():
-                if col not in df_results.columns:
-                    df_results[col] = default
-                df_results[col] = pd.to_numeric(df_results[col], errors="coerce").fillna(default)
             sort_map = {
-                "AI分數": ["Score", "漲跌幅"],
-                "歷史勝率": ["WinRate", "Score", "漲跌幅"],
+                "量化分數": ["Score", "漲跌幅"],
+                "技術面勝率": ["WinRate", "Score", "漲跌幅"],
                 "資料信心": ["Confidence", "Score", "漲跌幅"],
             }
             df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(10)
@@ -1453,7 +1861,7 @@ if st.session_state.page == "home":
                     ]
                     render_home_side_panel("市場總覽", market_rows)
                 with mid_dash:
-                    title_label = "形態選股清單 (不計分)" if is_pattern_mode else "AI 雷達清單"
+                    title_label = "形態選股清單 (不計分)" if is_pattern_mode else "量化雷達清單"
                     st.markdown(f"<div class='section-title'>{title_label}</div>", unsafe_allow_html=True)
                     st.markdown(generate_cards_html(df_disp, is_intraday, no_score=is_pattern_mode), unsafe_allow_html=True)
                 with right_dash:
@@ -1464,14 +1872,16 @@ if st.session_state.page == "home":
                             code = normalize_ticker(row.get("代號", ""))
                             name = get_stock_name(code)
                             display_title = f"{code} {name}" if code != name else code
-                            fav_rows.append({"title": display_title, "value": f"{safe_num(row.get('Score'), 0):.0f}分", "sub": row.get("Feature", "一般狀態"), "color": "#FACC15"})
+                            fav_score = optional_num(row.get("Score"))
+                            fav_rows.append({"title": display_title, "value": f"{fav_score:.0f}分" if fav_score is not None else "--", "sub": row.get("Feature") or "資料不足", "color": "#FACC15"})
                     
                     mover_rows = []
                     for _, r in df_disp.sort_values(by="漲跌幅", ascending=False).head(3).iterrows():
                         code = normalize_ticker(r.get('代號', ''))
                         name = get_stock_name(code)
                         display_title = f"{code} {name}" if code != name else code
-                        mover_rows.append({"title": display_title, "value": f"{safe_num(r.get('漲跌幅'), 0):+.1f}%", "sub": r.get("Feature", "一般狀態"), "color": "#EF4444" if safe_num(r.get('漲跌幅'), 0) >= 0 else "#22C55E"})
+                        mover_change = optional_num(r.get("漲跌幅"))
+                        mover_rows.append({"title": display_title, "value": f"{mover_change:+.1f}%" if mover_change is not None else "--", "sub": r.get("Feature") or "資料不足", "color": "#EF4444" if mover_change is not None and mover_change >= 0 else "#22C55E"})
 
                     order_rows = []
                     for o in st.session_state.get("simulated_orders", [])[:3]:
@@ -1490,21 +1900,21 @@ if st.session_state.page == "home":
                                     if bp > 0:
                                         pl_pct = (cp - bp) / bp * 100
                                         pl_str = f" {'▲' if pl_pct>=0 else '▼'}{abs(pl_pct):.1f}%"
-                        except: pass
+                        except Exception: pass
                         try:
                             buy_time = o.get('time', '')
                             if buy_time:
                                 buy_dt = datetime.fromisoformat(buy_time[:10]).replace(tzinfo=None)
                                 hold_days = (datetime.now() - buy_dt).days
                                 days_str = f"持倉{hold_days}天"
-                        except: pass
+                        except Exception: pass
                         try:
-                            sp = safe_num(o.get('stop_price', 0))
-                            cp_val = safe_num(o.get('curr_price', safe_num(o.get('buy_price', 0))))
-                            if sp > 0 and cp_val > 0:
+                            sp = optional_num(o.get('stop_price'))
+                            cp_val = optional_num(o.get('curr_price'))
+                            if sp is not None and cp_val is not None and sp > 0 and cp_val > 0:
                                 stop_dist = (cp_val - sp) / cp_val * 100
                                 stop_dist_str = f" 離停{stop_dist:.1f}%"
-                        except: pass
+                        except Exception: pass
                         sub_text = " | ".join(filter(None, [days_str, stop_dist_str, f"目標 {o.get('target_price', '--')}"]))
                         stock_name = o.get('name', '') or get_stock_name(ticker)
                         order_rows.append({"title": f"{ticker} {stock_name}{curr_price_str}{pl_str}", "value": f"停損 {o.get('stop_price', '--')}", "sub": sub_text, "color": "#60A5FA"})
@@ -1527,40 +1937,56 @@ elif st.session_state.page == "simulated_orders":
     
     col_home, col_clear = st.columns([1, 1])
     with col_home:
-        if st.button("回雷達總機", use_container_width=True):
+        if st.button("回雷達總機", width="stretch"):
             st.query_params.clear()
             st.session_state.page = "home"
             st.rerun()
     with col_clear:
-        if st.button("清空所有紀錄", use_container_width=True):
+        if st.button("清空所有紀錄", width="stretch"):
             st.session_state.simulated_orders = []
-            save_cloud_data("user_data", "simulated_orders", [])
-            st.success("已清除所有紀錄！"); st.rerun()
+            saved = save_cloud_data("user_data", USER_ORDERS_DOC, [])
+            if saved:
+                st.success("已清除所有紀錄！")
+            else:
+                st.warning("紀錄已從本次工作階段清除，但雲端寫入失敗。")
             
     orders = st.session_state.get('simulated_orders', [])
     if not orders: st.info("目前沒有模擬下單紀錄，去解析頁面建立你的第一筆策略單吧！")
     else:
         if "delete_order_id" in st.session_state:
             st.session_state.simulated_orders = [o for o in orders if o.get('id') != st.session_state.delete_order_id]
-            save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
+            save_cloud_data("user_data", USER_ORDERS_DOC, st.session_state.simulated_orders)
             del st.session_state["delete_order_id"]; st.rerun()
             
         total_cost, total_value, wins = 0, 0, 0
+        priced_orders, missing_quotes = 0, 0
         order_metrics = []
         
         for order in orders:
             df_temp = get_stock_data(order['ticker'])
-            curr_price = float(df_temp['Close'].iloc[-1]) if df_temp is not None else order['buy_price']
-            
-            if 'highest_price' not in order: order['highest_price'] = order['buy_price']
-            if curr_price > order['highest_price']: 
+            curr_price = optional_num(df_temp['Close'].iloc[-1]) if df_temp is not None and not df_temp.empty else None
+            buy_price = optional_num(order.get('buy_price'))
+            if curr_price is None or buy_price is None or buy_price <= 0:
+                missing_quotes += 1
+                order['curr_price'] = None
+                order['pl_pct'] = None
+                order['quote_status'] = "missing"
+                continue
+
+            priced_orders += 1
+            order['quote_status'] = "ok"
+            highest_price = optional_num(order.get('highest_price'))
+            if highest_price is None:
+                highest_price = buy_price
+                order['highest_price'] = buy_price
+            if curr_price > highest_price:
                 order['highest_price'] = curr_price
-                save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
-                
-            pl_val = curr_price - order['buy_price']
-            pl_pct = (pl_val / order['buy_price']) * 100
-            
-            total_cost += order['buy_price'] * 1000 
+                save_cloud_data("user_data", USER_ORDERS_DOC, st.session_state.simulated_orders)
+
+            pl_val = curr_price - buy_price
+            pl_pct = (pl_val / buy_price) * 100
+
+            total_cost += buy_price * 1000
             total_value += curr_price * 1000
             if pl_val > 0: wins += 1
             
@@ -1569,49 +1995,67 @@ elif st.session_state.page == "simulated_orders":
             order['pl_pct'] = pl_pct
 
         total_pl = total_value - total_cost
-        total_pl_pct = (total_pl / total_cost) * 100 if total_cost > 0 else 0
-        win_rate = (wins / len(orders)) * 100 if len(orders) > 0 else 0
+        total_pl_pct = (total_pl / total_cost) * 100 if total_cost > 0 else None
+        win_rate = (wins / priced_orders) * 100 if priced_orders > 0 else None
+        total_pl_text = f"{'+' if total_pl > 0 else ''}{total_pl:,.0f} 元" if priced_orders else "--"
+        total_pl_pct_text = f"({'+' if total_pl_pct and total_pl_pct > 0 else ''}{total_pl_pct:.2f}%)" if total_pl_pct is not None else "報價不足"
+        win_rate_text = f"{win_rate:.1f}%" if win_rate is not None else "--"
+        total_value_text = f"{total_value:,.0f} 元" if priced_orders else "--"
         
         st.markdown(f"""
         <div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 25px;'>
             <div style='background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #1e293b;'>
                 <div style='color: #94a3b8; font-size: 0.9rem; margin-bottom: 5px;'>投資組合總損益</div>
-                <div style='color: {'#ef4444' if total_pl>=0 else '#22c55e'}; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{'+' if total_pl>0 else ''}{total_pl:,.0f} 元</div>
-                <div style='color: {'#ef4444' if total_pl>=0 else '#22c55e'}; font-size: 0.9rem;'>({'+' if total_pl_pct>0 else ''}{total_pl_pct:.2f}%)</div>
+                <div style='color: {'#ef4444' if total_pl>=0 else '#22c55e'}; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{total_pl_text}</div>
+                <div style='color: {'#ef4444' if total_pl>=0 else '#22c55e'}; font-size: 0.9rem;'>{total_pl_pct_text}</div>
             </div>
             <div style='background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #1e293b;'>
                 <div style='color: #94a3b8; font-size: 0.9rem; margin-bottom: 5px;'>當前整體勝率</div>
-                <div style='color: #facc15; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{win_rate:.1f}%</div>
-                <div style='color: #64748b; font-size: 0.9rem;'>(賺: {wins} / 總: {len(orders)})</div>
+                <div style='color: #facc15; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{win_rate_text}</div>
+                <div style='color: #64748b; font-size: 0.9rem;'>(賺: {wins} / 已報價: {priced_orders})</div>
             </div>
             <div style='background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #1e293b;'>
                 <div style='color: #94a3b8; font-size: 0.9rem; margin-bottom: 5px;'>總投入市值</div>
-                <div style='color: #e2e8f0; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{total_value:,.0f} 元</div>
+                <div style='color: #e2e8f0; font-size: 1.8rem; font-weight: bold; font-family: monospace;'>{total_value_text}</div>
                 <div style='color: #64748b; font-size: 0.9rem;'>(假設每檔 1 張)</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
+        if missing_quotes:
+            st.warning(f"目前有 {missing_quotes} 筆模擬單無法取得行情，未納入市值、損益及勝率計算。")
         
         if order_metrics:
             df_m = pd.DataFrame(order_metrics)
             fig = go.Figure(data=[go.Bar(x=df_m['name'], y=df_m['pct'], marker_color=df_m['color'])])
             fig.update_layout(title="個股當前報酬率分佈 (%)", template="plotly_dark", height=300, margin=dict(l=10, r=10, t=40, b=10), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
         st.markdown("<h4 style='color: #818cf8; border-bottom: 1px solid #1e293b; padding-bottom: 10px; margin-top: 20px;'>📝 策略明細清單</h4>", unsafe_allow_html=True)
         
         for idx, order in enumerate(orders):
-            pl_col = "#ef4444" if order['pl_pct'] >= 0 else "#22c55e"
+            order_ticker = normalize_ticker(order.get('ticker', ''))
+            order_name = escape_html(order.get('name', order_ticker))
+            order_time = escape_html(order.get('time', ''))
+            order_pl = optional_num(order.get('pl_pct'))
+            order_price = optional_num(order.get('curr_price'))
+            buy_price = optional_num(order.get('buy_price'))
+            highest_price = optional_num(order.get('highest_price'))
+            order_rrr = safe_num(order.get('rrr'), 1.5)
+            pl_col = "#94a3b8" if order_pl is None else ("#ef4444" if order_pl >= 0 else "#22c55e")
+            order_price_text = "--" if order_price is None else f"{order_price:.1f}"
+            order_pl_text = "報價不足" if order_pl is None else f"{'+' if order_pl > 0 else ''}{order_pl:.2f}%"
+            buy_price_text = "--" if buy_price is None else f"{buy_price:.1f}"
+            highest_price_text = "--" if highest_price is None else f"{highest_price:.1f}"
             with st.container(border=False):
                 html = f"<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 14px;'><div style='display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;'>"
-                html += f"<a href='/?stock={order['ticker']}' target='_self' style='text-decoration:none;'><div style='display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;'><span style='color: #f8fafc; font-weight: bold; font-size: 1.25rem;'>{order['name']}</span><span style='color: #64748b; font-family: monospace; font-size: 0.9rem;'>{order['ticker']}</span></div><div style='font-size: 0.75rem; color: #64748b;'>下單時間: {order['time']}</div></a>"
-                html += f"<div style='text-align: right;'><div style='font-size: 0.8rem; color: #94a3b8; margin-bottom: 2px;'>最新現價 / 報酬率</div><div style='font-size: 1.3rem; font-weight: bold; font-family: monospace; color: {pl_col}; line-height: 1.1;'>{order['curr_price']:.1f}</div><div style='font-size: 0.85rem; font-weight: bold; font-family: monospace; color: {pl_col}; margin-top: 4px;'>{'+' if order['pl_pct']>0 else ''}{order['pl_pct']:.2f}%</div></div></div>"
+                html += f"<a href='{build_stock_url(order_ticker)}' target='_self' style='text-decoration:none;'><div style='display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;'><span style='color: #f8fafc; font-weight: bold; font-size: 1.25rem;'>{order_name}</span><span style='color: #64748b; font-family: monospace; font-size: 0.9rem;'>{escape_html(order_ticker)}</span></div><div style='font-size: 0.75rem; color: #64748b;'>下單時間: {order_time}</div></a>"
+                html += f"<div style='text-align: right;'><div style='font-size: 0.8rem; color: #94a3b8; margin-bottom: 2px;'>最新現價 / 報酬率</div><div style='font-size: 1.3rem; font-weight: bold; font-family: monospace; color: {pl_col}; line-height: 1.1;'>{order_price_text}</div><div style='font-size: 0.85rem; font-weight: bold; font-family: monospace; color: {pl_col}; margin-top: 4px;'>{order_pl_text}</div></div></div>"
                 html += f"<div style='display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background-color: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;'>"
-                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>買進成本</span><span style='font-size: 1rem; font-weight: bold; color: #e2e8f0; font-family: monospace;'>{order['buy_price']:.1f}</span></div>"
-                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>創高紀錄</span><span style='font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;'>{order['highest_price']:.1f}</span></div>"
-                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>風報比參數</span><span style='font-size: 1rem; font-weight: bold; color: #34d399; font-family: monospace;'>1 : {order.get('rrr', 1.5)}</span></div></div>"
+                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>買進成本</span><span style='font-size: 1rem; font-weight: bold; color: #e2e8f0; font-family: monospace;'>{buy_price_text}</span></div>"
+                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>創高紀錄</span><span style='font-size: 1rem; font-weight: bold; color: #facc15; font-family: monospace;'>{highest_price_text}</span></div>"
+                html += f"<div style='display: flex; flex-direction: column; align-items: center;'><span style='font-size: 0.7rem; color: #64748b; margin-bottom: 4px;'>風報比參數</span><span style='font-size: 1rem; font-weight: bold; color: #34d399; font-family: monospace;'>1 : {order_rrr}</span></div></div>"
                 st.markdown(html, unsafe_allow_html=True)
-                if st.button(f"刪除此單 ({order['name']})", key=f"btn_del_{order['id']}_{idx}"):
+                if st.button(f"刪除此單 ({order.get('name', order_ticker)})", key=f"btn_del_{order.get('id', idx)}_{idx}"):
                     st.session_state.delete_order_id = order['id']; st.rerun()
 
 # ==========================================
@@ -1621,59 +2065,146 @@ elif st.session_state.page == "simulated_orders":
 # ==========================================
 elif st.session_state.page == "top10_tracking":
     st.markdown("<h2 style='text-align: center; color: #f59e0b; margin-bottom: 20px;'>🏆 Top 10 自動追蹤績效</h2>", unsafe_allow_html=True)
-    if st.button("回雷達總機", use_container_width=True):
+    if st.button("回雷達總機", width="stretch"):
         st.session_state.page = "home"; st.rerun()
     
-    st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>此頁面每日自動追蹤曾入榜「前 10 名」的強勢股後續表現。系統預設 <b>+15% 自動停利</b>、<b>-10% 自動停損</b>。若尚未觸及停利停損點，將會繼續顯示於「持有中」列表。</p></div>", unsafe_allow_html=True)
+    st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>每日以 OHLC 追蹤前 10 名，預設 <b>+15% 停利</b>、<b>-10% 停損</b>。若同日同時觸及兩者，因日 K 無法判定先後，系統保守先算停損；收盤新進場不套用當日較早的高低價。</p></div>", unsafe_allow_html=True)
     
     tracker_data = load_cloud_data("market_data", "top10_tracker", {})
-    positions = tracker_data.get("positions", [])
+    positions = tracker_data.get("positions", []) if isinstance(tracker_data, dict) else []
+    positions = [position for position in positions if isinstance(position, dict)]
+
+    latest_date = str(tracker_data.get("latest_date", "")) if isinstance(tracker_data, dict) else ""
+    latest_snapshots = tracker_data.get("latest_snapshots", []) if isinstance(tracker_data, dict) else []
+    history_dates = tracker_data.get("history_dates", []) if isinstance(tracker_data, dict) else []
+    missing_ranking_dates = set(tracker_data.get("missing_ranking_dates", [])) if isinstance(tracker_data, dict) else set()
+    partial_ranking_dates = set(tracker_data.get("partial_ranking_dates", [])) if isinstance(tracker_data, dict) else set()
+    unverified_ranking_dates = set(tracker_data.get("unverified_ranking_dates", [])) if isinstance(tracker_data, dict) else set()
+    available_dates = sorted({str(item) for item in history_dates if item} | ({latest_date} if latest_date else set()), reverse=True)
+
+    def stored_ranking_status(date_text):
+        if date_text in missing_ranking_dates:
+            return "missing"
+        if date_text in unverified_ranking_dates:
+            return "unverified"
+        if date_text in partial_ranking_dates:
+            return "partial"
+        return "ok"
+
+    st.subheader("📅 每日追蹤明細")
+    if not available_dates:
+        st.info("目前尚無每日追蹤明細；下一次盤後掃描完成後會開始建立完整日誌。")
+    else:
+        selected_tracking_date = st.selectbox("追蹤交易日", available_dates, key="top10_tracking_date")
+        if selected_tracking_date == latest_date:
+            daily_records = latest_snapshots
+            ranking_status = stored_ranking_status(selected_tracking_date)
+        else:
+            daily_payload = load_cloud_data("top10_tracking_history", selected_tracking_date, {})
+            daily_records = daily_payload.get("records", []) if isinstance(daily_payload, dict) else []
+            ranking_status = daily_payload.get("ranking_status", stored_ranking_status(selected_tracking_date)) if isinstance(daily_payload, dict) else "missing"
+        daily_records = [row for row in daily_records if isinstance(row, dict)]
+        if ranking_status != "ok":
+            st.warning("此日期的原始 Top10 榜單缺失或僅能部分核對；持倉行情只使用真實 OHLC 續追，未用事後資料重算或假造當日排名。")
+        if not daily_records:
+            st.warning("此交易日沒有可顯示的追蹤明細。")
+        else:
+            action_labels = {
+                "ENTRY": "收盤進場", "HOLD": "持有", "TAKE_PROFIT": "停利",
+                "STOP_LOSS": "停損", "DATA_MISSING": "行情缺漏", "EXIT": "已出場",
+            }
+            status_labels = {"OPEN": "持有中", "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場"}
+            display_rows = []
+            for row in daily_records:
+                display_rows.append({
+                    "日期": row.get("date", selected_tracking_date),
+                    "排名": row.get("top10_rank"),
+                    "代號": normalize_ticker(row.get("ticker", "")),
+                    "名稱": str(row.get("name", "")),
+                    "動作": action_labels.get(str(row.get("action", "")), str(row.get("action", ""))),
+                    "狀態": status_labels.get(str(row.get("status", "")), str(row.get("status", ""))),
+                    "開盤": row.get("open"),
+                    "最高": row.get("high"),
+                    "最低": row.get("low"),
+                    "收盤": row.get("close"),
+                    "追蹤價": row.get("mark_price"),
+                    "單日報酬%": row.get("daily_return_pct"),
+                    "持有報酬%": row.get("pnl_pct"),
+                    "期間最高": row.get("highest_price"),
+                    "期間最低": row.get("lowest_price"),
+                    "MFE%": row.get("mfe_pct"),
+                    "MAE%": row.get("mae_pct"),
+                    "榜單狀態": "完整" if row.get("ranking_status", ranking_status) == "ok" else "原榜單缺失",
+                    "資料狀態": "完整" if row.get("data_status") == "ok" else "缺漏",
+                })
+            display_df = pd.DataFrame(display_rows).sort_values(
+                by=["排名", "持有報酬%"], ascending=[True, False], na_position="last"
+            )
+            st.dataframe(display_df, hide_index=True, width="stretch")
+            missing_count = sum(1 for row in daily_records if row.get("data_status") != "ok")
+            if missing_count:
+                st.warning(f"本日有 {missing_count} 筆行情不完整；系統保留前一追蹤價，不會用錯誤價格結算。")
     
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     closed_pos = [p for p in positions if p.get("status") != "OPEN"]
+
+    def tracking_number_text(value, digits=1, suffix=""):
+        number = optional_num(value)
+        return "--" if number is None else f"{number:.{digits}f}{suffix}"
     
     st.subheader("🟢 目前持有中 (未實現損益)")
     if not open_pos:
         st.info("目前沒有追蹤中的標的。")
     else:
-        for p in sorted(open_pos, key=lambda x: x.get("pnl_pct", 0), reverse=True):
-            pnl = p.get("pnl_pct", 0)
-            color = "#ef4444" if pnl >= 0 else "#22c55e"
+        for p in sorted(open_pos, key=lambda x: optional_num(x.get("pnl_pct")) if optional_num(x.get("pnl_pct")) is not None else float("-inf"), reverse=True):
+            pnl = optional_num(p.get("pnl_pct"))
+            ticker_text = escape_html(normalize_ticker(p.get('ticker', '')))
+            name_text = escape_html(p.get('name', ''))
+            color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
+            pnl_text = "--" if pnl is None else f"{'+' if pnl > 0 else ''}{pnl:.1f}%"
             st.markdown(f"<div style='background-color:#1e293b; padding:15px; border-radius:8px; margin-bottom:10px; border-left:4px solid {color};'>"
                         f"<div style='display:flex; justify-content:space-between;'>"
-                        f"<div><span style='font-size:1.1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span>"
-                        f"<span style='color:#94a3b8; font-size:0.8rem; margin-left:10px;'>進場: {p['entry_date']}</span></div>"
-                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl:.1f}%</div>"
+                        f"<div><span style='font-size:1.1rem; font-weight:bold; color:#f8fafc;'>{ticker_text} {name_text}</span>"
+                        f"<span style='color:#94a3b8; font-size:0.8rem; margin-left:10px;'>進場: {escape_html(p.get('entry_date', ''))}</span></div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{pnl_text}</div>"
                         f"</div>"
                         f"<div style='color:#cbd5e1; font-size:0.85rem; margin-top:5px;'>"
-                        f"進場價: <b>{p.get('entry_price', 0):.1f}</b> ｜ 目前價: <b>{p.get('current_price', 0):.1f}</b> ｜ 期間最高: <b>{p.get('highest_price', 0):.1f}</b>"
+                        f"進場價: <b>{tracking_number_text(p.get('entry_price'))}</b> ｜ 目前價: <b>{tracking_number_text(p.get('current_price'))}</b> ｜ 期間最高: <b>{tracking_number_text(p.get('highest_price'))}</b>"
                         f"</div></div>", unsafe_allow_html=True)
                         
     st.subheader("🏁 歷史結算 (已出場)")
     if not closed_pos:
         st.info("目前尚無已結算的歷史紀錄。")
     else:
-        wins = sum(1 for p in closed_pos if p.get("status") == "CLOSED_TP" or p.get("pnl_pct", 0) > 0)
-        win_rate = (wins / len(closed_pos)) * 100
-        avg_pnl = sum(p.get("pnl_pct", 0) for p in closed_pos) / len(closed_pos)
+        valid_closed = [(p, optional_num(p.get("pnl_pct"))) for p in closed_pos]
+        valid_closed = [(p, pnl) for p, pnl in valid_closed if pnl is not None]
+        wins = sum(1 for p, pnl in valid_closed if p.get("status") == "CLOSED_TP" or pnl > 0)
+        win_rate = (wins / len(valid_closed)) * 100 if valid_closed else None
+        avg_pnl = sum(pnl for _, pnl in valid_closed) / len(valid_closed) if valid_closed else None
+        win_rate_text = "--" if win_rate is None else f"{win_rate:.1f}%"
+        avg_pnl_text = "--" if avg_pnl is None else f"{'+' if avg_pnl > 0 else ''}{avg_pnl:.2f}%"
+        avg_color = "#94a3b8" if avg_pnl is None else ("#ef4444" if avg_pnl >= 0 else "#22c55e")
         
         st.markdown(f"<div style='display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px;'>"
-                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>總勝率</div><div style='color:#38bdf8; font-size:1.5rem; font-weight:bold;'>{win_rate:.1f}%</div></div>"
-                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>平均結算報酬</div><div style='color:{'#ef4444' if avg_pnl>=0 else '#22c55e'}; font-size:1.5rem; font-weight:bold;'>{'+' if avg_pnl>0 else ''}{avg_pnl:.2f}%</div></div>"
+                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>總勝率</div><div style='color:#38bdf8; font-size:1.5rem; font-weight:bold;'>{win_rate_text}</div></div>"
+                    f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; text-align:center;'><div style='color:#94a3b8;'>平均結算報酬</div><div style='color:{avg_color}; font-size:1.5rem; font-weight:bold;'>{avg_pnl_text}</div></div>"
                     f"</div>", unsafe_allow_html=True)
                     
-        for p in sorted(closed_pos, key=lambda x: x.get("close_date", ""), reverse=True):
-            pnl = p.get("pnl_pct", 0)
-            color = "#ef4444" if pnl >= 0 else "#22c55e"
+        for p in sorted(closed_pos, key=lambda x: str(x.get("close_date", "")), reverse=True):
+            pnl = optional_num(p.get("pnl_pct"))
+            ticker_text = escape_html(normalize_ticker(p.get('ticker', '')))
+            name_text = escape_html(p.get('name', ''))
+            color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
+            pnl_text = "--" if pnl is None else f"{'+' if pnl > 0 else ''}{pnl:.1f}%"
             status_text = "🎯 停利出場" if p.get("status") == "CLOSED_TP" else "🛑 停損出場"
             st.markdown(f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; margin-bottom:10px; border:1px solid #1e293b; opacity:0.8;'>"
                         f"<div style='display:flex; justify-content:space-between;'>"
-                        f"<div><span style='font-size:1rem; font-weight:bold; color:#f8fafc;'>{p['ticker']} {p['name']}</span> "
+                        f"<div><span style='font-size:1rem; font-weight:bold; color:#f8fafc;'>{ticker_text} {name_text}</span> "
                         f"<span style='color:{color}; font-size:0.8rem; border:1px solid {color}; padding:2px 6px; border-radius:4px; margin-left:8px;'>{status_text}</span></div>"
-                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{'+' if pnl>0 else ''}{pnl:.1f}%</div>"
+                        f"<div style='color:{color}; font-size:1.1rem; font-weight:bold;'>{pnl_text}</div>"
                         f"</div>"
                         f"<div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
-                        f"{p.get('entry_date', '')} 進場 ({p.get('entry_price', 0):.1f}) ➔ {p.get('close_date', '')} 出場 ({p.get('close_price', 0):.1f})"
+                        f"{escape_html(p.get('entry_date', ''))} 進場 ({tracking_number_text(p.get('entry_price'))}) ➔ {escape_html(p.get('close_date', ''))} 出場 ({tracking_number_text(p.get('close_price'))})"
                         f"</div></div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "analysis":
@@ -1689,56 +2220,66 @@ elif st.session_state.page == "analysis":
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        if p_stk and st.button(f"上一檔", use_container_width=True): st.session_state.update({"current_stock": p_stk}); st.rerun()
+        if p_stk and st.button(f"上一檔", width="stretch"): st.session_state.update({"current_stock": p_stk}); st.rerun()
     with c2:
-        if st.button("回雷達總機", use_container_width=True):
+        if st.button("回雷達總機", width="stretch"):
             st.query_params.clear()
             st.session_state.page = "home"
             st.rerun()
     with c3:
-        if n_stk and st.button(f"下一檔", use_container_width=True): st.session_state.update({"current_stock": n_stk}); st.rerun()
+        if n_stk and st.button(f"下一檔", width="stretch"): st.session_state.update({"current_stock": n_stk}); st.rerun()
 
-    def set_view_days(days): st.session_state.view_days = days
     chart_days_param = str(st.query_params.get("days", st.session_state.view_days))
     if chart_days_param in ("30", "60", "90"):
         st.session_state.view_days = int(chart_days_param)
     def chart_flag(name, default=True):
         raw_value = str(st.query_params.get(name, "1" if default else "0")).lower()
         return raw_value not in ("0", "false", "off", "no")
-    def chart_control_url(days=None, show_buy=None, show_sup=None, show_signals=None):
-        mode_param = str(st.query_params.get("mode", "")).strip()
-        q_days = days if days is not None else st.session_state.view_days
-        q_buy = "1" if (chart_flag("show_buy", True) if show_buy is None else show_buy) else "0"
-        q_sup = "1" if (chart_flag("show_sup", True) if show_sup is None else show_sup) else "0"
-        q_sig = "1" if (chart_flag("show_signals", True) if show_signals is None else show_signals) else "0"
-        mode_piece = f"&mode={mode_param}" if mode_param else ""
-        return f"/?stock={target}&days={q_days}&show_buy={q_buy}&show_sup={q_sup}&show_signals={q_sig}{mode_piece}"
-    
-    df_chart = get_stock_data(target)
-    if df_chart is not None and len(df_chart) >= 14:
+
+    analysis_target_date = safe_iso_date(st.session_state.get("target_date", ""))
+    df_chart = get_stock_data(target, target_date=analysis_target_date or None)
+    if df_chart is not None and len(df_chart) >= 20:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
         current_list = st.session_state.get('nav_pool_data', []) or []
         cached_list = st.session_state.get('scan_results', [])
         cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
         if cached_doc is None:
             cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
-        query_mode = str(st.query_params.get('mode', '')).lower()
+        if analysis_target_date and st.session_state.get("scan_date") != analysis_target_date:
+            cached_doc = None
+        query_mode = safe_mode(st.query_params.get('mode', ''))
         requested_analysis_intraday = query_mode in ("intraday", "realtime")
         _, _, inferred_intra = resolve_score_mode(requested_analysis_intraday or is_realtime_score_record(cached_doc))
         is_intra = bool(st.session_state.get('is_intraday', False) or inferred_intra)
+        if analysis_target_date:
+            is_intra = False
         if is_intra:
             st.session_state.is_intraday = True
             st.session_state.score_mode_label = "盤中參考分數"
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
-        cached_analysis = None if force_analysis_refresh else load_analysis_cache(target, LIVE_SCORE_CACHE_SECONDS if is_intra else POST_ANALYSIS_CACHE_SECONDS)
+        analysis_context = analysis_target_date or ("realtime" if is_intra else "latest")
+        cached_analysis = None if force_analysis_refresh else load_analysis_cache(
+            target,
+            LIVE_SCORE_CACHE_SECONDS if is_intra else POST_ANALYSIS_CACHE_SECONDS,
+            context=analysis_context,
+        )
 
         cached_data = cached_analysis.get("data") if cached_analysis else None
         used_realtime_snapshot = False
         if is_intra and is_realtime_score_record(cached_doc) and not force_analysis_refresh:
-            inst_data = cached_analysis.get("inst_data", []) if cached_analysis else []
-            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業')})
+            if cached_analysis:
+                inst_data = cached_analysis.get("inst_data", [])
+                f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業')})
+            else:
+                f_data, inst_data = get_analysis_support_data(target, df_slice['Close'].iloc[-1])
             data = dict(cached_doc)
+            data["MoM"], data["YoY"] = f_data.get("MoM"), f_data.get("YoY")
+            data["Revenue_Status"] = f_data.get("_data_status", {}).get("revenue", "unknown")
+            data["Revenue_Period"] = f_data.get("Revenue_Period", "")
+            data["Revenue_Source"] = f_data.get("Revenue_Source", "")
+            data["Institutional_Status"] = f_data.get("_institutional_status", "unknown")
+            data["Institutional_Source"] = f_data.get("Institutional_Source", "")
             data["Score_Source"] = "名單盤中快照"
         elif is_intra and isinstance(cached_data, dict) and is_realtime_score_record(cached_data):
             inst_data = cached_analysis.get("inst_data", [])
@@ -1748,30 +2289,88 @@ elif st.session_state.page == "analysis":
         elif cached_analysis:
             inst_data = cached_analysis.get("inst_data", [])
             f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
-            data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+            data = analyze_today(
+                df_slice,
+                target,
+                inst_data,
+                is_light_mode,
+                f_data,
+                cached_doc=cached_doc,
+                is_intraday=is_intra,
+                historical_date=analysis_target_date,
+            )
             if is_intra:
                 data["Score_Source"] = "盤中重算"
         else:
-            inst_data = get_institutional_trading(target)
-            f_data = get_fundamental_and_industry_data(target, df_slice['Close'].iloc[-1])
-            bp_ratio, mom, yoy = get_finmind_chip_and_revenue(target)
-            f_data['BigPlayer'], f_data['MoM'], f_data['YoY'] = bp_ratio, mom, yoy
-            data = analyze_today(df_slice, target, inst_data, is_light_mode, f_data, cached_doc=cached_doc, is_intraday=is_intra)
+            if analysis_target_date:
+                source = cached_doc or {}
+                eps_value = source.get("EPS", "無")
+                eps_period = source.get("EPS_Period", "missing")
+                pe_value = "無"
+                try:
+                    if float(eps_value) > 0:
+                        pe_value = f"{float(df_slice['Close'].iloc[-1]) / float(eps_value):.2f}"
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+                revenue_available = source.get("MoM") is not None or source.get("YoY") is not None
+                f_data = {
+                    "Industry": source.get("產業", "一般產業"),
+                    "EPS": eps_value,
+                    "EPS_Period": eps_period,
+                    "PE": pe_value,
+                    "MoM": source.get("MoM"),
+                    "YoY": source.get("YoY"),
+                    "Revenue_Period": source.get("Revenue_Period", ""),
+                    "Revenue_Source": source.get("Revenue_Source", ""),
+                    "_institutional_status": "historical_unavailable",
+                    "Institutional_Source": "",
+                    "_status": "ok" if eps_value not in (None, "", "無", "0") else "missing",
+                    "_data_status": {"revenue": "ok" if revenue_available else "missing"},
+                }
+                inst_data = []
+            else:
+                f_data, inst_data = get_analysis_support_data(target, df_slice['Close'].iloc[-1])
+            data = analyze_today(
+                df_slice,
+                target,
+                inst_data,
+                is_light_mode,
+                f_data,
+                cached_doc=cached_doc,
+                is_intraday=is_intra,
+                historical_date=analysis_target_date,
+            )
             if is_intra:
                 data["Score_Source"] = "盤中重算"
-            save_analysis_cache(target, {"data": data, "fund": f_data, "inst_data": inst_data})
+            save_analysis_cache(
+                target,
+                {"data": data, "fund": f_data, "inst_data": inst_data},
+                context=analysis_context,
+            )
 
-        use_cached_list_score = cached_doc and not force_analysis_refresh and not is_intra
+        analysis_price_date = latest_trading_date(df_slice.index)
+        cached_score_date = safe_iso_date(
+            cached_doc.get("Data_Date") if cached_doc else ""
+        ) or safe_iso_date(st.session_state.get("scan_date", ""))
+        use_cached_list_score = bool(
+            cached_doc
+            and not force_analysis_refresh
+            and not is_intra
+            and cached_score_date
+            and cached_score_date == analysis_price_date
+        )
         if use_cached_list_score:
-            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence"]:
+            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Confidence"]:
                 if k in cached_doc:
                     data[k] = cached_doc[k]
             if "Score_Mode" not in data:
                 data["Score_Mode"] = st.session_state.get("score_mode_label", "盤後正式分數")
+        elif cached_doc and not is_intra and cached_score_date and cached_score_date != analysis_price_date:
+            data["Score_Source"] = f"依 {analysis_price_date} 行情重算（未混用 {cached_score_date} 舊榜單分數）"
 
         sc = data['Score']
         
-        display_time = get_stock_live_time(target)
+        display_time = get_stock_data_time(df_slice, is_intraday=is_intra)
         if sc >= 70:
             strategy_text = "趨勢偏強，拉回不破 20MA 可觀察續強"
         elif sc >= 60:
@@ -1781,19 +2380,26 @@ elif st.session_state.page == "analysis":
         else:
             strategy_text = "訊號不足，暫不主動進場"
             
-        t_date = st.session_state.get("target_date")
+        t_date = analysis_target_date
         if t_date:
             st.warning(f"📌 **歷史快照模式**：您正在檢視 `{t_date}` 雷達掃描當下的技術型態與分數，此頁面已暫停即時更新。要查看即時資料，請點擊上方「回雷達總機」重新搜尋，或返回首頁。")
             
         render_stock_hero(data, target, c_name, strategy_text)
-        score_source_text = f"　｜　來源：<b>{data.get('Score_Source')}</b>" if data.get("Score_Source") else ""
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🕒 抓取時間: {display_time}　｜　採用：<b>{data.get('Score_Mode', '盤後正式分數')}</b>{score_source_text}</div>", unsafe_allow_html=True)
+        score_source_text = f"　｜　來源：<b>{escape_html(data.get('Score_Source'))}</b>" if data.get("Score_Source") else ""
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🗓️ 行情資料時間: {escape_html(display_time)}　｜　採用：<b>{escape_html(data.get('Score_Mode', '盤後正式分數'))}</b>{score_source_text}</div>", unsafe_allow_html=True)
         
         _, up_c, _ = st.columns([1, 2, 1])
-        force_refresh_analysis = up_c.button("更新個股即時數值", use_container_width=True)
+        refresh_label = "重新載入歷史快照" if analysis_target_date else "更新個股即時數值"
+        force_refresh_analysis = up_c.button(refresh_label, width="stretch")
         if force_refresh_analysis:
             st.session_state[force_key] = True
-            st.cache_data.clear()
+            _get_ohlcv_base.clear()
+            get_stock_data.clear()
+            _get_company_profile.clear()
+            get_finmind_chip_and_revenue_payload.clear()
+            get_institutional_trading.clear()
+            clear_provider_cache()
+            analyze_today.clear()
             st.rerun()
         st.markdown("---")
         
@@ -1829,6 +2435,8 @@ elif st.session_state.page == "analysis":
             filter_low_conf=filter_low_conf,
             filter_high_conflict=filter_high_conflict
         )
+        validation_win_rate = safe_num(backtest_stats.get("validation_win_rate"), 0)
+        validation_samples = int(safe_num(backtest_stats.get("validation_samples"), 0))
         
         # 只有當所有回測設定均為系統預設時，才採用快取的歷史勝率以加速讀取
         is_default_backtest = (
@@ -1841,34 +2449,37 @@ elif st.session_state.page == "analysis":
         )
         if use_cached_list_score and is_default_backtest:
             win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
+            closed_signals = int(safe_num(cached_doc.get("Backtest_Samples"), closed_signals))
+            validation_win_rate = safe_num(cached_doc.get("Validation_WinRate"), validation_win_rate)
+            validation_samples = int(safe_num(cached_doc.get("Validation_Samples"), validation_samples))
         if is_intra:
             data['WinRate'] = win_rate
             data['Backtest_Samples'] = closed_signals
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Confidence", "Score_Source"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Confidence", "Score_Source"]:
                         if k in data:
                             row[k] = data[k]
                     break
         
-        curr_atr = df_slice['ATR'].iloc[-1] if 'ATR' in df_slice.columns else data['收盤價'] * 0.03
+        curr_atr = float(df_slice['ATR'].iloc[-1])
         data['ATR_Target'] = round(data['收盤價'] + (curr_atr * atr_target_mult), 1)
         data['ATR_Stop'] = round(data['收盤價'] - (curr_atr * atr_stop_mult), 1)
         data['RRR'] = dynamic_rrr
-        credibility_text, credibility_color = credibility_label(closed_signals)
         render_metric_grid([
-            {"label": "AI 分數", "value": f"{sc}", "sub": data.get("評級", "").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", ""), "color": "#EF4444" if sc >= 60 else "#FACC15"},
-            {"label": "歷史勝率", "value": f"{win_rate:.1f}%", "sub": "保守修正後", "color": "#EF4444" if win_rate >= 60 else "#FACC15"},
-            {"label": "回測樣本", "value": f"{closed_signals} 筆", "sub": credibility_text, "color": credibility_color},
+            {"label": "量化分數", "value": f"{sc}", "sub": data.get("評級", "").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", ""), "color": "#EF4444" if sc >= 60 else "#FACC15"},
+            {"label": "技術面勝率", "value": f"{win_rate:.1f}%" if closed_signals > 0 else "--", "sub": f"全期 {closed_signals} 筆", "color": "#EF4444" if closed_signals > 0 and win_rate >= 60 else "#FACC15"},
+            {"label": "近期驗證", "value": f"{validation_win_rate:.1f}%" if validation_samples > 0 else "--", "sub": f"末 30%｜{validation_samples} 筆", "color": "#EF4444" if validation_samples > 0 and validation_win_rate >= 60 else "#FACC15"},
             {"label": "風報比", "value": f"1 : {dynamic_rrr}", "sub": f"停損 {atr_stop_mult}x / 停利 {atr_target_mult}x", "color": "#60A5FA"},
         ])
+        st.caption(f"回測口徑：{BACKTEST_SCOPE}。成本假設含買賣手續費各 0.1425%、賣出證交稅 0.3%、每筆最低手續費 20 元及雙向滑價各 0.05%。反覆依同一段資料調參會使近期驗證失去樣本外意義。")
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
-        v_t = data['評級'].replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', '')
-        confidence = data.get("Confidence", 100)
+        v_t = escape_html(str(data['評級']).replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', ''))
+        confidence = safe_num(data.get("Confidence"), 0)
         st.markdown(f"""
         <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: #0b1120;">
-            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 8px;">🤖 100分量化決策大腦：{v_t} ({sc}分)</h3>
-            <div style="text-align:center; color:#94a3b8; font-weight:700; margin-bottom:16px;">資料信心：{confidence}%｜口徑：{data.get('Score_Mode', '盤後正式分數')}</div>
+            <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 8px;">100 分規則型量化決策：{v_t} ({sc}分)</h3>
+            <div style="text-align:center; color:#94a3b8; font-weight:700; margin-bottom:16px;">資料信心：{confidence}%｜口徑：{escape_html(data.get('Score_Mode', '盤後正式分數'))}</div>
             <div style="background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 8px; border-left: 5px solid {v_c}; margin-bottom:20px;">
                 <p style="font-size: 1.05rem; color: #f8fafc; margin: 0; line-height: 1.6;">
                     ✅ <b>自訂策略執行規劃</b><br>合理停利目標：<b style='color:#ef4444;'>{data['ATR_Target']}</b> 元<br>嚴格停損防守：<b style='color:#22c55e;'>{data['ATR_Stop']}</b> 元
@@ -1891,52 +2502,43 @@ elif st.session_state.page == "analysis":
             with c3_c: st.warning("停損價必須低於現價")
         st.markdown("---")
         
-        if st.button("將此自訂策略加入模擬交易", use_container_width=True):
+        if st.button("將此自訂策略加入模擬交易", width="stretch"):
             new_order = {
                 "id": str(int(time.time())), "ticker": target, "name": c_name, "buy_price": data['收盤價'],
                 "highest_price": data['收盤價'], "target_price": data['ATR_Target'], "stop_price": data['ATR_Stop'],
                 "rrr": data['RRR'], "time": datetime.now(timezone(timedelta(hours=8))).strftime('%Y/%m/%d %H:%M:%S')
             }
             st.session_state.simulated_orders.insert(0, new_order)
-            save_cloud_data("user_data", "simulated_orders", st.session_state.simulated_orders)
-            st.success(f"✅ 已將風報比 1:{data['RRR']} 的策略單寫入資料庫！"); st.balloons()
+            saved = save_cloud_data("user_data", USER_ORDERS_DOC, st.session_state.simulated_orders)
+            if saved:
+                st.success(f"✅ 已將風報比 1:{data['RRR']} 的策略單寫入資料庫！")
+                st.balloons()
+            else:
+                st.warning("策略單已加入目前工作階段，但雲端寫入失敗，重新整理後可能遺失。")
         
-        current_show_buy = chart_flag("show_buy", True)
-        current_show_sup = chart_flag("show_sup", True)
-        current_show_signals = chart_flag("show_signals", True)
-        day_cards = []
-        for day in (30, 60, 90):
-            active = " active" if st.session_state.view_days == day else ""
-            day_cards.append(f"<a class='chart-control-card{active}' href='{chart_control_url(days=day)}'>{day}日</a>")
-        st.markdown(f"<div class='chart-control-grid'>{''.join(day_cards)}</div>", unsafe_allow_html=True)
-        buy_class = "active" if current_show_buy else "off"
-        sup_class = "active" if current_show_sup else "off"
-        sig_class = "active" if current_show_signals else "off"
-        buy_url = chart_control_url(show_buy=not current_show_buy)
-        sup_url = chart_control_url(show_sup=not current_show_sup)
-        sig_url = chart_control_url(show_signals=not current_show_signals)
-        st.markdown(
-            f"<div class='chart-control-grid'>"
-            f"<a class='chart-control-card {buy_class}' href='{buy_url}'>買進</a>"
-            f"<a class='chart-control-card {sup_class}' href='{sup_url}'>高低點</a>"
-            f"<a class='chart-control-card {sig_class}' href='{sig_url}'>符號</a>"
-            f"</div>",
-            unsafe_allow_html=True,
+        render_analysis_k_chart(
+            df_slice,
+            data['收盤價'],
+            buy_dates,
+            is_light_mode,
+            target,
+            initial_days=st.session_state.view_days,
+            initial_show_buy=chart_flag("show_buy", True),
+            initial_show_sup=chart_flag("show_sup", True),
+            initial_show_signals=chart_flag("show_signals", True),
         )
-        fig = draw_professional_chart(df_slice, data['收盤價'], st.session_state.view_days, is_light_mode, current_show_buy, current_show_sup, current_show_signals, buy_dates=buy_dates)
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': True})
         
         with st.expander("📖 點擊展開：圖表符號與線段對照說明", expanded=False):
             st.markdown("""
             **【線段與區域】**
             * 🟨 **黃線 (5T) / 🟩 綠線 (10T) / 🟦 藍線 (20T)**：短中期移動平均線。
-            * 🟪 **紫色虛線**：AI 運算的主力成本區 (Volume Profile)，代表該價位累積成交量極大，為關鍵支撐/壓力位。
+            * 🟪 **紫色虛線**：依成交量分布估算的密集成交區 (Volume Profile)，不是特定主力的真實成本。
             
             **【交易訊號圖示】**
-            * 🔼 **藍色三角 (帶數字)**：AI 100分量化模型綜合買點，下方數字為當日結算滿分 100 的得分。
-            * **撐 / 壓**：帶量突破買點或回踩主力成本支撐成功 / 跌破或遇到主力成本壓力區留上影線。
+            * 🔼 **藍色三角 (帶數字)**：純技術面 100 分模型買點，下方數字為當日依當時 K 線逐步前推計算的得分，不含歷史 EPS、營收與法人籌碼。
+            * **撐 / 壓**：帶量突破成交密集區／回踩守住，或跌破／遇到成交密集區壓力留上影線。
             * **5↗️ / 5↘️**：單一 5 日短均線扣抵值趨勢。代表均線即直剔除的歷史 K 棒位置，箭頭為預判 5 日均線未來**上彎(↗️)**或**下彎(↘️)**的趨勢。
-            * **紅吞 / 黑吞**：K線型態出現紅K吞噬黑K (主力拉抬轉強) 或 黑K吞噬紅K (主力倒貨轉弱)。
+            * **紅吞 / 黑吞**：只描述相鄰 K 線的吞噬型態，不推論特定交易者拉抬或出貨。
             """)
 
         st.divider()
@@ -1950,7 +2552,7 @@ elif st.session_state.page == "analysis":
         new_group_name = st.text_input("新增群組名稱", placeholder="例如：短線觀察、波段核心", key=f"new_group_{target}")
         selected_groups = st.multiselect("將此標的加入以下群組：", options=all_groups, default=current_groups)
         
-        if st.button("儲存自選設定", use_container_width=True, type="primary"):
+        if st.button("儲存自選設定", width="stretch", type="primary"):
             new_fav = {k: list(v) for k, v in st.session_state.fav_groups.items()}
             if new_group_name.strip():
                 group_name = new_group_name.strip()
@@ -1968,8 +2570,11 @@ elif st.session_state.page == "analysis":
                 if target not in [normalize_ticker(x) for x in new_fav[g]]:
                     new_fav[g].append(target)
             st.session_state.fav_groups = new_fav
-            save_cloud_data("user_settings", "fav_groups", new_fav)
-            st.success("✅ 群組設定已成功寫入雲端！")
+            saved = save_cloud_data("user_settings", USER_FAVORITES_DOC, new_fav)
+            if saved:
+                st.success("✅ 群組設定已成功寫入雲端！")
+            else:
+                st.warning("群組已套用於目前工作階段，但雲端寫入失敗。")
             time.sleep(0.5) 
             st.rerun()
 

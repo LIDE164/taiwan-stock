@@ -3,17 +3,28 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import yfinance as yf
 import pandas as pd
-import requests
 import concurrent.futures
 import logging
 import os
+import argparse
 from datetime import datetime, timezone, timedelta
-import numpy as np
 import streamlit as st
 
 # 引入共用核心演算法
-from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_winrate
+from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
+from app_security import normalize_ticker
+from data_providers import fetch_institutional_rows, fetch_revenue_growth
+from market_http import call_with_backoff, http_get
+from scan_state import (
+    build_scan_quality,
+    latest_trading_date,
+    next_streak,
+    previous_scan_state,
+    scan_universe_limit,
+    should_complete_candidate,
+)
 from scoring import get_decision_score
+from top10_tracker import build_top10_history_rows, update_positions_with_snapshots
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -60,104 +71,161 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
 # ENG_TO_TW_INDUSTRY 已移至 analysis_core.py 統一管理，此處直接 import
 
-INDUSTRY_CACHE = {}
+INDUSTRY_CACHE: dict[str, str] = {}
+MARKET_SYMBOL_CACHE: dict[str, str] = {}
 def build_industry_cache():
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     global INDUSTRY_CACHE
     logging.info("📦 正在建立全市場產業快取字典...")
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10, verify=False)
+        res = http_get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res.raise_for_status()
         if res.status_code == 200:
             for item in res.json(): INDUSTRY_CACHE[item['Code']] = item.get('Name', '')
-    except: pass
+    except Exception as e:
+        logging.warning("上市名稱快取建立失敗: %s", e)
     try:
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10, verify=False)
+        res2 = http_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2.raise_for_status()
         if res2.status_code == 200:
             for item in res2.json(): INDUSTRY_CACHE[item['SecuritiesCompanyCode']] = item.get('CompanyName', '')
-    except: pass
+    except Exception as e:
+        logging.warning("上櫃名稱快取建立失敗: %s", e)
 
 def get_fundamental_and_industry_data(ticker_number, current_price=0):
-    base_ticker = str(ticker_number).strip().upper().replace(".TW", "").replace(".TWO", "")
-    eps_val, ind = "0", "一般產業"
+    base_ticker = normalize_ticker(ticker_number)
+    eps_val, ind = None, "一般產業"
+    eps_period = "missing"
+    source_ok = False
+    info = {}
     try:
-        info = yf.Ticker(f"{base_ticker}.TW").info
-        if not info or 'industry' not in info: info = yf.Ticker(f"{base_ticker}.TWO").info
+        info = call_with_backoff(lambda: yf.Ticker(f"{base_ticker}.TW").info, attempts=2)
+        if not info or 'industry' not in info:
+            info = call_with_backoff(lambda: yf.Ticker(f"{base_ticker}.TWO").info, attempts=2)
+        source_ok = bool(info)
         raw_sector = info.get("sector", "")
         if raw_sector in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[raw_sector]
         elif info.get("industry") in ENG_TO_TW_INDUSTRY: ind = ENG_TO_TW_INDUSTRY[info.get("industry")]
-        if ind == "一般產業":
-            res_cnyes = requests.get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=3).json()
+        if 'trailingEps' in info and info['trailingEps'] is not None:
+            eps_val = str(round(info['trailingEps'], 2))
+            eps_period = "ttm"
+    except Exception as e:
+        logging.debug("Yahoo 基本面資料取得不完整 %s: %s", base_ticker, e)
+    if ind == "一般產業" or eps_val is None:
+        try:
+            response = http_get(f"https://ws.cnyes.com/twstock/api/v1/company/profile/{base_ticker}", timeout=5)
+            response.raise_for_status()
+            res_cnyes = response.json()
             if 'data' in res_cnyes and 'categoryName' in res_cnyes['data']: ind = res_cnyes['data']['categoryName']
-        if 'trailingEps' in info and info['trailingEps'] is not None: eps_val = str(round(info['trailingEps'], 2))
-    except: pass
-    return {"EPS": eps_val, "Industry": ind}
+            if eps_val is None and res_cnyes.get("data", {}).get("eps") is not None:
+                eps_val = str(round(float(res_cnyes["data"]["eps"]), 2))
+                eps_period = "provider"
+            source_ok = source_ok or bool(res_cnyes.get("data"))
+        except Exception as e:
+            logging.debug("CNYES 基本面資料取得不完整 %s: %s", base_ticker, e)
+    if eps_val is not None and ind != "一般產業":
+        status = "ok"
+    elif source_ok:
+        status = "partial"
+    else:
+        status = "missing"
+    return {"EPS": eps_val, "EPS_Period": eps_period, "Industry": ind, "_status": status}
 
 def is_financial_stock(stock, industry=""):
-    s = str(stock).strip().upper().replace(".TW", "").replace(".TWO", "")
+    s = normalize_ticker(stock)
     ind = str(industry).strip()
     if s.startswith("28"):
         return True
     financial_keywords = ["金融", "銀行", "保險", "金控", "證券", "期貨", "Financial"]
     return any(k in ind for k in financial_keywords)
 
-def get_finmind_chip_and_revenue(ticker):
-    big_player_ratio, mom, yoy = 0.0, 0.0, 0.0
-    base_ticker = str(ticker).strip().upper().replace(".TW", "").replace(".TWO", "")
-    if not FINMIND_TOKEN:
-        logging.warning("FINMIND_TOKEN 未設定，略過 %s 的 FinMind 資料", base_ticker)
-        return big_player_ratio, mom, yoy
-    try:
-        start_date_chip = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
-        url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockHoldingSharesPer&data_id={base_ticker}&start_date={start_date_chip}&token={FINMIND_TOKEN}"
-        res_chip = requests.get(url_chip, timeout=5).json()
-        if 'data' in res_chip and len(res_chip['data']) > 0:
-            latest_date = max([x.get('date', '') for x in res_chip['data']])
-            for x in res_chip['data']:
-                if x.get('date') == latest_date and int(x.get('HoldingSharesLevel', 0)) >= 12:
-                    big_player_ratio += float(str(x.get('percent', 0)).replace(',', ''))
+def get_finmind_revenue(ticker, with_status=False, with_meta=False):
+    payload = fetch_revenue_growth(ticker, FINMIND_TOKEN)
+    if with_meta:
+        return payload
+    result = (payload["mom"], payload["yoy"])
+    return (*result, payload["status"]) if with_status else result
 
-        start_date_rev = (datetime.now() - timedelta(days=500)).strftime('%Y-%m-%d')
-        url_rev = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={base_ticker}&start_date={start_date_rev}&token={FINMIND_TOKEN}"
-        res_rev = requests.get(url_rev, timeout=5).json()
-        if 'data' in res_rev and len(res_rev['data']) > 0:
-            df_rev = pd.DataFrame(res_rev['data']).sort_values(by='date').reset_index(drop=True)
-            df_rev['revenue'] = pd.to_numeric(df_rev['revenue'], errors='coerce').fillna(0)
-            if len(df_rev) >= 2 and df_rev['revenue'].iloc[-2] > 0:
-                mom = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-2]) / df_rev['revenue'].iloc[-2] * 100
-            if len(df_rev) >= 13 and df_rev['revenue'].iloc[-13] > 0:
-                yoy = (df_rev['revenue'].iloc[-1] - df_rev['revenue'].iloc[-13]) / df_rev['revenue'].iloc[-13] * 100
-    except Exception as e:
-        logging.warning("FinMind 資料取得失敗 %s: %s", base_ticker, e)
-    return round(big_player_ratio, 2), round(mom, 2), round(yoy, 2)
-
-def fetch_top_500():
+def fetch_top_stocks(limit=500):
+    limit = max(1, min(1000, int(limit)))
     all_stocks = []
+    global MARKET_SYMBOL_CACHE
+    MARKET_SYMBOL_CACHE = {}
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res = http_get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
+        res.raise_for_status()
         df_twse = pd.DataFrame(res.json())
-        df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'], errors='coerce')
-        all_stocks.append(df_twse[['Code', 'TradeVolume']])
-    except: pass
+        df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'].astype(str).str.replace(',', '', regex=False), errors='coerce')
+        df_twse['Symbol'] = df_twse['Code'].astype(str) + ".TW"
+        all_stocks.append(df_twse[['Code', 'TradeVolume', 'Symbol']])
+    except Exception as e:
+        logging.warning("上市成交量名單取得失敗: %s", e)
     try:
-        res2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2 = http_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
+        res2.raise_for_status()
         df_tpex = pd.DataFrame(res2.json())
-        df_tpex = df_tpex.rename(columns={'SecuritiesCompanyCode': 'Code', 'TradingVolume': 'TradeVolume'})
-        df_tpex['TradeVolume'] = pd.to_numeric(df_tpex['TradeVolume'], errors='coerce')
-        all_stocks.append(df_tpex[['Code', 'TradeVolume']])
-    except: pass
+        tpex_volume_column = "TradingShares" if "TradingShares" in df_tpex.columns else "TradingVolume"
+        df_tpex = df_tpex.rename(columns={'SecuritiesCompanyCode': 'Code', tpex_volume_column: 'TradeVolume'})
+        if 'TradeVolume' not in df_tpex.columns:
+            raise ValueError("櫃買行情缺少成交量欄位")
+        df_tpex['TradeVolume'] = pd.to_numeric(df_tpex['TradeVolume'].astype(str).str.replace(',', '', regex=False), errors='coerce')
+        df_tpex['Symbol'] = df_tpex['Code'].astype(str) + ".TWO"
+        all_stocks.append(df_tpex[['Code', 'TradeVolume', 'Symbol']])
+    except Exception as e:
+        logging.warning("上櫃成交量名單取得失敗: %s", e)
 
     if all_stocks:
         df_all = pd.concat(all_stocks, ignore_index=True)
+        df_all['Code'] = df_all['Code'].astype(str)
         df_all = df_all[df_all['Code'].str.match(r'^\d{4}$')]
-        return df_all.sort_values(by='TradeVolume', ascending=False).head(500)['Code'].tolist()
-    else: return ["2330", "2317", "2454", "3231", "2382"]
+        ranked_all = df_all.sort_values(by='TradeVolume', ascending=False).drop_duplicates('Code', keep='first')
+        MARKET_SYMBOL_CACHE.update(dict(zip(ranked_all['Code'], ranked_all['Symbol'])))
+        ranked = ranked_all.head(limit)
+        return ranked['Code'].tolist()
+    return []
+
+
+def fetch_top_500():
+    """Compatibility wrapper for callers that still request the old fixed universe."""
+    return fetch_top_stocks(500)
+
+
+def build_scan_pool(ranked_tickers, limit, core_tickers=None):
+    """Keep the configured universe size while guaranteeing core names are included."""
+    limit = max(1, int(limit))
+    raw_core = core_tickers
+    if raw_core is None:
+        raw_core = str(get_secret("CORE_TICKERS", "2330,2317,2454")).split(",")
+    core = []
+    for ticker in raw_core:
+        normalized = normalize_ticker(ticker)
+        if normalized and normalized not in core:
+            core.append(normalized)
+
+    pool = []
+    for ticker in ranked_tickers:
+        normalized = normalize_ticker(ticker)
+        if normalized and normalized not in pool:
+            pool.append(normalized)
+        if len(pool) >= limit:
+            break
+    for ticker in core:
+        if ticker in pool:
+            continue
+        if len(pool) >= limit:
+            removable = next((idx for idx in range(len(pool) - 1, -1, -1) if pool[idx] not in core), None)
+            if removable is None:
+                continue
+            pool.pop(removable)
+        pool.append(ticker)
+    return pool[:limit]
 
 def get_stock_data(ticker_number):
     try:
-        df = yf.Ticker(f"{ticker_number}.TW").history(period="2y").dropna(subset=['Close'])
-        if df.empty: df = yf.Ticker(f"{ticker_number}.TWO").history(period="2y").dropna(subset=['Close'])
+        preferred_symbol = MARKET_SYMBOL_CACHE.get(str(ticker_number), f"{ticker_number}.TW")
+        df = call_with_backoff(lambda: yf.Ticker(preferred_symbol).history(period="2y"), attempts=2).dropna(subset=['Close'])
+        if df.empty and preferred_symbol.endswith(".TW"):
+            df = call_with_backoff(lambda: yf.Ticker(f"{ticker_number}.TWO").history(period="2y"), attempts=2).dropna(subset=['Close'])
         if df.empty or len(df) < 20: return None
         
         df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
@@ -167,30 +235,56 @@ def get_stock_data(ticker_number):
         logging.warning("股價資料處理失敗 %s: %s", ticker_number, e)
         return None
 
+
+def fetch_stock_data_batch(tickers, chunk_size=50):
+    """Fetch OHLCV in chunks; individual downloads remain the fallback path."""
+    result = {}
+    codes = [str(ticker) for ticker in tickers]
+    for start in range(0, len(codes), chunk_size):
+        chunk_codes = codes[start:start + chunk_size]
+        symbols = [MARKET_SYMBOL_CACHE.get(code, f"{code}.TW") for code in chunk_codes]
+        try:
+            raw = call_with_backoff(lambda: yf.download(
+                symbols, period="2y", group_by="ticker", auto_adjust=True,
+                progress=False, threads=True,
+            ), attempts=2)
+        except Exception as e:
+            logging.warning("批次行情下載失敗（%s...）: %s", chunk_codes[0], e)
+            continue
+        if raw is None or raw.empty:
+            continue
+
+        for code, symbol in zip(chunk_codes, symbols):
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if symbol in raw.columns.get_level_values(0):
+                        frame = raw[symbol].copy()
+                    elif symbol in raw.columns.get_level_values(1):
+                        frame = raw.xs(symbol, axis=1, level=1).copy()
+                    else:
+                        continue
+                else:
+                    frame = raw.copy()
+                frame = frame.dropna(subset=['Close'])
+                if len(frame) < 20:
+                    continue
+                frame.index = pd.to_datetime(frame.index.strftime('%Y-%m-%d'))
+                frame = frame[~frame.index.duplicated(keep='last')]
+                result[code] = apply_technical_indicators(frame)
+            except Exception as e:
+                logging.debug("批次行情解析失敗 %s: %s", code, e)
+    logging.info("批次行情成功載入 %d/%d 檔。", len(result), len(codes))
+    return result
+
 # ⭐ 補上法人籌碼抓取功能
-def get_institutional_trading(ticker):
-    try:
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={ticker}&start_date={(datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')}&token={FINMIND_TOKEN}"
-        res = requests.get(url, timeout=5).json()
-        if res.get('msg') == 'success' and len(res.get('data', [])) > 0:
-            df = pd.DataFrame(res['data'])
-            df['net'] = (df['buy'] - df['sell']) / 1000  
-            df['type'] = '其他'
-            df.loc[df['name'].str.contains('Foreign|外資', case=False, na=False), 'type'] = '外資'
-            df.loc[df['name'].str.contains('Trust|投信', case=False, na=False), 'type'] = '投信'
-            df.loc[df['name'].str.contains('Dealer|自營', case=False, na=False), 'type'] = '自營商'
-            pivot = df.groupby(['date', 'type'])['net'].sum().unstack(fill_value=0).reset_index()
-            for col in ['外資', '投信', '自營商']:
-                if col not in pivot.columns: pivot[col] = 0
-            pivot['單日合計'] = pivot['外資'] + pivot['投信'] + pivot['自營商']
-            return [{"單日合計(張)": int(r['單日合計'])} for _, r in pivot.sort_values('date', ascending=False).head(10).iterrows()]
-    except: pass
-    return []
+def get_institutional_trading(ticker, with_status=False):
+    rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
+    compact = [{"單日合計(張)": row["total"], "_source": row.get("source", "")} for row in rows]
+    return (compact, status) if with_status else compact
 
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
-    win_rate, closed_signals, _, _ = calculate_historical_winrate(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
-    return win_rate, closed_signals
+    return calculate_historical_performance(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
 
 def should_run_postclose_scan(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
@@ -201,84 +295,177 @@ def should_run_postclose_scan(now_tpe=None):
     postclose_time = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
     return now_tpe >= postclose_time
 
-def update_top10_tracker(top10_results):
+
+def _load_daily_scan_doc():
+    if db is None:
+        return {}
+    try:
+        snapshot = db.collection("market_data").document("daily_scan").get()
+        return snapshot.to_dict() or {} if snapshot.exists else {}
+    except Exception as e:
+        logging.error("讀取既有掃描資料失敗: %s", e)
+        raise RuntimeError("無法讀取既有 daily_scan，已中止以避免破壞排名與連續天數") from e
+
+
+def _acquire_scan_lease(trading_date, force=False, lease_minutes=120):
+    """Acquire a Firestore-backed lease so scheduled jobs cannot overlap."""
+    if db is None:
+        return True
+    # Reuse one document instead of accumulating one lock document per day.
+    lock_ref = db.collection("system_locks").document("daily_scan")
+    now_utc = datetime.now(timezone.utc)
+    expires_at = now_utc + timedelta(minutes=lease_minutes)
+
+    try:
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def acquire(transaction):
+            snapshot = lock_ref.get(transaction=transaction)
+            if snapshot.exists:
+                payload = snapshot.to_dict() or {}
+                status = payload.get("status")
+                previous_expiry = payload.get("expires_at")
+                if isinstance(previous_expiry, datetime):
+                    if previous_expiry.tzinfo is None:
+                        previous_expiry = previous_expiry.replace(tzinfo=timezone.utc)
+                    if status == "running" and previous_expiry > now_utc:
+                        return False
+                if status == "completed" and payload.get("trading_date") == trading_date and not force:
+                    return False
+            transaction.set(lock_ref, {
+                "status": "running",
+                "trading_date": trading_date,
+                "started_at": firestore.SERVER_TIMESTAMP,
+                "expires_at": expires_at,
+            })
+            return True
+
+        return bool(acquire(transaction))
+    except Exception as e:
+        logging.error("取得掃描鎖失敗，為避免重複掃描本次中止: %s", e)
+        raise RuntimeError("無法取得 Firestore 掃描鎖") from e
+
+
+def _finish_scan_lease(trading_date, status, result_count=0, error=""):
+    if db is None:
+        return
+    try:
+        db.collection("system_locks").document("daily_scan").set({
+            "status": status,
+            "trading_date": trading_date,
+            "result_count": int(result_count),
+            "error": str(error)[:500],
+            "finished_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+    except Exception as e:
+        logging.error("更新掃描鎖狀態失敗: %s", e)
+
+
+def update_top10_tracker(top10_results, trading_date=None):
     if db is None: return
     try:
-        date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+        date_str = trading_date or datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
         tracker_ref = db.collection("market_data").document("top10_tracker")
         doc = tracker_ref.get()
         positions = []
+        history_dates = []
+        missing_ranking_dates = []
+        partial_ranking_dates = []
+        unverified_ranking_dates = []
         if doc.exists:
             data_field = doc.to_dict().get("data", {})
             # Fallback for old structure if necessary
             positions = data_field.get("positions", doc.to_dict().get("positions", []))
+            history_dates = data_field.get("history_dates", [])
+            missing_ranking_dates = data_field.get("missing_ranking_dates", [])
+            partial_ranking_dates = data_field.get("partial_ranking_dates", [])
+            unverified_ranking_dates = data_field.get("unverified_ranking_dates", [])
         
-        open_positions = [p for p in positions if p.get("status") == "OPEN"]
-        closed_positions = [p for p in positions if p.get("status") != "OPEN"]
-        top10_tickers = {str(x["代號"]): x for x in top10_results}
-        
-        for p in open_positions:
-            ticker = str(p["ticker"])
-            cp = p.get("current_price")
-            if ticker in top10_tickers:
-                cp = top10_tickers[ticker]["收盤價"]
-            else:
-                df = get_stock_data(ticker)
-                if df is not None and not df.empty:
-                    cp = float(df.iloc[-1]['Close'])
-            
-            p["current_price"] = cp
-            if cp > p.get("highest_price", p["entry_price"]): p["highest_price"] = cp
-            if cp < p.get("lowest_price", p["entry_price"]): p["lowest_price"] = cp
-            
-            pnl_pct = (cp - p["entry_price"]) / p["entry_price"] * 100
-            p["pnl_pct"] = round(pnl_pct, 2)
-            
-            if pnl_pct >= 15.0:
-                p["status"] = "CLOSED_TP"
-                p["close_date"] = date_str
-                p["close_price"] = cp
-            elif pnl_pct <= -10.0:
-                p["status"] = "CLOSED_SL"
-                p["close_date"] = date_str
-                p["close_price"] = cp
-                
-        open_tickers = {str(p["ticker"]) for p in open_positions if p.get("status") == "OPEN"}
-        for x in top10_results:
-            ticker = str(x["代號"])
-            if ticker not in open_tickers:
-                new_pos = {
-                    "ticker": ticker,
-                    "name": x["名稱"],
-                    "entry_date": date_str,
-                    "entry_price": x["收盤價"],
-                    "status": "OPEN",
-                    "close_date": None,
-                    "close_price": None,
-                    "highest_price": x["收盤價"],
-                    "lowest_price": x["收盤價"],
-                    "current_price": x["收盤價"],
-                    "pnl_pct": 0.0
+        top10_tickers = {str(row.get("代號", "")) for row in top10_results}
+        quotes = {}
+        for position in positions:
+            ticker = str(position.get("ticker", ""))
+            if position.get("status") != "OPEN" or ticker in top10_tickers:
+                continue
+            frame = get_stock_data(ticker)
+            if frame is not None and not frame.empty:
+                latest = frame.iloc[-1]
+                quote_date = pd.Timestamp(frame.index[-1]).strftime("%Y-%m-%d")
+                if quote_date != date_str:
+                    logging.warning("追蹤行情日期不符 %s：預期 %s，取得 %s", ticker, date_str, quote_date)
+                    continue
+                quotes[ticker] = {
+                    "Open": latest.get("Open"),
+                    "High": latest.get("High"),
+                    "Low": latest.get("Low"),
+                    "Close": latest.get("Close"),
                 }
-                open_positions.append(new_pos)
-                open_tickers.add(ticker)
-                
-        all_positions = closed_positions + open_positions
-        tracker_ref.set({"data": {"positions": all_positions}, "update_time": firestore.SERVER_TIMESTAMP})
+        all_positions, daily_snapshots = update_positions_with_snapshots(
+            positions, top10_results, quotes, date_str
+        )
+        history_dates = sorted({str(item) for item in history_dates if item} | {date_str}, reverse=True)[:120]
+        action_counts: dict[str, int] = {}
+        for snapshot in daily_snapshots:
+            snapshot["ranking_status"] = "ok"
+            action = str(snapshot.get("action", "UNKNOWN"))
+            action_counts[action] = action_counts.get(action, 0) + 1
+        remaining_missing_dates = sorted({
+            str(item) for item in missing_ranking_dates if item and str(item) != date_str
+        })
+        remaining_partial_dates = sorted({
+            str(item) for item in partial_ranking_dates if item and str(item) != date_str
+        })
+        remaining_unverified_dates = sorted({
+            str(item) for item in unverified_ranking_dates if item and str(item) != date_str
+        })
+        has_historical_gaps = bool(remaining_missing_dates or remaining_partial_dates or remaining_unverified_dates)
+
+        tracker_payload = {
+            "positions": all_positions,
+            "latest_date": date_str,
+            "latest_snapshots": daily_snapshots,
+            "history_dates": history_dates,
+            "backfill_status": "partial" if has_historical_gaps else "complete",
+            "missing_ranking_dates": remaining_missing_dates,
+            "partial_ranking_dates": remaining_partial_dates,
+            "unverified_ranking_dates": remaining_unverified_dates,
+            "backfill_note": "歷史缺漏榜單未使用事後資料重算排名" if has_historical_gaps else "",
+        }
+        history_payload = {
+            "date": date_str,
+            "records": daily_snapshots,
+            "ranking_status": "ok",
+            "data_status": "ok",
+            "missing_reason": "",
+            "summary": {
+                "tracked_count": len(daily_snapshots),
+                "open_count": len([p for p in all_positions if p.get("status") == "OPEN"]),
+                "actions": action_counts,
+            },
+        }
+        history_ref = db.collection("top10_tracking_history").document(date_str)
+        batch = db.batch()
+        batch.set(tracker_ref, {"data": tracker_payload, "update_time": firestore.SERVER_TIMESTAMP})
+        batch.set(history_ref, {"data": history_payload, "update_time": firestore.SERVER_TIMESTAMP})
+        batch.commit()
         logging.info("自動追蹤紀錄已更新，目前未平倉檔數: %d", len([p for p in all_positions if p.get("status")=="OPEN"]))
     except Exception as e:
         logging.error("更新 top10_tracker 失敗: %s", e)
+        raise
 
-def run_daily_scan(force=False):
+def run_daily_scan(force=False, *, allow_local=False):
+    force = bool(force or os.getenv("FORCE_SCAN") == "1")
+    if db is None and not allow_local:
+        raise RuntimeError("Firestore 初始化失敗；排程掃描已中止，避免 GitHub Actions 誤判成功")
     if not force and not should_run_postclose_scan():
         logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
         return []
-    logging.info("🚀 開始執行全市場 500 檔雷達掃描...")
-    build_industry_cache()
-    
+
     twii_close, twii_ma20, twii_ma60 = 0.0, 0.0, 0.0
+    twii_df = None
     try:
-        twii_df = yf.Ticker("^TWII").history(period="4mo")
+        twii_df = call_with_backoff(lambda: yf.Ticker("^TWII").history(period="4mo"), attempts=3)
         if not twii_df.empty and len(twii_df) >= 60:
             twii_df['MA20'] = twii_df['Close'].rolling(20).mean()
             twii_df['MA60'] = twii_df['Close'].rolling(60).mean()
@@ -287,24 +474,46 @@ def run_daily_scan(force=False):
             twii_ma60 = float(twii_df['MA60'].iloc[-1])
     except Exception as e:
         logging.error("雷達獲取大盤加權指數失敗: %s", e)
-    
-    pool = list(set(fetch_top_500() + ["2330", "2317", "2454"]))
+
+    scan_date_str = latest_trading_date(twii_df.index) if twii_df is not None and not twii_df.empty else ""
+    if not scan_date_str or twii_close <= 0:
+        logging.error("無法確認最新實際交易日，本次不寫入掃描結果。")
+        return []
+
+    previous_payload = _load_daily_scan_doc()
+    if not _acquire_scan_lease(scan_date_str, force=force):
+        if previous_payload.get("scan_date") == scan_date_str:
+            logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
+            return previous_payload.get("data", [])
+        logging.info("%s 掃描工作已由其他執行個體處理，本次略過。", scan_date_str)
+        return []
+
+    universe_limit = scan_universe_limit(scan_date_str, get_secret("SCAN_LIMIT", ""))
+    scan_profile = "weekly_500" if universe_limit == 500 else f"daily_{universe_limit}"
+    logging.info("🚀 開始執行 %s 雷達掃描（%s 檔，%s）...", scan_date_str, universe_limit, scan_profile)
+    try:
+        build_industry_cache()
+        ranked_tickers = fetch_top_stocks(universe_limit)
+        if len(ranked_tickers) < universe_limit:
+            raise RuntimeError(
+                f"成交量排行僅取得 {len(ranked_tickers)}/{universe_limit} 檔，已中止以避免產生不完整榜單"
+            )
+        pool = build_scan_pool(ranked_tickers, universe_limit)
+        if len(pool) != universe_limit:
+            raise RuntimeError(
+                f"掃描池去重後僅 {len(pool)}/{universe_limit} 檔，已中止以避免產生不完整榜單"
+            )
+        price_data = fetch_stock_data_batch(pool)
+    except Exception as e:
+        _finish_scan_lease(scan_date_str, "failed", 0, str(e))
+        raise
     scan_results = []
-    
-    previous_streaks = {}
-    previous_ranks = {}
-    if db is not None:
-        try:
-            prev_doc = db.collection("market_data").document("daily_scan").get()
-            if prev_doc.exists:
-                prev_data = prev_doc.to_dict().get("data", [])
-                previous_streaks = {str(x.get("代號")): int(x.get("Streak", 0)) for x in prev_data}
-                previous_ranks = {str(x.get("代號")): idx + 1 for idx, x in enumerate(prev_data)}
-        except Exception as e:
-            logging.error("讀取歷史掃描名單失敗: %s", e)
-    
+    previous_streaks, previous_ranks, same_day_rerun = previous_scan_state(previous_payload, scan_date_str)
+
     def process_stock(stock):
-        df = get_stock_data(stock)
+        df = price_data.get(stock)
+        if df is None:
+            df = get_stock_data(stock)
         if df is not None:
             t = df.iloc[-1]
             p = df.iloc[-2]
@@ -318,66 +527,130 @@ def run_daily_scan(force=False):
             f_data = get_fundamental_and_industry_data(stock, t_close)
             if is_financial_stock(stock, f_data.get('Industry', '')):
                 return None
-            bp, mom, yoy = get_finmind_chip_and_revenue(stock)
-            fund = {"EPS": f_data.get('EPS', '0'), "MoM": mom, "YoY": yoy, "BigPlayer": bp, "TWII_Close": twii_close, "TWII_MA20": twii_ma20, "TWII_MA60": twii_ma60}
+            revenue = get_finmind_revenue(stock, with_meta=True)
+            mom, yoy, revenue_status = revenue["mom"], revenue["yoy"], revenue["status"]
+            fund = {
+                "EPS": f_data.get('EPS'),
+                "EPS_Period": f_data.get('EPS_Period', 'missing'),
+                "MoM": mom,
+                "YoY": yoy,
+                "TWII_Close": twii_close,
+                "TWII_MA20": twii_ma20,
+                "TWII_MA60": twii_ma60,
+            }
             data = build_score_input(df, fund)
-            
-            sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
-            
-            has_adv_pattern = bool(data.get("Advanced_Pattern"))
-            if sc >= 45 or has_adv_pattern:
-                # ⭐ 同步將 WinRate 和 Whale_Net 存入資料庫
-                wr, samples = calc_winrate(df)
-                inst = get_institutional_trading(stock)
-                whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:3]]) if inst else 0
+            initial_quality, initial_confidence = build_scan_quality({
+                "price": "ok",
+                "fundamental": f_data.get("_status", "unknown"),
+                "revenue": revenue_status,
+                "institutional": "pending",
+                "market": "ok",
+            })
+            data["Data_Quality"] = initial_quality
+            data["Confidence"] = initial_confidence
+            initial_score, _, _, _ = get_decision_score(data, fund, mode="post", with_reason=False)
 
+            has_buy_pattern = data.get("Advanced_Pattern_Signal") == "Buy"
+            # 法人最高 +6 分，pending→完整的信心修正最高再 +3 分。
+            if should_complete_candidate(initial_score, data.get("Advanced_Pattern_Signal", "")):
+                inst, inst_status = get_institutional_trading(stock, with_status=True)
+                whale_days = min(3, len(inst))
+                whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:whale_days]]) if inst else None
+                quality, confidence = build_scan_quality({
+                    "price": "ok",
+                    "fundamental": f_data.get("_status", "unknown"),
+                    "revenue": revenue_status,
+                    "institutional": inst_status,
+                    "market": "ok",
+                }, institutional_days=len(inst))
+                data["Whale_Net"] = whale_net
+                data["Data_Quality"] = quality
+                data["Confidence"] = confidence
+                sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
+                if sc <= 0:
+                    return None
+                if sc < 45 and not has_buy_pattern:
+                    return None
+
+                backtest = calc_winrate(df)
                 return {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
+                    "Data_Date": scan_date_str,
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
-                    "收盤價": round(t_close, 2), "WinRate": wr, "Whale_Net": whale_net,
+                    "開盤價": round(t_open, 2), "最高價": round(t_high, 2), "最低價": round(t_low, 2),
+                    "收盤價": round(t_close, 2), "WinRate": backtest["win_rate"], "Whale_Net": whale_net,
+                    "Whale_Net_Days": whale_days,
                     "漲跌幅": round((t_close - p_close)/p_close*100, 2),
-                    "Feature": feature, "Reasons": rs, "Backtest_Samples": samples,
-                    "EPS": fund['EPS'], "MoM": fund['MoM'], "YoY": fund['YoY'], "BigPlayer": bp,
+                    "Feature": feature, "Reasons": rs, "Backtest_Samples": backtest["closed_signals"],
+                    "Backtest_Scope": backtest["backtest_scope"],
+                    "Validation_WinRate": backtest["validation_win_rate"],
+                    "Validation_Samples": backtest["validation_samples"],
+                    "EPS": fund['EPS'], "EPS_Period": fund['EPS_Period'],
+                    "MoM": fund['MoM'], "YoY": fund['YoY'],
+                    "Revenue_Period": revenue.get("period", ""),
+                    "Revenue_Source": revenue.get("source", ""),
                     "Advanced_Pattern": data.get("Advanced_Pattern", ""),
-                    "Streak": previous_streaks.get(stock, 0) + 1,
-                    "Prev_Rank": previous_ranks.get(stock, 999)
+                    "Advanced_Pattern_Signal": data.get("Advanced_Pattern_Signal", ""),
+                    "Confidence": confidence, "Data_Quality": quality, "Institutional_Days": len(inst),
+                    "Institutional_Status": inst_status,
+                    "Institutional_Source": inst[0].get("_source", "") if inst else "",
+                    "Score_Mode": "盤後正式分數", "Score_Mode_Raw": "post", "Score_Source": "盤後規則計分",
+                    "RRR": 1.5, "RRR_Source": "strategy_default",
+                    "Streak": next_streak(stock, previous_streaks, same_day_rerun),
+                    "Prev_Rank": previous_ranks.get(stock, 999),
                 }
         return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        for res in executor.map(process_stock, pool):
-            if res: scan_results.append(res)
-            
-    scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
-    
-    for idx, res in enumerate(scan_results):
-        curr_rank = idx + 1
-        res["Rank"] = curr_rank
-        res["Rank_Diff"] = res["Prev_Rank"] - curr_rank if res["Prev_Rank"] != 999 else "NEW"
-            
-    if db is None:
-        logging.error("Firestore 尚未初始化，掃描結果未寫入雲端。")
-        return scan_results
-
-    scan_date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
-    db.collection("market_data").document("daily_scan").set({
-        "data": scan_results, 
-        "scan_date": scan_date_str,
-        "update_time": firestore.SERVER_TIMESTAMP
-    })
-    
     try:
-        top10 = scan_results[:10]
-        date_str = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
-        history_data = [{"代號": x["代號"], "名稱": x["名稱"], "收盤價": x["收盤價"], "Score": x["Score"]} for x in top10]
-        db.collection("top10_history").document(date_str).set({"data": history_data, "update_time": firestore.SERVER_TIMESTAMP})
-        logging.info("已記錄 %s 前十名歷史價格", date_str)
-        update_top10_tracker(top10)
-    except Exception as e:
-        logging.error("記錄歷史前十名失敗: %s", e)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            for res in executor.map(process_stock, pool):
+                if res: scan_results.append(res)
 
+        scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
+
+        for idx, res in enumerate(scan_results):
+            curr_rank = idx + 1
+            res["Rank"] = curr_rank
+            res["Rank_Diff"] = res["Prev_Rank"] - curr_rank if res["Prev_Rank"] != 999 else "NEW"
+
+        if not scan_results:
+            raise RuntimeError("掃描結果為空，保留既有 daily_scan，避免以空資料覆寫")
+
+        if db is None:
+            logging.warning("allow_local=True：Firestore 未初始化，僅回傳本機掃描結果。")
+            return scan_results
+
+        db.collection("market_data").document("daily_scan").set({
+            "data": scan_results,
+            "scan_date": scan_date_str,
+            "scan_limit": universe_limit,
+            "universe_size": len(pool),
+            "scan_profile": scan_profile,
+            "update_time": firestore.SERVER_TIMESTAMP
+        })
+
+        top10 = scan_results[:10]
+        history_data = build_top10_history_rows(top10)
+        db.collection("top10_history").document(scan_date_str).set({
+            "data": history_data,
+            "scan_date": scan_date_str,
+            "scan_limit": universe_limit,
+            "scan_profile": scan_profile,
+            "update_time": firestore.SERVER_TIMESTAMP,
+        })
+        logging.info("已記錄 %s 前十名完整榜單", scan_date_str)
+        update_top10_tracker(top10, scan_date_str)
+    except Exception as e:
+        _finish_scan_lease(scan_date_str, "failed", len(scan_results), str(e))
+        logging.exception("全市場掃描失敗: %s", e)
+        raise
+
+    _finish_scan_lease(scan_date_str, "completed", len(scan_results))
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 
 if __name__ == "__main__":
-    run_daily_scan()
+    parser = argparse.ArgumentParser(description="Taiwan stock post-close scanner")
+    parser.add_argument("--allow-local", action="store_true", help="允許無 Firestore 僅輸出本機結果")
+    args = parser.parse_args()
+    run_daily_scan(allow_local=args.allow_local)
