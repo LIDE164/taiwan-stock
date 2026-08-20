@@ -22,6 +22,7 @@ from data_providers import clear_provider_cache, fetch_institutional_rows, fetch
 from market_http import call_with_backoff, http_get
 from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
 from scoring import get_decision_score
+from strategy_advice import build_strategy_text
 try:
     from ui_components import (
         generate_cards_html as build_cards_html,
@@ -124,7 +125,7 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
-ANALYSIS_CACHE_SCHEMA_VERSION = 2
+ANALYSIS_CACHE_SCHEMA_VERSION = 3
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
@@ -1031,17 +1032,34 @@ def get_stock_data_time(df, is_intraday=False):
     suffix = "盤中合併資料" if is_intraday else "日 K 資料"
     return f"{data_date}（{suffix}）"
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def normalize_institutional_rows(rows):
+    normalized = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        date_text = str(row.get("date", ""))
+        try:
+            foreign = int(row["foreign"])
+            trust = int(row["trust"])
+            dealer = int(row["dealer"])
+            total = int(row.get("total", foreign + trust + dealer))
+        except (KeyError, TypeError, ValueError):
+            continue
+        normalized.append({
+            "日期": date_text[-5:].replace("-", "/"),
+            "外資(張)": foreign,
+            "投信(張)": trust,
+            "自營商(張)": dealer,
+            "單日合計(張)": total,
+            "_source": str(row.get("source", "")),
+        })
+    return normalized
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_institutional_trading(ticker, with_status=False):
     rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
-    normalized = [{
-        "日期": row["date"][-5:].replace("-", "/"),
-        "外資(張)": row["foreign"],
-        "投信(張)": row["trust"],
-        "自營商(張)": row["dealer"],
-        "單日合計(張)": row["total"],
-        "_source": row.get("source", ""),
-    } for row in rows]
+    normalized = normalize_institutional_rows(rows)
     return (normalized, status) if with_status else normalized
 
 
@@ -1057,6 +1075,27 @@ def get_analysis_support_data(ticker, current_price):
     fund["_institutional_status"] = inst_status
     fund["Institutional_Source"] = inst_data[0].get("_source", "") if inst_data else ""
     return fund, inst_data
+
+
+def repair_cached_institutional_data(ticker, fund, inst_data):
+    """Retry an empty analysis cache without retaining a transient provider failure."""
+    cached_rows = [row for row in (inst_data or []) if isinstance(row, dict)]
+    if cached_rows:
+        return dict(fund or {}), cached_rows, False
+
+    retry_key = f"institutional_retry_{normalize_ticker(ticker)}"
+    now = time.time()
+    last_retry = safe_num(st.session_state.get(retry_key), 0)
+    if now - last_retry < 60:
+        return dict(fund or {}), [], False
+    st.session_state[retry_key] = now
+
+    rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
+    fresh_rows = normalize_institutional_rows(rows)
+    updated_fund = dict(fund or {})
+    updated_fund["_institutional_status"] = status
+    updated_fund["Institutional_Source"] = fresh_rows[0].get("_source", "") if fresh_rows else ""
+    return updated_fund, fresh_rows, bool(fresh_rows)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_global_macro_data():
@@ -1466,7 +1505,7 @@ def calculate_historical_winrate_interactive(
     )
     return result["win_rate"], result["closed_signals"], result["wins"], result["buy_dates"], result
 
-def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
+def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_light_mode=False):
     t_text_c = "#333" if is_light_mode else "#e2e8f0"
     card_bg = "#f4f6f9" if is_light_mode else "#0f172a"
     sum_bg = "rgba(0,0,0,0.05)" if is_light_mode else "rgba(30,41,59,0.5)"
@@ -1656,7 +1695,16 @@ def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=F
     for b in fund_bullets: fund_html += f"<li style='margin-bottom:5px;'>{b}</li>"
     fund_html += f"</ul><div style='background-color: {sum_bg}; padding: 12px; border-radius: 6px; border-left: 4px solid #c084fc; font-size: 0.95rem; color: {t_text_c};'><b>【總結】</b>{fund_res}</div></div>"
 
-    return tech_html + chip_html + fund_html
+    return {
+        "technical": tech_html,
+        "institutional": chip_html,
+        "fundamental": fund_html,
+    }
+
+
+def generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode=False):
+    sections = generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_light_mode)
+    return "".join(sections[name] for name in ("technical", "institutional", "fundamental"))
 
 def generate_cards_html(df_disp, is_intraday=False, no_score=False):
     return build_cards_html(
@@ -2284,6 +2332,18 @@ elif st.session_state.page == "analysis":
             context=analysis_context,
         )
 
+        if cached_analysis and not analysis_target_date:
+            cached_fund = cached_analysis.get("fund", {})
+            cached_inst_data = cached_analysis.get("inst_data", [])
+            repaired_fund, repaired_inst_data, repaired = repair_cached_institutional_data(
+                target, cached_fund, cached_inst_data
+            )
+            cached_analysis = dict(cached_analysis)
+            cached_analysis["fund"] = repaired_fund
+            cached_analysis["inst_data"] = repaired_inst_data
+            if repaired:
+                save_analysis_cache(target, cached_analysis, context=analysis_context)
+
         cached_data = cached_analysis.get("data") if cached_analysis else None
         used_realtime_snapshot = False
         if is_intra and is_realtime_score_record(cached_doc) and not force_analysis_refresh:
@@ -2390,14 +2450,7 @@ elif st.session_state.page == "analysis":
         sc = data['Score']
         
         display_time = get_stock_data_time(df_slice, is_intraday=is_intra)
-        if sc >= 70:
-            strategy_text = "趨勢偏強，拉回不破 20MA 可觀察續強"
-        elif sc >= 60:
-            strategy_text = "強勢偏多，等待回測均線或量能確認"
-        elif sc >= 45:
-            strategy_text = "偏多觀察，先等訊號確認不追價"
-        else:
-            strategy_text = "訊號不足，暫不主動進場"
+        strategy_text = build_strategy_text(data)
             
         t_date = analysis_target_date
         if t_date:
@@ -2495,6 +2548,9 @@ elif st.session_state.page == "analysis":
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
         v_t = escape_html(str(data['評級']).replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', ''))
         confidence = safe_num(data.get("Confidence"), 0)
+        analysis_sections = generate_comprehensive_analysis_sections(
+            data, inst_data, sc, f_data, is_light_mode
+        )
         st.markdown(f"""
         <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: #0b1120;">
             <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 8px;">100 分規則型量化決策：{v_t} ({sc}分)</h3>
@@ -2504,8 +2560,9 @@ elif st.session_state.page == "analysis":
                     ✅ <b>自訂策略執行規劃</b><br>合理停利目標：<b style='color:#ef4444;'>{data['ATR_Target']}</b> 元<br>嚴格停損防守：<b style='color:#22c55e;'>{data['ATR_Stop']}</b> 元
                 </p>
             </div>
-            {generate_comprehensive_analysis(data, inst_data, sc, f_data, is_light_mode)}
         </div>""", unsafe_allow_html=True)
+        for section_name in ("technical", "institutional", "fundamental"):
+            st.markdown(analysis_sections[section_name], unsafe_allow_html=True)
 
         st.markdown("---")
         st.markdown("### 🧮 資金控管與零股計算器")
