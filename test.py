@@ -20,12 +20,13 @@ from app_security import build_stock_url, escape_html, normalize_ticker, safe_is
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
 from market_http import call_with_backoff, http_get
-from scan_state import build_scan_quality, latest_trading_date
+from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
 from scoring import get_decision_score
 try:
     from ui_components import (
         generate_cards_html as build_cards_html,
         render_app_style,
+        render_daily_scan_status_card,
         render_home_side_panel,
         render_market_status_cards,
         render_metric_grid,
@@ -64,6 +65,22 @@ except Exception as ui_import_error:
         for row in rows[:6]:
             st.write(f"{row.get('title', '')}  {row.get('value', '')}")
             st.caption(row.get("sub", ""))
+
+    def render_daily_scan_status_card(status):
+        st.markdown("**每日掃描狀態**")
+        cols = st.columns(4)
+        values = (
+            ("交易日", status.get("trading_date", "--")),
+            ("結果數量", status.get("result_count_text", "--")),
+            ("開始時間", status.get("started_at", "--")),
+            ("完成時間", status.get("finished_at", "--")),
+        )
+        for col, (label, value) in zip(cols, values):
+            with col:
+                st.metric(label, value)
+        st.caption(f"狀態：{status.get('status_label', '狀態不明')}")
+        if status.get("error_summary"):
+            st.error(f"安全錯誤摘要：{status['error_summary']}")
 
     def render_stock_hero(data, target, name, strategy_text):
         st.markdown(f"## {target} {name}")
@@ -112,6 +129,7 @@ DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176",
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
     "market_data/daily_scan": 120,
+    "system_locks/daily_scan": 60,
 }
 
 st.set_page_config(page_title="專業交易雷達", layout="wide", initial_sidebar_state="collapsed")
@@ -1681,6 +1699,7 @@ if st.session_state.page == "home":
     st.markdown("<h2 style='text-align: center; color: #818cf8; margin-bottom: 20px;'>極致精準：100分量化雷達</h2>", unsafe_allow_html=True)
     
     render_index_board()
+    render_daily_scan_status_card(build_daily_scan_status(load_cloud_doc("system_locks", "daily_scan")))
     st.markdown("<br>", unsafe_allow_html=True)
     
     with st.spinner("🔮 正在自 Firebase 同步全市場量化名單..."):

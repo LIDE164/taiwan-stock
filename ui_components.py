@@ -39,6 +39,8 @@ def render_app_style(is_light_mode=False):
     .chart-control-card.active {{ border-color:#60A5FA; background:rgba(96,165,250,.12); color:#E2E8F0; box-shadow:0 0 0 1px rgba(96,165,250,.60), 0 0 16px rgba(96,165,250,.16); }}
     .chart-control-card.off {{ color:#64748B; }}
     .metric-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0 16px 0; }}
+    .daily-scan-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }}
+    .daily-scan-field {{ padding:10px 12px; border-radius:8px; background:rgba(30,41,59,.42); border:1px solid rgba(51,65,85,.7); }}
     div[role="radiogroup"] {{ gap:10px; }}
     div[role="radiogroup"] label {{
         position:relative;
@@ -167,6 +169,7 @@ def render_app_style(is_light_mode=False):
     @media (max-width: 900px) {{
         .market-status-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }}
         .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+        .daily-scan-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
     }}
     @media (max-width: 520px) {{
         .market-status-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }}
@@ -247,6 +250,40 @@ def render_home_side_panel(title, rows, empty_text="暫無資料"):
 """,
             unsafe_allow_html=True,
         )
+
+
+def render_daily_scan_status_card(status):
+    color = safe_css_color(status.get("status_color"), "#94A3B8")
+    error_summary = str(status.get("error_summary") or "")
+    error_html = ""
+    if error_summary:
+        error_html = (
+            "<div style='margin-top:10px; padding:9px 12px; border-radius:8px; "
+            "background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.35); color:#FCA5A5;'>"
+            f"<b>安全錯誤摘要：</b>{escape_html(error_summary)}</div>"
+        )
+    fields = (
+        ("交易日", status.get("trading_date", "--")),
+        ("結果數量", status.get("result_count_text", "--")),
+        ("開始時間", status.get("started_at", "--")),
+        ("完成時間", status.get("finished_at", "--")),
+    )
+    fields_html = "".join(
+        "<div class='daily-scan-field'>"
+        f"<div class='terminal-title'>{escape_html(label)}</div>"
+        f"<div style='color:#E2E8F0; font-weight:850; margin-top:3px;'>{escape_html(value)}</div>"
+        "</div>"
+        for label, value in fields
+    )
+    st.markdown(
+        "<div class='terminal-card' style='margin:12px 0 16px 0;'>"
+        "<div style='display:flex; align-items:center; justify-content:space-between; gap:12px;'>"
+        "<div class='section-title' style='margin:0;'>每日掃描狀態</div>"
+        f"<span style='color:{color}; border:1px solid {color}; border-radius:999px; padding:4px 10px; font-weight:900;'>"
+        f"{escape_html(status.get('status_label', '狀態不明'))}</span></div>"
+        f"<div class='daily-scan-grid'>{fields_html}</div>{error_html}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_stock_hero(data, target, name, strategy_text):

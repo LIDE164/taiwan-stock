@@ -1,11 +1,13 @@
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 
 from scan_state import (
+    build_daily_scan_status,
     build_scan_quality,
     latest_trading_date,
     next_streak,
     previous_scan_state,
+    safe_scan_error_summary,
     scan_universe_limit,
     should_complete_candidate,
 )
@@ -13,8 +15,59 @@ from scoring import get_decision_score
 
 
 class ScanStateTests(unittest.TestCase):
+    def test_daily_scan_completed_status_formats_firestore_fields(self):
+        status = build_daily_scan_status({
+            "status": "completed",
+            "trading_date": "2026-08-20",
+            "result_count": "37",
+            "started_at": datetime(2026, 8, 20, 7, 0, tzinfo=UTC),
+            "finished_at": datetime(2026, 8, 20, 7, 12, tzinfo=UTC),
+        })
+        self.assertEqual(status["status_label"], "完成")
+        self.assertEqual(status["trading_date"], "2026-08-20")
+        self.assertEqual(status["result_count"], 37)
+        self.assertEqual(status["result_count_text"], "37")
+        self.assertEqual(status["started_at"], "2026-08-20 15:00")
+        self.assertEqual(status["finished_at"], "2026-08-20 15:12")
+        self.assertEqual(status["error_summary"], "")
+
+    def test_daily_scan_running_status_keeps_unfinished_fields_missing(self):
+        status = build_daily_scan_status({
+            "status": "running",
+            "trading_date": "2026-08-20",
+            "started_at": "2026-08-20T07:00:00Z",
+        })
+        self.assertEqual(status["status_label"], "執行中")
+        self.assertEqual(status["result_count_text"], "--")
+        self.assertEqual(status["finished_at"], "--")
+
+    def test_daily_scan_failed_status_uses_safe_error_category(self):
+        raw_error = "PermissionDenied: credential secret=abc at C:/private/service-account.json"
+        status = build_daily_scan_status({"status": "failed", "error": raw_error, "result_count": 0})
+        self.assertEqual(status["status_label"], "失敗")
+        self.assertEqual(status["error_summary"], "雲端服務驗證或權限異常")
+        self.assertNotIn("secret", status["error_summary"])
+        self.assertNotIn("service-account", status["error_summary"])
+
+    def test_daily_scan_unknown_or_malformed_values_degrade_safely(self):
+        status = build_daily_scan_status({
+            "status": "surprise",
+            "trading_date": "not-a-date",
+            "result_count": -3,
+            "started_at": "not-a-time",
+        })
+        self.assertEqual(status["status_label"], "狀態不明")
+        self.assertEqual(status["trading_date"], "--")
+        self.assertEqual(status["result_count_text"], "--")
+        self.assertEqual(status["started_at"], "--")
+
+    def test_unrecognized_scan_error_never_echoes_raw_exception(self):
+        summary = safe_scan_error_summary("RuntimeError token=highly-sensitive-value")
+        self.assertEqual(summary, "掃描執行失敗，請查看後端紀錄")
+        self.assertNotIn("highly-sensitive-value", summary)
+
     def test_latest_trading_date_comes_from_market_history(self):
-        index = [datetime(2026, 8, 14), datetime(2026, 8, 17)]
+        index = [datetime(2026, 8, 14, tzinfo=UTC), datetime(2026, 8, 17, tzinfo=UTC)]
         self.assertEqual(latest_trading_date(index), "2026-08-17")
 
     def test_new_trading_day_uses_previous_rank_and_increments_streak(self):
