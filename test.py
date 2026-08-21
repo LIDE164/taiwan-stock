@@ -20,8 +20,13 @@ from app_security import build_stock_url, escape_html, normalize_ticker, safe_is
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
 from market_http import call_with_backoff, http_get
-from intraday_ranking import annotate_intraday_score, original_ranking_targets
-from intraday_quotes import fetch_yahoo_intraday_quotes
+from intraday_ranking import (
+    annotate_intraday_score,
+    institutional_aggregate_from_record,
+    original_ranking_targets,
+    support_data_from_postclose_record,
+)
+from intraday_quotes import fetch_yahoo_live_history_bundle, merge_intraday_quote_into_history
 from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
 from scoring import get_decision_score
 from strategy_advice import build_strategy_text
@@ -926,9 +931,10 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_public_intraday_quotes(records):
+def get_public_intraday_bundle(records):
+    """Fetch lightweight live/history JSON without blocking on yfinance metadata."""
     now_tpe = datetime.now(timezone(timedelta(hours=8)))
-    return fetch_yahoo_intraday_quotes(records, now_tpe=now_tpe)
+    return fetch_yahoo_live_history_bundle(records, now_tpe=now_tpe)
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_finmind_chip_and_revenue_payload(ticker):
@@ -1354,10 +1360,12 @@ def analyze_today(
     red_mask = (df['Open'].shift(1) > df['Close'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['Open'].shift(1)) & (df['Open'] < df['Close'].shift(1))
     black_mask = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Open'] > df['Close']) & (df['Open'] > df['Close'].shift(1)) & (df['Close'] < df['Open'].shift(1))
 
+    cached_whale_net = optional_num(cached_doc.get("Whale_Net")) if cached_doc else None
+    cached_inst_days = int(safe_num(cached_doc.get("Institutional_Days"), 0)) if cached_doc else 0
     whale_net_buy = None
     whale_net_days = 0
     f_net_10d, t_net_10d, d_net_10d = 0, 0, 0
-    inst_days = len(inst_data) if inst_data else 0
+    inst_days = len(inst_data) if inst_data else (cached_inst_days if cached_whale_net is not None else 0)
     # 法人資料有幾天算幾天，避免少於 3 天時把籌碼歸零
     if inst_data:
         f_net_10d = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data])
@@ -1369,8 +1377,8 @@ def analyze_today(
         d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:sample_days]])
         whale_net_buy = f_net + t_net + d_net
         whale_net_days = sample_days
-    elif historical_date and cached_doc:
-        whale_net_buy = cached_doc.get('Whale_Net')
+    elif cached_whale_net is not None:
+        whale_net_buy = cached_whale_net
         whale_net_days = int(safe_num(cached_doc.get('Whale_Net_Days'), 0))
 
     theme_name, theme_icon = get_dynamic_theme(ticker_number, fund['Industry'])
@@ -1598,6 +1606,7 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
         or f_data.get("Institutional_Source")
         or (inst_data[0].get("_source", "") if inst_data and isinstance(inst_data[0], dict) else "")
     )
+    aggregate_snapshot = institutional_aggregate_from_record(data)
     
     if inst_data:
         sample_days = min(3, len(inst_data))
@@ -1630,6 +1639,26 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
             tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{escape_html(row.get('日期', ''))}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(foreign)}; font-weight: 500;'>{foreign}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(trust)}; font-weight: 500;'>{trust}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(dealer)}; font-weight: 500;'>{dealer}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(total)}; font-weight: 500;'>{total}</td></tr>"
         source_label = escape_html(institutional_source or "來源未標示")
         tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: {source_label}</div></div></div>"
+    elif aggregate_snapshot:
+        aggregate_net = aggregate_snapshot["net"]
+        aggregate_days = aggregate_snapshot["days"]
+        aggregate_source = institutional_source or aggregate_snapshot.get("source") or "盤後掃描保存值（來源未標示）"
+        chip_res_text = (
+            f"盤後掃描保存的近 {aggregate_days} 個交易日三大法人合計為"
+            f"{'買超' if aggregate_net > 0 else '賣超' if aggregate_net < 0 else '持平'} "
+            f"{abs(aggregate_net):,} 張；逐日明細暫時無法取得。"
+        )
+        tables_html = (
+            f"<div style='margin-top:15px; border:1px solid {b_col}; border-radius:6px; padding:15px; background-color:{sum_bg};'>"
+            f"<div style='font-weight:bold; color:{t_text_c}; margin-bottom:10px;'>🎯 法人合計備援（真實保存值）</div>"
+            f"<div style='display:flex; justify-content:space-between; gap:12px; font-size:0.9rem;'>"
+            f"<span>近 {aggregate_days} 日三大法人合計</span>"
+            f"<span style='color:{get_c(aggregate_net)}; font-weight:bold;'>{aggregate_net:+,} 張</span></div>"
+            f"<div style='color:#94a3b8; font-size:0.78rem; margin-top:10px;'>"
+            "目前僅有已保存的合計值；不以 0 張拆分外資、投信與自營商，也不生成逐日明細。"
+            f"</div><div style='text-align:right; color:#888; font-size:0.75rem; margin-top:8px;'>"
+            f"來源：{escape_html(aggregate_source)}</div></div>"
+        )
     else:
         status_messages = {
             "missing": "資料來源未設定且官方備援未取得資料",
@@ -1838,7 +1867,7 @@ if st.session_state.page == "home":
         
         if is_intraday or use_local_fallback:
             spinner_text = (
-                "⚡ 正在以即時行情重新評分原榜單（依標的數量約需數十秒至數分鐘）..."
+                "⚡ 正在批次載入即時行情並重新評分原榜單..."
                 if is_intraday
                 else "⚡ 正在以本機資料重算榜單..."
             )
@@ -1850,11 +1879,15 @@ if st.session_state.page == "home":
                     else get_radar_targets(cached_list)
                 )
                 live_data = []
-                public_intraday_quotes = (
-                    get_public_intraday_quotes(cached_list)
-                    if is_intraday
-                    else {}
-                )
+                if is_intraday:
+                    public_intraday_quotes, public_intraday_histories = (
+                        get_public_intraday_bundle(cached_list)
+                    )
+                else:
+                    public_intraday_quotes, public_intraday_histories = {}, {}
+                intraday_trading_date = datetime.now(
+                    timezone(timedelta(hours=8))
+                ).strftime("%Y-%m-%d")
                 base_by_ticker = {
                     normalize_ticker(row.get("代號", "")): row
                     for row in cached_list
@@ -1862,12 +1895,28 @@ if st.session_state.page == "home":
                 }
                 
                 def process_live(ticker):
-                    df = get_stock_data(
-                        ticker,
-                        intraday_quote=public_intraday_quotes.get(normalize_ticker(ticker)),
-                    )
+                    normalized_ticker = normalize_ticker(ticker)
+                    base = base_by_ticker.get(normalized_ticker)
+                    if is_intraday:
+                        quote = public_intraday_quotes.get(normalized_ticker)
+                        history = public_intraday_histories.get(normalized_ticker)
+                        merged_history = merge_intraday_quote_into_history(
+                            history,
+                            quote,
+                            trading_date=intraday_trading_date,
+                        )
+                        if merged_history is None:
+                            return None
+                        try:
+                            df = apply_technical_indicators(merged_history)
+                            df.attrs["intraday_quote_status"] = "realtime"
+                            df.attrs["intraday_quote_source"] = str(quote.get("source") or "公開即時行情")
+                        except Exception as indicator_error:
+                            logging.warning("盤中批次技術指標失敗 %s: %s", normalized_ticker, indicator_error)
+                            return None
+                    else:
+                        df = get_stock_data(ticker)
                     if df is not None:
-                        base = base_by_ticker.get(normalize_ticker(ticker))
                         if is_intraday and df.attrs.get("intraday_quote_status") != "realtime":
                             return None
                         cache_context = "realtime" if is_intraday else "latest"
@@ -1880,17 +1929,36 @@ if st.session_state.page == "home":
                         if analysis_cache and analysis_cache.get("fund"):
                             fund = analysis_cache.get("fund")
                             inst_data = analysis_cache.get("inst_data", [])
+                        elif is_intraday:
+                            fund = support_data_from_postclose_record(
+                                base,
+                                current_price=float(df['Close'].iloc[-1]),
+                            )
+                            inst_data = []
                         else:
                             fund, inst_data = get_analysis_support_data(ticker, df['Close'].iloc[-1])
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
-                            bt_preview = calculate_historical_performance(df, 1.5, 1.0)
-                            res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
-                            res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
-                            res["Validation_WinRate"] = bt_preview.get("validation_win_rate", 0.0)
-                            res["Validation_Samples"] = bt_preview.get("validation_samples", 0)
-                            res["Backtest_Scope"] = bt_preview.get("backtest_scope", BACKTEST_SCOPE)
+                            if is_intraday:
+                                for key in (
+                                    "WinRate", "Backtest_Samples", "Validation_WinRate",
+                                    "Validation_Samples", "Backtest_Scope",
+                                ):
+                                    if isinstance(base, dict) and key in base:
+                                        res[key] = base[key]
+                            else:
+                                bt_preview = calculate_historical_performance(df, 1.5, 1.0)
+                                res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
+                                res["Backtest_Samples"] = bt_preview.get("closed_signals", 0)
+                                res["Validation_WinRate"] = bt_preview.get("validation_win_rate", 0.0)
+                                res["Validation_Samples"] = bt_preview.get("validation_samples", 0)
+                                res["Backtest_Scope"] = bt_preview.get("backtest_scope", BACKTEST_SCOPE)
                             res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
+                            if is_intraday:
+                                res["Intraday_Quote_Source"] = df.attrs.get(
+                                    "intraday_quote_source",
+                                    "盤中延遲行情",
+                                )
                             save_analysis_cache(
                                 ticker,
                                 {"data": res, "fund": fund, "inst_data": inst_data},
@@ -1898,10 +1966,23 @@ if st.session_state.page == "home":
                             )
                             return annotate_intraday_score(base, res) if is_intraday else res
                     return None
-                    
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    for r in executor.map(process_live, targets):
-                        if r: live_data.append(r)
+
+                if is_intraday:
+                    progress_bar = st.progress(0, text=f"盤中重評 0/{len(targets)}")
+                    for index, ticker in enumerate(targets, start=1):
+                        result = process_live(ticker)
+                        if result:
+                            live_data.append(result)
+                        progress_bar.progress(
+                            index / max(1, len(targets)),
+                            text=f"盤中重評 {index}/{len(targets)}",
+                        )
+                    progress_bar.empty()
+                else:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                        for result in executor.map(process_live, targets):
+                            if result:
+                                live_data.append(result)
                 if is_intraday:
                     df_results = pd.DataFrame(live_data)
                     failed_intraday_count = max(0, len(targets) - len(live_data))
@@ -2419,12 +2500,26 @@ elif st.session_state.page == "analysis":
             else:
                 f_data, inst_data = get_analysis_support_data(target, df_slice['Close'].iloc[-1])
             data = dict(cached_doc)
-            data["MoM"], data["YoY"] = f_data.get("MoM"), f_data.get("YoY")
-            data["Revenue_Status"] = f_data.get("_data_status", {}).get("revenue", "unknown")
-            data["Revenue_Period"] = f_data.get("Revenue_Period", "")
-            data["Revenue_Source"] = f_data.get("Revenue_Source", "")
-            data["Institutional_Status"] = f_data.get("_institutional_status", "unknown")
-            data["Institutional_Source"] = f_data.get("Institutional_Source", "")
+            if f_data.get("MoM") is not None:
+                data["MoM"] = f_data.get("MoM")
+            if f_data.get("YoY") is not None:
+                data["YoY"] = f_data.get("YoY")
+            data["Revenue_Status"] = (
+                f_data.get("_data_status", {}).get("revenue")
+                or data.get("Revenue_Status")
+                or "unknown"
+            )
+            data["Revenue_Period"] = f_data.get("Revenue_Period") or data.get("Revenue_Period", "")
+            data["Revenue_Source"] = f_data.get("Revenue_Source") or data.get("Revenue_Source", "")
+            data["Institutional_Status"] = (
+                f_data.get("_institutional_status")
+                or data.get("Institutional_Status")
+                or "unknown"
+            )
+            data["Institutional_Source"] = (
+                f_data.get("Institutional_Source")
+                or data.get("Institutional_Source", "")
+            )
             data["Score_Source"] = "名單盤中快照"
         elif is_intra and isinstance(cached_data, dict) and is_realtime_score_record(cached_data):
             inst_data = cached_analysis.get("inst_data", [])
@@ -2505,7 +2600,7 @@ elif st.session_state.page == "analysis":
             and cached_score_date == analysis_price_date
         )
         if use_cached_list_score:
-            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Confidence"]:
+            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence"]:
                 if k in cached_doc:
                     data[k] = cached_doc[k]
             if "Score_Mode" not in data:
@@ -2595,7 +2690,7 @@ elif st.session_state.page == "analysis":
             data['Backtest_Samples'] = closed_signals
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Confidence", "Score_Source"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Score_Source"]:
                         if k in data:
                             row[k] = data[k]
                     break

@@ -1,6 +1,11 @@
 import unittest
 
-from intraday_ranking import annotate_intraday_score, original_ranking_targets
+from intraday_ranking import (
+    annotate_intraday_score,
+    institutional_aggregate_from_record,
+    original_ranking_targets,
+    support_data_from_postclose_record,
+)
 
 
 class IntradayRankingTests(unittest.TestCase):
@@ -33,6 +38,35 @@ class IntradayRankingTests(unittest.TestCase):
         result = annotate_intraday_score({"Score": 72}, {"Score": None})
         self.assertFalse(result["Intraday_Rescored"])
         self.assertIsNone(result["Score_Diff"])
+
+    def test_postclose_support_reuses_reported_values_without_zero_fill(self):
+        fund = support_data_from_postclose_record({
+            "產業": "半導體", "EPS": 12.5, "EPS_Period": "ttm",
+            "MoM": None, "YoY": 8.2, "Revenue_Source": "TWSE OpenAPI",
+            "Institutional_Days": 5, "Institutional_Status": "ok",
+            "Institutional_Source": "TWSE OpenAPI", "Whale_Net": 1200,
+        }, current_price=250)
+        self.assertEqual(fund["EPS"], 12.5)
+        self.assertEqual(fund["PE"], 20)
+        self.assertIsNone(fund["MoM"])
+        self.assertEqual(fund["YoY"], 8.2)
+        self.assertEqual(fund["_data_status"]["revenue"], "ok")
+        self.assertEqual(fund["_institutional_status"], "ok")
+
+    def test_reported_institutional_aggregate_is_available_without_daily_rows(self):
+        snapshot = institutional_aggregate_from_record({
+            "Whale_Net": 0,
+            "Whale_Net_Days": 3,
+            "Institutional_Status": "ok",
+            "Institutional_Source": "TWSE T86",
+        })
+        self.assertEqual(snapshot["net"], 0)
+        self.assertEqual(snapshot["days"], 3)
+        self.assertEqual(snapshot["source"], "TWSE T86")
+        self.assertIsNone(institutional_aggregate_from_record({
+            "Whale_Net": None,
+            "Whale_Net_Days": 0,
+        }))
 
 
 if __name__ == "__main__":
