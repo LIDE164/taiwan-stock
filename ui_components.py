@@ -403,7 +403,21 @@ def generate_cards_html(
         sample_count = record.get("Backtest_Samples", record.get("closed_signals", record.get("ClosedSignals", "--")))
         cred_text, cred_color = credibility_label(sample_count)
         main_signal = escape_html(record.get("Feature") or "資料不足")
-        rrr = optional_number(record.get("RRR"))
+        rrr = optional_number(record.get("Entry_RRR", record.get("RRR")))
+        entry_status = str(record.get("Entry_Status") or "").strip()
+        entry_reason = str(record.get("Entry_Reason") or "").strip()
+        entry_low = optional_number(record.get("Entry_Low"))
+        entry_high = optional_number(record.get("Entry_High"))
+        entry_stop = optional_number(record.get("Entry_Stop"))
+        entry_target = optional_number(record.get("Entry_Target"))
+        no_chase = optional_number(record.get("No_Chase_Price"))
+        status_palette = {
+            "現在可執行": ("#fecaca", "rgba(239,68,68,0.18)", "rgba(239,68,68,0.45)"),
+            "等待拉回": ("#fde68a", "rgba(250,204,21,0.15)", "rgba(250,204,21,0.4)"),
+            "等待觸發": ("#bfdbfe", "rgba(96,165,250,0.15)", "rgba(96,165,250,0.4)"),
+            "條件不足": ("#cbd5e1", "rgba(148,163,184,0.13)", "rgba(148,163,184,0.35)"),
+            "待新掃描": ("#cbd5e1", "rgba(148,163,184,0.13)", "rgba(148,163,184,0.35)"),
+        }
 
         cards_html += "<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
         cards_html += "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; position: relative; z-index: 10;'>"
@@ -431,7 +445,11 @@ def generate_cards_html(
 
         raw_industry = str(record.get("產業") or "").strip()
         industry_name = escape_html("未分類" if raw_industry in ("", "一般產業", "無") else raw_industry)
-        cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span></div>"
+        cards_html += f"<span style='font-size: 0.72rem; background-color: rgba(79,70,229,0.15); color: #818cf8; border: 1px solid rgba(79,70,229,0.3); padding: 2px 6px; border-radius: 4px; white-space: nowrap; font-weight: 700;'>{industry_name}</span>"
+        if entry_status and not no_score:
+            status_color, status_bg, status_border = status_palette.get(entry_status, status_palette["待新掃描"])
+            cards_html += f"<span style='font-size:0.72rem; color:{status_color}; background:{status_bg}; border:1px solid {status_border}; padding:2px 7px; border-radius:999px; white-space:nowrap; font-weight:900;'>{escape_html(entry_status)}</span>"
+        cards_html += "</div>"
         close_value = optional_number(record.get("收盤價"))
         close_text = "--" if close_value is None else f"{close_value:.1f}"
         change_text = "--" if change_pct is None else f"{change_sign}{change_pct:.1f}%"
@@ -451,6 +469,22 @@ def generate_cards_html(
             cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score_display}</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div>{intraday_compare}</div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
+
+        if entry_status and not no_score:
+            has_entry_levels = all(value is not None for value in (entry_low, entry_high, entry_stop, entry_target))
+            cards_html += "<div style='background:rgba(15,23,42,0.75); border:1px solid rgba(96,165,250,0.28); border-radius:8px; padding:10px; margin-bottom:10px;'>"
+            if has_entry_levels:
+                no_chase_text = "--" if no_chase is None else f"{no_chase:g}"
+                cards_html += "<div style='display:grid; grid-template-columns:repeat(4,1fr); gap:8px; font-size:0.74rem;'>"
+                cards_html += f"<div><span style='color:#64748b;'>觀察買入區間</span><br><b style='color:#f8fafc;'>{entry_low:g}–{entry_high:g}</b></div>"
+                cards_html += f"<div><span style='color:#64748b;'>風險停損</span><br><b style='color:#22c55e;'>{entry_stop:g}</b></div>"
+                cards_html += f"<div><span style='color:#64748b;'>策略目標</span><br><b style='color:#ef4444;'>{entry_target:g}</b></div>"
+                cards_html += f"<div><span style='color:#64748b;'>禁止追高</span><br><b style='color:#facc15;'>{no_chase_text}</b></div></div>"
+            else:
+                cards_html += "<div style='color:#94a3b8; font-size:0.76rem; font-weight:800;'>尚未產生價格區間，避免以缺失資料推估。</div>"
+            if entry_reason:
+                cards_html += f"<div style='color:#94a3b8; font-size:0.72rem; margin-top:6px;'>判定：{escape_html(entry_reason)}</div>"
+            cards_html += "</div>"
 
         try:
             sample_value = float(str(sample_count).replace(",", ""))

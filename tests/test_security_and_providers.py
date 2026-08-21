@@ -72,6 +72,22 @@ class SecurityTests(unittest.TestCase):
         )
         self.assertIn("盤後 72 → 盤中 78（+6）", rendered)
 
+    def test_card_renderer_shows_entry_status_and_levels(self):
+        frame = pd.DataFrame([{
+            "代號": "2330", "名稱": "台積電", "Score": 78,
+            "收盤價": 100, "漲跌": 1, "漲跌幅": 1,
+            "Entry_Status": "現在可執行", "Entry_Low": 99,
+            "Entry_High": 101, "Entry_Stop": 96, "Entry_Target": 106,
+            "Entry_RRR": 1.5, "No_Chase_Price": 103.5,
+            "Entry_Reason": "<script>不可直接顯示</script>",
+        }])
+        rendered = generate_cards_html(frame, safe_num=lambda value, default=0: float(value or default))
+        self.assertIn("現在可執行", rendered)
+        self.assertIn("觀察買入區間", rendered)
+        self.assertIn("99–101", rendered)
+        self.assertIn("&lt;script&gt;不可直接顯示&lt;/script&gt;", rendered)
+        self.assertNotIn("<script>", rendered)
+
 
 class ProviderTests(unittest.TestCase):
     def setUp(self):

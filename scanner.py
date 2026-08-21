@@ -14,6 +14,7 @@ import streamlit as st
 from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
 from app_security import normalize_ticker
 from data_providers import fetch_institutional_rows, fetch_revenue_growth
+from entry_readiness import build_entry_readiness
 from market_http import call_with_backoff, http_get
 from scan_state import (
     build_scan_quality,
@@ -573,7 +574,14 @@ def run_daily_scan(force=False, *, allow_local=False):
                     return None
 
                 backtest = calc_winrate(df)
-                return {
+                data.update({
+                    "Score": sc,
+                    "最高價": float(t_high),
+                    "最低價": float(t_low),
+                    "ATR": float(t.get("ATR", 0)),
+                })
+                entry_plan = build_entry_readiness(data)
+                result = {
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Data_Date": scan_date_str,
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
@@ -596,9 +604,21 @@ def run_daily_scan(force=False, *, allow_local=False):
                     "Institutional_Source": inst[0].get("_source", "") if inst else "",
                     "Score_Mode": "盤後正式分數", "Score_Mode_Raw": "post", "Score_Source": "盤後規則計分",
                     "RRR": 1.5, "RRR_Source": "strategy_default",
+                    "20MA": round(float(data.get("20MA", 0)), 2),
+                    "BB_UP": round(float(data.get("BB_UP", 0)), 2),
+                    "RSI": round(float(data.get("RSI", 0)), 1),
+                    "BIAS": round(float(data.get("BIAS", 0)), 2),
+                    "ATR": round(float(data.get("ATR", 0)), 2),
+                    "Entry_Pattern": data.get("Entry_Pattern", ""),
+                    "Signal_Conflict": data.get("Signal_Conflict", ""),
+                    "Est_Vol_Ratio": data.get("Est_Vol_Ratio"),
+                    "Volume_Confirmed": bool(data.get("Volume_Confirmed")),
+                    "Tomorrow_Plan": data.get("Tomorrow_Plan", {}),
                     "Streak": next_streak(stock, previous_streaks, same_day_rerun),
                     "Prev_Rank": previous_ranks.get(stock, 999),
                 }
+                result.update(entry_plan)
+                return result
         return None
 
     try:

@@ -19,6 +19,7 @@ from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDU
 from app_security import build_stock_url, escape_html, normalize_ticker, safe_iso_date, safe_mode, scoped_document_name
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
+from entry_readiness import build_entry_readiness, ensure_entry_readiness
 from market_http import call_with_backoff, http_get
 from intraday_ranking import (
     annotate_intraday_score,
@@ -1466,7 +1467,9 @@ def analyze_today(
     data = {
         "代號": ticker_number, "名稱": get_stock_name(ticker_number), "ticker_raw": ticker_number,
         "Data_Date": pd.Timestamp(df.index[-1]).strftime("%Y-%m-%d"),
-        "產業": fund['Industry'], "昨日收盤價": round(p_close, 2), "收盤價": round(t_close, 2), 
+        "產業": fund['Industry'], "昨日收盤價": round(p_close, 2),
+        "開盤價": round(t_open, 2), "最高價": round(t_high, 2), "最低價": round(t_low, 2),
+        "收盤價": round(t_close, 2),
         "漲跌": round(t_close - p_close, 2), "漲跌幅": round((t_close - p_close) / p_close * 100, 2), 
         "成交量": int(t['Volume']), "估算成交量": int(effective_volume), "原始成交量": int(t['Volume']), "5日均量": int(avg_vol_5),
         "5MA": round(t.get('5MA', t_close), 2), "10MA": round(t.get('10MA', t_close), 2), 
@@ -1524,6 +1527,7 @@ def analyze_today(
     data['WinRate'] = cached_doc.get('WinRate', 0.0) if cached_doc else 0.0
     data['Score_Mode'] = score_mode_label
     data['Score_Mode_Raw'] = score_mode
+    data.update(build_entry_readiness(data, intraday=effective_intraday, baseline_plan=cached_doc))
 
     return data
 
@@ -1853,6 +1857,13 @@ if st.session_state.page == "home":
         with col_m3:
             st.caption("自選群組")
             only_favorites = st.toggle("只看自選群組", value=False)
+        st.caption("進場條件（量化雷達適用）")
+        entry_filter = st.radio(
+            "進場條件：",
+            ["現在可執行", "等待拉回／觸發", "全部候選"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
         st.markdown("</div>", unsafe_allow_html=True)
         requested_intraday = "盤中" in radar_mode
         score_mode, score_mode_label, is_intraday = resolve_score_mode(requested_intraday)
@@ -1861,7 +1872,11 @@ if st.session_state.page == "home":
         if requested_intraday and not is_intraday:
             st.caption("目前非台股交易時段，系統已自動改採盤後正式分數。")
         
-        cached_list = list(st.session_state.get('scan_results', []))
+        cached_list = [
+            ensure_entry_readiness(row)
+            for row in st.session_state.get('scan_results', [])
+            if isinstance(row, dict)
+        ]
         use_local_fallback = st.session_state.get("scan_results_is_local", False)
         cloud_count = 0 if use_local_fallback else len(cached_list)
         
@@ -2052,6 +2067,13 @@ if st.session_state.page == "home":
             else:
                 df_results = df_results[df_results['Score'] >= 60]
                 score_count = len(df_results)
+                if 'Entry_Status_Group' not in df_results.columns:
+                    df_results['Entry_Status_Group'] = "watch"
+                if entry_filter == "現在可執行":
+                    df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "ready"]
+                elif entry_filter == "等待拉回／觸發":
+                    df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "wait"]
+            entry_count = len(df_results)
                 
             sort_map = {
                 "量化分數": ["Score", "漲跌幅"],
@@ -2063,15 +2085,18 @@ if st.session_state.page == "home":
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
             
-            count_label = f"符合型態 {score_count} 檔" if is_pattern_mode else f"60分以上 {score_count} 檔"
+            if is_pattern_mode or is_adv_pattern_mode:
+                count_label = f"符合型態 {score_count} 檔"
+            else:
+                count_label = f"60分以上 {score_count} 檔 → {entry_filter} {entry_count} 檔"
             st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 引擎運算完成 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → {count_label} | 顯示 {len(df_disp)} 檔</div>", unsafe_allow_html=True)
             if not df_disp.empty:
                 left_dash, mid_dash, right_dash = st.columns([1.05, 2.1, 1.05])
                 with left_dash:
                     market_rows = [
-                        {"title": "掃描來源", "value": "本機" if use_local_fallback else "雲端", "sub": f"符合條件 {score_count} 檔", "color": "#60A5FA"},
+                        {"title": "掃描來源", "value": "本機" if use_local_fallback else "雲端", "sub": f"符合條件 {entry_count} 檔", "color": "#60A5FA"},
                         {"title": "目前模式", "value": "盤中" if is_intraday else "盤後", "sub": score_mode_label, "color": "#FACC15"},
-                        {"title": "排序口徑", "value": sort_mode, "sub": selected_theme, "color": "#94A3B8"},
+                        {"title": "進場條件", "value": entry_filter if not (is_pattern_mode or is_adv_pattern_mode) else "型態觀察", "sub": selected_theme, "color": "#94A3B8"},
                     ]
                     render_home_side_panel("市場總覽", market_rows)
                 with mid_dash:
@@ -2136,7 +2161,12 @@ if st.session_state.page == "home":
                     render_home_side_panel("今日異動", mover_rows)
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
-                st.info("目前沒有 60 分以上標的。")
+                if not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "現在可執行":
+                    st.info("目前沒有同時進入觀察買入區間、量能確認且資料信心達標的股票；可切換「等待拉回／觸發」查看候選。")
+                elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待拉回／觸發":
+                    st.info("目前沒有等待拉回或等待觸發的候選；可切換「全部候選」查看待新掃描資料。")
+                else:
+                    st.info("目前沒有符合此篩選條件的標的。")
         else:
             score_count = 0
             st.markdown(f"<div style='font-size:0.8rem; color:#94a3b8; border-bottom:1px solid #1e293b; padding-bottom:8px; margin-bottom:16px;'>⚡ 篩選過程 | 雲端 {cloud_count} 檔 → 模式 {mode_count} 檔 → 自選 {favorite_count} 檔 → 產業 {industry_count} 檔 → 60分以上 {score_count} 檔</div>", unsafe_allow_html=True)
