@@ -57,6 +57,21 @@ class SecurityTests(unittest.TestCase):
         self.assertIn("--", rendered)
         self.assertNotIn("法人10日", rendered)
 
+    def test_card_renderer_shows_postclose_to_intraday_score_change(self):
+        frame = pd.DataFrame([{
+            "代號": "2330", "名稱": "台積電", "Score": 78,
+            "Original_Score": 72, "Score_Diff": 6,
+            "Score_Mode_Raw": "realtime", "Score_Mode": "盤中參考分數",
+            "Score_Source": "盤中重新評分", "收盤價": 100,
+            "漲跌": 1, "漲跌幅": 1,
+        }])
+        rendered = generate_cards_html(
+            frame,
+            is_intraday=True,
+            safe_num=lambda value, default=0: float(value or default),
+        )
+        self.assertIn("盤後 72 → 盤中 78（+6）", rendered)
+
 
 class ProviderTests(unittest.TestCase):
     def setUp(self):

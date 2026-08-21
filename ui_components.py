@@ -382,6 +382,8 @@ def generate_cards_html(
         rating = str(record.get("評級", "⚪ 忽略")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
         score_mode = str(record.get("Score_Mode", score_mode_label))
         score_source = str(record.get("Score_Source", ""))
+        original_score = optional_number(record.get("Original_Score"))
+        score_diff = optional_number(record.get("Score_Diff"))
 
         r_col = "#4ade80" if "強勢" in rating else ("#facc15" if "偏多" in rating else "#94a3b8")
         ticker_code = normalize_ticker(record.get("代號", ""))
@@ -438,7 +440,15 @@ def generate_cards_html(
             cards_html += f"<div style='text-align:right;'><div style='color:#60A5FA; font-size:1.15rem; font-weight:950;'>形態觀察</div><div style='color:#94a3b8; font-size:0.82rem; font-weight:900;'>不列入評分</div></div></div>"
         else:
             score_display = "--" if score is None else f"{score:g}分"
-            cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score_display}</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div></div></div>"
+            intraday_compare = ""
+            if realtime_record and original_score is not None and score is not None:
+                delta_color = "#ef4444" if (score_diff or 0) > 0 else ("#22c55e" if (score_diff or 0) < 0 else "#94a3b8")
+                delta_text = "--" if score_diff is None else f"{score_diff:+g}"
+                intraday_compare = (
+                    f"<div style='color:{delta_color}; font-size:0.72rem; font-weight:800;'>"
+                    f"盤後 {original_score:g} → 盤中 {score:g}（{delta_text}）</div>"
+                )
+            cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score_display}</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div>{intraday_compare}</div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
 

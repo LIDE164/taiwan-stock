@@ -20,6 +20,8 @@ from app_security import build_stock_url, escape_html, normalize_ticker, safe_is
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
 from market_http import call_with_backoff, http_get
+from intraday_ranking import annotate_intraday_score, original_ranking_targets
+from intraday_quotes import fetch_yahoo_intraday_quotes
 from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
 from scoring import get_decision_score
 from strategy_advice import build_strategy_text
@@ -763,7 +765,7 @@ def _get_ohlcv_base(ticker_number):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_stock_data(ticker_number, target_date=None):
+def get_stock_data(ticker_number, target_date=None, intraday_quote=None):
     """Layer 2: Apply indicators & merge intraday quote (fast, cache 60s)."""
     base_ticker = normalize_ticker(ticker_number)
     if not base_ticker:
@@ -771,6 +773,8 @@ def get_stock_data(ticker_number, target_date=None):
     base_df = _get_ohlcv_base(ticker_number)
     if base_df is None: return None
     df = base_df.copy()  # 必須 copy，避免修改快取的唯讀 DataFrame
+    intraday_quote_status = "not_requested"
+    intraday_quote_source = ""
     
     if target_date:
         try:
@@ -782,53 +786,77 @@ def get_stock_data(ticker_number, target_date=None):
     else:
         try:
             market_state = get_market_state()
+            fallback_quote = dict(intraday_quote or {}) if isinstance(intraday_quote, dict) else {}
+            quote = {}
             if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
-                url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
-                res = http_get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=5)
-                res.raise_for_status()
-                if res.status_code == 200:
-                    q = res.json()
-                    raw_close = q.get('closePrice', q.get('lastPrice'))
-                    raw_open = q.get('openPrice')
-                    raw_high = q.get('highPrice')
-                    raw_low = q.get('lowPrice')
-                    now_tpe = datetime.now(timezone(timedelta(hours=8)))
-                    total = q.get('total', {}) or {}
-                    raw_volume = total.get('tradeVolume')
-                    if any(value is None for value in (raw_close, raw_open, raw_high, raw_low, raw_volume)):
-                        raise ValueError("Fugle 即時 OHLCV 欄位不完整")
-                    c_price = float(raw_close)
-                    open_price = float(raw_open)
-                    high_price = float(raw_high)
-                    low_price = float(raw_low)
-                    live_volume = float(raw_volume)
-                    if (
-                        min(c_price, open_price, high_price, low_price) <= 0
-                        or high_price < max(c_price, open_price)
-                        or low_price > min(c_price, open_price)
-                    ):
-                        raise ValueError("Fugle 即時 OHLCV 數值不合理")
-                    live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
-                    real_vwap = live_value / live_volume if live_volume > 0 and live_value > 0 else 0
-                    dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d')).tz_localize(None)
-                    df.index = df.index.tz_localize(None)
-                    if dt_live not in df.index:
-                        new_row = pd.DataFrame({'Open': [open_price], 'High': [high_price], 'Low': [low_price], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
-                        if 0 < real_vwap < c_price * 2:
-                            new_row['VWAP'] = real_vwap
-                        df = pd.concat([df, new_row])
-                    else:
-                        df.loc[dt_live, 'Close'] = c_price
-                        df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), high_price)
-                        df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), low_price)
-                        df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
-                        if 0 < real_vwap < c_price * 2:
-                            df.loc[dt_live, 'VWAP'] = real_vwap
+                try:
+                    url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
+                    res = http_get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=5)
+                    res.raise_for_status()
+                    if res.status_code == 200:
+                        q = res.json()
+                        total = q.get('total', {}) or {}
+                        live_value = float(total.get('tradeValue', total.get('tradeValueAmount', 0)) or 0)
+                        live_volume = total.get('tradeVolume')
+                        candidate_quote = {
+                            "close": q.get('closePrice', q.get('lastPrice')),
+                            "open": q.get('openPrice'),
+                            "high": q.get('highPrice'),
+                            "low": q.get('lowPrice'),
+                            "volume": live_volume,
+                            "vwap": live_value / float(live_volume) if live_volume and live_value > 0 else None,
+                            "source": "Fugle",
+                        }
+                        if all(candidate_quote.get(key) is not None for key in ("close", "open", "high", "low", "volume")):
+                            quote = candidate_quote
+                except Exception as fugle_error:
+                    logging.warning("Fugle 即時行情失敗，改用公開行情 %s: %s", base_ticker, fugle_error)
+            if not quote:
+                quote = fallback_quote
+            if base_ticker != "^TWII" and market_state == "open" and quote:
+                required_quote = ("close", "open", "high", "low", "volume")
+                if any(quote.get(key) is None for key in required_quote):
+                    raise ValueError("即時 OHLCV 欄位不完整")
+                c_price = float(quote["close"])
+                open_price = float(quote["open"])
+                high_price = float(quote["high"])
+                low_price = float(quote["low"])
+                live_volume = float(quote["volume"])
+                if (
+                    min(c_price, open_price, high_price, low_price, live_volume) <= 0
+                    or high_price < max(c_price, open_price)
+                    or low_price > min(c_price, open_price)
+                ):
+                    raise ValueError("即時 OHLCV 數值不合理")
+                real_vwap = safe_num(quote.get("vwap"), 0)
+                now_tpe = datetime.now(timezone(timedelta(hours=8)))
+                dt_live = pd.to_datetime(now_tpe.strftime('%Y-%m-%d')).tz_localize(None)
+                df.index = df.index.tz_localize(None)
+                if dt_live not in df.index:
+                    new_row = pd.DataFrame({'Open': [open_price], 'High': [high_price], 'Low': [low_price], 'Close': [c_price], 'Volume': [live_volume]}, index=[dt_live])
+                    if 0 < real_vwap < c_price * 2:
+                        new_row['VWAP'] = real_vwap
+                    df = pd.concat([df, new_row])
+                else:
+                    df.loc[dt_live, 'Close'] = c_price
+                    df.loc[dt_live, 'High'] = max(float(df.loc[dt_live, 'High']), high_price)
+                    df.loc[dt_live, 'Low'] = min(float(df.loc[dt_live, 'Low']), low_price)
+                    df.loc[dt_live, 'Volume'] = max(float(df.loc[dt_live, 'Volume']), live_volume)
+                    if 0 < real_vwap < c_price * 2:
+                        df.loc[dt_live, 'VWAP'] = real_vwap
+                intraday_quote_status = "realtime"
+                intraday_quote_source = str(quote.get("source") or "即時行情")
+            elif base_ticker != "^TWII" and market_state == "open":
+                intraday_quote_status = "missing"
         except Exception as e:
-            logging.warning("Fugle 即時行情合併失敗 %s: %s", base_ticker, e)
+            intraday_quote_status = "error"
+            logging.warning("盤中即時行情合併失敗 %s: %s", base_ticker, e)
 
     try:
-        return apply_technical_indicators(df)
+        result = apply_technical_indicators(df)
+        result.attrs["intraday_quote_status"] = intraday_quote_status
+        result.attrs["intraday_quote_source"] = intraday_quote_source
+        return result
     except Exception as e:
         logging.error("技術指標計算失敗 %s：%s；本次不產生分析", ticker_number, e)
         return None
@@ -895,6 +923,12 @@ def get_fundamental_and_industry_data(ticker_number, current_price=0):
             pass
     profile["PE"] = pe_val
     return profile
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_public_intraday_quotes(records):
+    now_tpe = datetime.now(timezone(timedelta(hours=8)))
+    return fetch_yahoo_intraday_quotes(records, now_tpe=now_tpe)
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_finmind_chip_and_revenue_payload(ticker):
@@ -1803,22 +1837,45 @@ if st.session_state.page == "home":
         cloud_count = 0 if use_local_fallback else len(cached_list)
         
         if is_intraday or use_local_fallback:
-            with st.spinner("⚡ 混合動力引擎啟動：即時運算 100 分模型 (約需 3-5 秒)..."):
+            spinner_text = (
+                "⚡ 正在以即時行情重新評分原榜單（依標的數量約需數十秒至數分鐘）..."
+                if is_intraday
+                else "⚡ 正在以本機資料重算榜單..."
+            )
+            with st.spinner(spinner_text):
                 fb_df = pd.DataFrame(cached_list)
-                targets = get_radar_targets(cached_list)
+                targets = (
+                    original_ranking_targets(cached_list)
+                    if is_intraday
+                    else get_radar_targets(cached_list)
+                )
                 live_data = []
+                public_intraday_quotes = (
+                    get_public_intraday_quotes(cached_list)
+                    if is_intraday
+                    else {}
+                )
+                base_by_ticker = {
+                    normalize_ticker(row.get("代號", "")): row
+                    for row in cached_list
+                    if isinstance(row, dict) and normalize_ticker(row.get("代號", ""))
+                }
                 
                 def process_live(ticker):
-                    df = get_stock_data(ticker)
+                    df = get_stock_data(
+                        ticker,
+                        intraday_quote=public_intraday_quotes.get(normalize_ticker(ticker)),
+                    )
                     if df is not None:
-                        base = next((x for x in cached_list if str(x['代號']) == str(ticker)), None)
+                        base = base_by_ticker.get(normalize_ticker(ticker))
+                        if is_intraday and df.attrs.get("intraday_quote_status") != "realtime":
+                            return None
                         cache_context = "realtime" if is_intraday else "latest"
                         analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS, context=cache_context)
                         cached_data = analysis_cache.get("data") if analysis_cache else None
                         if is_intraday and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
                             cached_data = dict(cached_data)
-                            cached_data["Score_Source"] = "解析快取"
-                            return cached_data
+                            return annotate_intraday_score(base, cached_data)
 
                         if analysis_cache and analysis_cache.get("fund"):
                             fund = analysis_cache.get("fund")
@@ -1839,13 +1896,22 @@ if st.session_state.page == "home":
                                 {"data": res, "fund": fund, "inst_data": inst_data},
                                 context=cache_context,
                             )
-                            return res
+                            return annotate_intraday_score(base, res) if is_intraday else res
                     return None
                     
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     for r in executor.map(process_live, targets):
                         if r: live_data.append(r)
-                df_results = pd.DataFrame(live_data) if live_data else fb_df
+                if is_intraday:
+                    df_results = pd.DataFrame(live_data)
+                    failed_intraday_count = max(0, len(targets) - len(live_data))
+                    if failed_intraday_count:
+                        st.warning(
+                            f"盤中即時重評完成 {len(live_data)}/{len(targets)} 檔；"
+                            f"其餘 {failed_intraday_count} 檔因即時行情未取得，不沿用盤後分數。"
+                        )
+                else:
+                    df_results = pd.DataFrame(live_data) if live_data else fb_df
         else:
             df_results = pd.DataFrame(cached_list)
         mode_count = len(df_results)
