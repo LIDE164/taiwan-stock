@@ -3,6 +3,7 @@ import unittest
 from intraday_ranking import (
     annotate_intraday_score,
     institutional_aggregate_from_record,
+    institutional_rows_from_record,
     original_ranking_targets,
     support_data_from_postclose_record,
 )
@@ -67,6 +68,27 @@ class IntradayRankingTests(unittest.TestCase):
             "Whale_Net": None,
             "Whale_Net_Days": 0,
         }))
+
+    def test_persisted_daily_rows_restore_real_breakdown(self):
+        rows = institutional_rows_from_record({
+            "Institutional_Source": "TPEx 3insti",
+            "Institutional_Rows": [{
+                "date": "2026-08-21", "foreign": 511, "trust": 0,
+                "dealer": 0, "total": 511, "source": "FinMind",
+            }],
+        })
+        self.assertEqual(rows, [{
+            "日期": "08/21", "外資(張)": 511, "投信(張)": 0,
+            "自營商(張)": 0, "單日合計(張)": 511, "_source": "FinMind",
+        }])
+
+    def test_aggregate_is_never_fabricated_into_daily_rows(self):
+        rows = institutional_rows_from_record({
+            "Whale_Net": 601,
+            "Whale_Net_Days": 3,
+            "Institutional_Source": "TPEx 3insti",
+        })
+        self.assertEqual(rows, [])
 
 
 if __name__ == "__main__":

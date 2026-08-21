@@ -24,6 +24,7 @@ from market_http import call_with_backoff, http_get
 from intraday_ranking import (
     annotate_intraday_score,
     institutional_aggregate_from_record,
+    institutional_rows_from_record,
     original_ranking_targets,
     support_data_from_postclose_record,
 )
@@ -133,7 +134,7 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
-ANALYSIS_CACHE_SCHEMA_VERSION = 3
+ANALYSIS_CACHE_SCHEMA_VERSION = 4
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
@@ -1104,7 +1105,7 @@ def get_institutional_trading(ticker, with_status=False):
     return (normalized, status) if with_status else normalized
 
 
-def get_analysis_support_data(ticker, current_price):
+def get_analysis_support_data(ticker, current_price, cached_doc=None):
     """Load source-aware fundamentals and chip data without inventing missing values."""
     fund = get_fundamental_and_industry_data(ticker, current_price)
     revenue = get_finmind_chip_and_revenue_payload(ticker)
@@ -1113,16 +1114,28 @@ def get_analysis_support_data(ticker, current_price):
     fund["Revenue_Source"] = revenue.get("source", "")
     fund["_data_status"] = revenue["status"]
     inst_data, inst_status = get_institutional_trading(ticker, with_status=True)
+    if not inst_data:
+        saved_rows = institutional_rows_from_record(cached_doc)
+        if saved_rows:
+            inst_data = saved_rows
+            inst_status = str((cached_doc or {}).get("Institutional_Status") or "partial")
     fund["_institutional_status"] = inst_status
     fund["Institutional_Source"] = inst_data[0].get("_source", "") if inst_data else ""
     return fund, inst_data
 
 
-def repair_cached_institutional_data(ticker, fund, inst_data):
+def repair_cached_institutional_data(ticker, fund, inst_data, cached_doc=None):
     """Retry an empty analysis cache without retaining a transient provider failure."""
     cached_rows = [row for row in (inst_data or []) if isinstance(row, dict)]
     if cached_rows:
         return dict(fund or {}), cached_rows, False
+
+    saved_rows = institutional_rows_from_record(cached_doc)
+    if saved_rows:
+        updated_fund = dict(fund or {})
+        updated_fund["_institutional_status"] = str((cached_doc or {}).get("Institutional_Status") or "partial")
+        updated_fund["Institutional_Source"] = saved_rows[0].get("_source", "")
+        return updated_fund, saved_rows, True
 
     retry_key = f"institutional_retry_{normalize_ticker(ticker)}"
     now = time.time()
@@ -1331,7 +1344,9 @@ def analyze_today(
             "MoM": None, "YoY": None, "_data_status": {"revenue": "missing"},
         }
     else:
-        fund, loaded_inst_data = get_analysis_support_data(ticker_number, round(t['Close'], 2))
+        fund, loaded_inst_data = get_analysis_support_data(
+            ticker_number, round(t['Close'], 2), cached_doc=cached_doc
+        )
         if inst_data is None:
             inst_data = loaded_inst_data
         
@@ -1949,9 +1964,11 @@ if st.session_state.page == "home":
                                 base,
                                 current_price=float(df['Close'].iloc[-1]),
                             )
-                            inst_data = []
+                            inst_data = institutional_rows_from_record(base)
                         else:
-                            fund, inst_data = get_analysis_support_data(ticker, df['Close'].iloc[-1])
+                            fund, inst_data = get_analysis_support_data(
+                                ticker, df['Close'].iloc[-1], cached_doc=base
+                            )
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
                             if is_intraday:
@@ -2513,7 +2530,7 @@ elif st.session_state.page == "analysis":
             cached_fund = cached_analysis.get("fund", {})
             cached_inst_data = cached_analysis.get("inst_data", [])
             repaired_fund, repaired_inst_data, repaired = repair_cached_institutional_data(
-                target, cached_fund, cached_inst_data
+                target, cached_fund, cached_inst_data, cached_doc=cached_doc
             )
             cached_analysis = dict(cached_analysis)
             cached_analysis["fund"] = repaired_fund
@@ -2528,7 +2545,9 @@ elif st.session_state.page == "analysis":
                 inst_data = cached_analysis.get("inst_data", [])
                 f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業')})
             else:
-                f_data, inst_data = get_analysis_support_data(target, df_slice['Close'].iloc[-1])
+                f_data, inst_data = get_analysis_support_data(
+                    target, df_slice['Close'].iloc[-1], cached_doc=cached_doc
+                )
             data = dict(cached_doc)
             if f_data.get("MoM") is not None:
                 data["MoM"] = f_data.get("MoM")
@@ -2599,7 +2618,9 @@ elif st.session_state.page == "analysis":
                 }
                 inst_data = []
             else:
-                f_data, inst_data = get_analysis_support_data(target, df_slice['Close'].iloc[-1])
+                f_data, inst_data = get_analysis_support_data(
+                    target, df_slice['Close'].iloc[-1], cached_doc=cached_doc
+                )
             data = analyze_today(
                 df_slice,
                 target,

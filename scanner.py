@@ -280,7 +280,15 @@ def fetch_stock_data_batch(tickers, chunk_size=50):
 # ⭐ 補上法人籌碼抓取功能
 def get_institutional_trading(ticker, with_status=False):
     rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
-    compact = [{"單日合計(張)": row["total"], "_source": row.get("source", "")} for row in rows]
+    compact = [{
+        "日期": str(row.get("date", ""))[-5:].replace("-", "/"),
+        "外資(張)": int(row["foreign"]),
+        "投信(張)": int(row["trust"]),
+        "自營商(張)": int(row["dealer"]),
+        "單日合計(張)": int(row["total"]),
+        "_date": str(row.get("date", "")),
+        "_source": row.get("source", ""),
+    } for row in rows]
     return (compact, status) if with_status else compact
 
 # ⭐ 補上歷史勝率簡易精算器
@@ -602,6 +610,14 @@ def run_daily_scan(force=False, *, allow_local=False):
                     "Confidence": confidence, "Data_Quality": quality, "Institutional_Days": len(inst),
                     "Institutional_Status": inst_status,
                     "Institutional_Source": inst[0].get("_source", "") if inst else "",
+                    "Institutional_Rows": [{
+                        "date": row.get("_date", ""),
+                        "foreign": row.get("外資(張)"),
+                        "trust": row.get("投信(張)"),
+                        "dealer": row.get("自營商(張)"),
+                        "total": row.get("單日合計(張)"),
+                        "source": row.get("_source", ""),
+                    } for row in inst[:5]],
                     "Score_Mode": "盤後正式分數", "Score_Mode_Raw": "post", "Score_Source": "盤後規則計分",
                     "RRR": 1.5, "RRR_Source": "strategy_default",
                     "20MA": round(float(data.get("20MA", 0)), 2),

@@ -104,6 +104,47 @@ def institutional_aggregate_from_record(
     }
 
 
+def institutional_rows_from_record(
+    record: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Restore only explicitly persisted daily institutional rows.
+
+    The aggregate fallback is intentionally not split into fabricated investor
+    categories.  Rows are returned only when every category was saved by the
+    original provider response.
+    """
+    baseline = dict(record or {})
+    raw_rows = baseline.get("Institutional_Rows", [])
+    if not isinstance(raw_rows, list):
+        return []
+    fallback_source = str(baseline.get("Institutional_Source") or "")
+    restored: list[dict[str, Any]] = []
+    for row in raw_rows[:5]:
+        if not isinstance(row, Mapping):
+            continue
+        foreign = _number(row.get("foreign", row.get("外資(張)")))
+        trust = _number(row.get("trust", row.get("投信(張)")))
+        dealer = _number(row.get("dealer", row.get("自營商(張)")))
+        if any(value is None for value in (foreign, trust, dealer)):
+            continue
+        total = _number(row.get("total", row.get("單日合計(張)")))
+        if total is None:
+            total = foreign + trust + dealer
+        date_text = str(row.get("date", row.get("日期", ""))).strip()
+        if not date_text:
+            continue
+        display_date = date_text[-5:].replace("-", "/") if "-" in date_text else date_text
+        restored.append({
+            "日期": display_date,
+            "外資(張)": int(foreign),
+            "投信(張)": int(trust),
+            "自營商(張)": int(dealer),
+            "單日合計(張)": int(total),
+            "_source": str(row.get("source", row.get("_source", fallback_source)) or fallback_source),
+        })
+    return restored
+
+
 def annotate_intraday_score(
     original: Mapping[str, Any] | None,
     recalculated: Mapping[str, Any],

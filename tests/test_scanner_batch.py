@@ -8,6 +8,20 @@ import scanner
 
 
 class BatchMarketDataTests(unittest.TestCase):
+    def test_scanner_keeps_institutional_daily_breakdown_for_persistence(self):
+        provider_rows = [{
+            "date": "2026-08-21", "foreign": 511, "trust": 0,
+            "dealer": 15, "total": 526, "source": "FinMind",
+        }]
+        with patch.object(scanner, "fetch_institutional_rows", return_value=(provider_rows, "ok")):
+            rows, status = scanner.get_institutional_trading("4416", with_status=True)
+        self.assertEqual(status, "ok")
+        self.assertEqual(rows[0]["外資(張)"], 511)
+        self.assertEqual(rows[0]["投信(張)"], 0)
+        self.assertEqual(rows[0]["自營商(張)"], 15)
+        self.assertEqual(rows[0]["單日合計(張)"], 526)
+        self.assertEqual(rows[0]["日期"], "08/21")
+
     def test_top_stock_pool_accepts_current_tpex_trading_shares_field(self):
         twse_response = Mock()
         twse_response.raise_for_status.return_value = None
