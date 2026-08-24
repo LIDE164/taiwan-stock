@@ -413,6 +413,7 @@ def generate_cards_html(
         no_chase = optional_number(record.get("No_Chase_Price"))
         status_palette = {
             "現在可執行": ("#fecaca", "rgba(239,68,68,0.18)", "rgba(239,68,68,0.45)"),
+            "等待量能確認": ("#fde68a", "rgba(250,204,21,0.15)", "rgba(250,204,21,0.4)"),
             "等待拉回": ("#fde68a", "rgba(250,204,21,0.15)", "rgba(250,204,21,0.4)"),
             "等待觸發": ("#bfdbfe", "rgba(96,165,250,0.15)", "rgba(96,165,250,0.4)"),
             "條件不足": ("#cbd5e1", "rgba(148,163,184,0.13)", "rgba(148,163,184,0.35)"),

@@ -5,6 +5,7 @@ from entry_readiness import (
     READY_STATUS,
     WAIT_PULLBACK_STATUS,
     WAIT_TRIGGER_STATUS,
+    WAIT_VOLUME_STATUS,
     build_entry_readiness,
     ensure_entry_readiness,
 )
@@ -26,6 +27,7 @@ class EntryReadinessTests(unittest.TestCase):
             "Signal_Conflict": "低",
             "Entry_Pattern": "一般觀察型",
             "Volume_Confirmed": True,
+            "Est_Vol_Ratio": 1.2,
         }
         record.update(updates)
         return record
@@ -42,6 +44,18 @@ class EntryReadinessTests(unittest.TestCase):
         self.assertEqual(result["Entry_Low"], 100)
         self.assertEqual(result["Entry_High"], 102)
         self.assertGreater(result["Entry_Target"], result["Entry_High"])
+
+    def test_price_inside_zone_with_weak_volume_waits_for_confirmation(self):
+        result = build_entry_readiness(self._base(Est_Vol_Ratio=0.96))
+        self.assertEqual(result["Entry_Status"], WAIT_VOLUME_STATUS)
+        self.assertEqual(result["Entry_Status_Group"], "wait")
+        self.assertIn("0.96", result["Entry_Reason"])
+
+    def test_general_observation_score_cannot_be_execution_ready(self):
+        result = build_entry_readiness(self._base(Score=64))
+        self.assertEqual(result["Entry_Status"], "條件不足")
+        self.assertFalse(result["Entry_Ready"])
+        self.assertIn("65", result["Entry_Reason"])
 
     def test_breakout_waits_postclose_then_live_price_can_activate_plan(self):
         postclose = build_entry_readiness(self._base(最高價=101, Entry_Pattern="趨勢突破型"))

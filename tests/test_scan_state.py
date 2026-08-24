@@ -11,7 +11,7 @@ from scan_state import (
     scan_universe_limit,
     should_complete_candidate,
 )
-from scoring import get_decision_score
+from scoring import decision_label, get_decision_score
 
 
 class ScanStateTests(unittest.TestCase):
@@ -116,6 +116,12 @@ class ScanStateTests(unittest.TestCase):
 
 
 class ScoringIntegrationTests(unittest.TestCase):
+    def test_score_labels_describe_candidates_not_buy_orders(self):
+        self.assertEqual(decision_label(75), "🟢 強勢候選")
+        self.assertEqual(decision_label(68), "🟡 偏多候選")
+        self.assertEqual(decision_label(60), "🟡 一般觀察")
+        self.assertEqual(decision_label(59), "⚪ 條件不足")
+
     def test_empty_payload_does_not_generate_a_plausible_score(self):
         score, label, reasons, feature = get_decision_score({}, {}, with_reason=True)
         self.assertEqual(score, 0)

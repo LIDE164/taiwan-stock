@@ -20,6 +20,18 @@ REQUIRED_SCORE_FIELDS = (
 )
 
 
+def decision_label(final_score):
+    """Describe ranking strength without presenting a score as a buy order."""
+    score = _num(final_score)
+    if score >= 75:
+        return "🟢 強勢候選"
+    if score >= 65:
+        return "🟡 偏多候選"
+    if score >= 60:
+        return "🟡 一般觀察"
+    return "⚪ 條件不足"
+
+
 def _num(value, default=0.0):
     try:
         if value is None:
@@ -239,12 +251,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(2, "✅ 近 10 日整理後突破")
     final_score = max(5, min(99, int(50 + sc * 3)))
 
-    if final_score >= 60:
-        label = "🟢 強勢買進"
-    elif final_score >= 45:
-        label = "🟡 偏多觀察"
-    else:
-        label = "⚪ 忽略"
+    label = decision_label(final_score)
 
     feature = "一般狀態"
     if data.get("Advanced_Pattern"):

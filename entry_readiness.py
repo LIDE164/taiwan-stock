@@ -12,8 +12,10 @@ from collections.abc import Mapping
 from typing import Any
 
 
-ENTRY_SCHEMA_VERSION = 1
+ENTRY_SCHEMA_VERSION = 2
+MIN_EXECUTION_SCORE = 65
 READY_STATUS = "現在可執行"
+WAIT_VOLUME_STATUS = "等待量能確認"
 WAIT_PULLBACK_STATUS = "等待拉回"
 WAIT_TRIGGER_STATUS = "等待觸發"
 INSUFFICIENT_STATUS = "條件不足"
@@ -97,8 +99,13 @@ def _legacy_result(record: Mapping[str, Any]) -> dict[str, Any]:
     score = _number(record.get("Score"))
     change = _number(record.get("漲跌幅"))
     pattern = str(record.get("Entry_Pattern") or "")
-    if score is not None and score < 60:
-        return _result(INSUFFICIENT_STATUS, "watch", "量化分數未達 60 分。")
+    if score is not None and score < MIN_EXECUTION_SCORE:
+        reason = (
+            "量化分數未達 60 分。"
+            if score < 60
+            else f"目前 {score:g} 分屬一般觀察，未達 {MIN_EXECUTION_SCORE} 分可執行門檻。"
+        )
+        return _result(INSUFFICIENT_STATUS, "watch", reason)
     if pattern in _OVERHEAT_PATTERNS or (change is not None and change >= 7):
         return _result(
             WAIT_PULLBACK_STATUS,
@@ -144,6 +151,18 @@ def _is_overheated(record: Mapping[str, Any], close: float) -> tuple[bool, str]:
     return False, ""
 
 
+def _volume_wait_reason(record: Mapping[str, Any]) -> str:
+    """Return why volume is not execution-ready, or an empty string."""
+    if not _truthy(record.get("Volume_Confirmed")):
+        return "盤中量能尚未確認。"
+    volume_ratio = _number(record.get("Est_Vol_Ratio"))
+    if volume_ratio is None:
+        return "缺少量比資料，暫不執行。"
+    if volume_ratio < 1.1:
+        return f"價格已進觀察區，但量比僅 {volume_ratio:.2f}，尚未達 1.10。"
+    return ""
+
+
 def build_entry_readiness(
     record: Mapping[str, Any],
     *,
@@ -157,14 +176,18 @@ def build_entry_readiness(
     """
     score = _number(record.get("Score"))
     close = _number(record.get("收盤價"))
-    if score is not None and score < 60:
-        return _result(INSUFFICIENT_STATUS, "watch", "量化分數未達 60 分。")
+    if score is not None and score < MIN_EXECUTION_SCORE:
+        reason = (
+            "量化分數未達 60 分。"
+            if score < 60
+            else f"目前 {score:g} 分屬一般觀察，未達 {MIN_EXECUTION_SCORE} 分可執行門檻。"
+        )
+        return _result(INSUFFICIENT_STATUS, "watch", reason)
     if close is None or close <= 0:
         return _legacy_result(record)
 
     confidence = _number(record.get("Confidence"))
     conflict = str(record.get("Signal_Conflict") or "")
-    volume_confirmed = _truthy(record.get("Volume_Confirmed"))
     overheated, overheat_reason = _is_overheated(record, close)
 
     if intraday and baseline_plan:
@@ -183,11 +206,12 @@ def build_entry_readiness(
             if conflict == "高":
                 return _result(WAIT_TRIGGER_STATUS, "wait", "多空訊號衝突偏高，等待重新確認。", **kwargs)
             if low <= close <= high:
-                if not volume_confirmed:
-                    return _result(WAIT_TRIGGER_STATUS, "wait", "價格已進區間，但盤中量能尚未確認。", **kwargs)
+                volume_wait_reason = _volume_wait_reason(record)
+                if volume_wait_reason:
+                    return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
                 if confidence is not None and confidence < 70:
                     return _result(WAIT_TRIGGER_STATUS, "wait", f"資料信心僅 {confidence:.0f}%，暫不執行。", **kwargs)
-                return _result(READY_STATUS, "ready", "價格已進入盤後規劃區間，且量能確認。", **kwargs)
+                return _result(READY_STATUS, "ready", "價格已進入盤後規劃區間，且量比達標。", **kwargs)
             if close < low:
                 return _result(WAIT_TRIGGER_STATUS, "wait", f"現價尚未進入 {low:g}–{high:g} 觀察區間。", **kwargs)
             return _result(WAIT_PULLBACK_STATUS, "wait", f"現價已高於 {low:g}–{high:g} 觀察區間。", **kwargs)
@@ -227,10 +251,13 @@ def build_entry_readiness(
                   stop=level_values[2], target=level_values[3])
     if conflict == "高":
         return _result(WAIT_TRIGGER_STATUS, "wait", "多空訊號衝突偏高，等待重新確認。", **kwargs)
-    if level_values[0] <= close <= level_values[1] and volume_confirmed:
+    if level_values[0] <= close <= level_values[1]:
+        volume_wait_reason = _volume_wait_reason(record)
+        if volume_wait_reason:
+            return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
         if confidence is not None and confidence < 70:
             return _result(WAIT_TRIGGER_STATUS, "wait", f"價格已進區間，但資料信心僅 {confidence:.0f}%。", **kwargs)
-        return _result(READY_STATUS, "ready", "價格位於 20MA 回測區，且量能確認。", **kwargs)
+        return _result(READY_STATUS, "ready", "價格位於 20MA 回測區，且量比達標。", **kwargs)
     if close > level_values[1]:
         return _result(WAIT_PULLBACK_STATUS, "wait", "價格仍高於 20MA 回測區，不追價。", **kwargs)
     return _result(WAIT_TRIGGER_STATUS, "wait", "價格尚未站回 20MA 觀察區。", **kwargs)

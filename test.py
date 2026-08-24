@@ -30,7 +30,7 @@ from intraday_ranking import (
 )
 from intraday_quotes import fetch_yahoo_live_history_bundle, merge_intraday_quote_into_history
 from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
-from scoring import get_decision_score
+from scoring import decision_label, get_decision_score
 from strategy_advice import build_strategy_text
 try:
     from ui_components import (
@@ -1875,7 +1875,7 @@ if st.session_state.page == "home":
         st.caption("進場條件（量化雷達適用）")
         entry_filter = st.radio(
             "進場條件：",
-            ["現在可執行", "等待拉回／觸發", "全部候選"],
+            ["現在可執行", "等待確認／拉回", "全部候選"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -1892,6 +1892,9 @@ if st.session_state.page == "home":
             for row in st.session_state.get('scan_results', [])
             if isinstance(row, dict)
         ]
+        for row in cached_list:
+            if optional_num(row.get("Score")) is not None:
+                row["評級"] = decision_label(row.get("Score"))
         use_local_fallback = st.session_state.get("scan_results_is_local", False)
         cloud_count = 0 if use_local_fallback else len(cached_list)
         
@@ -2088,7 +2091,7 @@ if st.session_state.page == "home":
                     df_results['Entry_Status_Group'] = "watch"
                 if entry_filter == "現在可執行":
                     df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "ready"]
-                elif entry_filter == "等待拉回／觸發":
+                elif entry_filter == "等待確認／拉回":
                     df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "wait"]
             entry_count = len(df_results)
                 
@@ -2179,9 +2182,9 @@ if st.session_state.page == "home":
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
                 if not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "現在可執行":
-                    st.info("目前沒有同時進入觀察買入區間、量能確認且資料信心達標的股票；可切換「等待拉回／觸發」查看候選。")
-                elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待拉回／觸發":
-                    st.info("目前沒有等待拉回或等待觸發的候選；可切換「全部候選」查看待新掃描資料。")
+                    st.info("目前沒有同時進入觀察區間、量比達標且資料信心足夠的股票；可切換「等待確認／拉回」查看候選。")
+                elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待確認／拉回":
+                    st.info("目前沒有等待量能、觸發或拉回的候選；可切換「全部候選」查看待新掃描資料。")
                 else:
                     st.info("目前沒有符合此篩選條件的標的。")
         else:
@@ -2660,6 +2663,7 @@ elif st.session_state.page == "analysis":
             data["Score_Source"] = f"依 {analysis_price_date} 行情重算（未混用 {cached_score_date} 舊榜單分數）"
 
         sc = data['Score']
+        data['評級'] = decision_label(sc)
         
         display_time = get_stock_data_time(df_slice, is_intraday=is_intra)
         strategy_text = build_strategy_text(data)
