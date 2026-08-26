@@ -16,6 +16,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance
+from analysis_live import fetch_analysis_live_quote
 from app_security import build_stock_url, escape_html, normalize_ticker, safe_iso_date, safe_mode, scoped_document_name
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
@@ -794,8 +795,8 @@ def get_stock_data(ticker_number, target_date=None, intraday_quote=None):
         try:
             market_state = get_market_state()
             fallback_quote = dict(intraday_quote or {}) if isinstance(intraday_quote, dict) else {}
-            quote = {}
-            if base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
+            quote = fallback_quote
+            if not quote and base_ticker != "^TWII" and market_state == "open" and FUGLE_API_KEY:
                 try:
                     url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{base_ticker}"
                     res = http_get(url, headers={'X-API-KEY': FUGLE_API_KEY}, timeout=5)
@@ -818,8 +819,6 @@ def get_stock_data(ticker_number, target_date=None, intraday_quote=None):
                             quote = candidate_quote
                 except Exception as fugle_error:
                     logging.warning("Fugle 即時行情失敗，改用公開行情 %s: %s", base_ticker, fugle_error)
-            if not quote:
-                quote = fallback_quote
             if base_ticker != "^TWII" and market_state == "open" and quote:
                 required_quote = ("close", "open", "high", "low", "volume")
                 if any(quote.get(key) is None for key in required_quote):
@@ -937,6 +936,22 @@ def get_public_intraday_bundle(records):
     """Fetch lightweight live/history JSON without blocking on yfinance metadata."""
     now_tpe = datetime.now(timezone(timedelta(hours=8)))
     return fetch_yahoo_live_history_bundle(records, now_tpe=now_tpe)
+
+
+@st.cache_data(ttl=25, show_spinner=False)
+def get_analysis_live_quote(ticker, revenue_source="", institutional_source=""):
+    """Refresh one analysis-page quote independently from the full ranking."""
+    now_tpe = datetime.now(timezone(timedelta(hours=8)))
+    return fetch_analysis_live_quote(
+        ticker,
+        {
+            "代號": ticker,
+            "Revenue_Source": revenue_source,
+            "Institutional_Source": institutional_source,
+        },
+        api_key=FUGLE_API_KEY,
+        now_tpe=now_tpe,
+    )
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_finmind_chip_and_revenue_payload(ticker):
@@ -1808,6 +1823,7 @@ if st.session_state.pop("_clear_data_caches_requested", False):
     for cached_function in [
         get_all_tw_stock_names_v3,
         fetch_twse_index_history,
+        get_analysis_live_quote,
         _get_ohlcv_base,
         get_stock_data,
         _get_company_profile,
@@ -2501,25 +2517,41 @@ elif st.session_state.page == "analysis":
         return raw_value not in ("0", "false", "off", "no")
 
     analysis_target_date = safe_iso_date(st.session_state.get("target_date", ""))
-    df_chart = get_stock_data(target, target_date=analysis_target_date or None)
+    current_list = st.session_state.get('nav_pool_data', []) or []
+    cached_list = st.session_state.get('scan_results', [])
+    cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
+    if cached_doc is None:
+        cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
+    if analysis_target_date and st.session_state.get("scan_date") != analysis_target_date:
+        cached_doc = None
+    query_mode = safe_mode(st.query_params.get('mode', ''))
+    requested_analysis_intraday = query_mode in ("intraday", "realtime")
+    live_requested = bool(
+        requested_analysis_intraday
+        or st.session_state.get('is_intraday', False)
+        or is_realtime_score_record(cached_doc)
+    )
+    _, _, is_intra = resolve_score_mode(live_requested)
+    if analysis_target_date:
+        is_intra = False
+    st.session_state.is_intraday = is_intra
+    if is_intra:
+        st.session_state.score_mode_label = "盤中參考分數"
+
+    analysis_live_quote = None
+    if is_intra:
+        analysis_live_quote = get_analysis_live_quote(
+            target,
+            str((cached_doc or {}).get("Revenue_Source") or ""),
+            str((cached_doc or {}).get("Institutional_Source") or ""),
+        )
+    df_chart = get_stock_data(
+        target,
+        target_date=analysis_target_date or None,
+        intraday_quote=analysis_live_quote,
+    )
     if df_chart is not None and len(df_chart) >= 20:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
-        current_list = st.session_state.get('nav_pool_data', []) or []
-        cached_list = st.session_state.get('scan_results', [])
-        cached_doc = next((x for x in current_list if normalize_ticker(x.get('代號', '')) == target), None)
-        if cached_doc is None:
-            cached_doc = next((x for x in cached_list if normalize_ticker(x.get('代號', '')) == target), None)
-        if analysis_target_date and st.session_state.get("scan_date") != analysis_target_date:
-            cached_doc = None
-        query_mode = safe_mode(st.query_params.get('mode', ''))
-        requested_analysis_intraday = query_mode in ("intraday", "realtime")
-        _, _, inferred_intra = resolve_score_mode(requested_analysis_intraday or is_realtime_score_record(cached_doc))
-        is_intra = bool(st.session_state.get('is_intraday', False) or inferred_intra)
-        if analysis_target_date:
-            is_intra = False
-        if is_intra:
-            st.session_state.is_intraday = True
-            st.session_state.score_mode_label = "盤中參考分數"
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
         analysis_context = analysis_target_date or ("realtime" if is_intra else "latest")
@@ -2542,45 +2574,21 @@ elif st.session_state.page == "analysis":
                 save_analysis_cache(target, cached_analysis, context=analysis_context)
 
         cached_data = cached_analysis.get("data") if cached_analysis else None
-        used_realtime_snapshot = False
-        if is_intra and is_realtime_score_record(cached_doc) and not force_analysis_refresh:
-            if cached_analysis:
+        has_fresh_live_quote = bool(
+            is_intra
+            and analysis_live_quote
+            and df_chart.attrs.get("intraday_quote_status") == "realtime"
+        )
+        if has_fresh_live_quote:
+            if cached_analysis and cached_analysis.get("fund"):
+                f_data = cached_analysis.get("fund", {})
                 inst_data = cached_analysis.get("inst_data", [])
-                f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業')})
             else:
-                f_data, inst_data = get_analysis_support_data(
-                    target, df_slice['Close'].iloc[-1], cached_doc=cached_doc
+                f_data = support_data_from_postclose_record(
+                    cached_doc,
+                    current_price=float(df_slice['Close'].iloc[-1]),
                 )
-            data = dict(cached_doc)
-            if f_data.get("MoM") is not None:
-                data["MoM"] = f_data.get("MoM")
-            if f_data.get("YoY") is not None:
-                data["YoY"] = f_data.get("YoY")
-            data["Revenue_Status"] = (
-                f_data.get("_data_status", {}).get("revenue")
-                or data.get("Revenue_Status")
-                or "unknown"
-            )
-            data["Revenue_Period"] = f_data.get("Revenue_Period") or data.get("Revenue_Period", "")
-            data["Revenue_Source"] = f_data.get("Revenue_Source") or data.get("Revenue_Source", "")
-            data["Institutional_Status"] = (
-                f_data.get("_institutional_status")
-                or data.get("Institutional_Status")
-                or "unknown"
-            )
-            data["Institutional_Source"] = (
-                f_data.get("Institutional_Source")
-                or data.get("Institutional_Source", "")
-            )
-            data["Score_Source"] = "名單盤中快照"
-        elif is_intra and isinstance(cached_data, dict) and is_realtime_score_record(cached_data):
-            inst_data = cached_analysis.get("inst_data", [])
-            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
-            data = dict(cached_data)
-            data["Score_Source"] = "30秒盤中快照"
-        elif cached_analysis:
-            inst_data = cached_analysis.get("inst_data", [])
-            f_data = cached_analysis.get("fund", {"Industry": cached_doc.get('產業', '一般產業') if cached_doc else "一般產業"})
+                inst_data = institutional_rows_from_record(cached_doc)
             data = analyze_today(
                 df_slice,
                 target,
@@ -2588,13 +2596,54 @@ elif st.session_state.page == "analysis":
                 is_light_mode,
                 f_data,
                 cached_doc=cached_doc,
-                is_intraday=is_intra,
-                historical_date=analysis_target_date,
+                is_intraday=True,
             )
-            if is_intra:
-                data["Score_Source"] = "盤中重算"
+            data["Score_Source"] = "解析頁盤中即時重算"
+            data["Intraday_Quote_Source"] = analysis_live_quote.get("source", "")
+            data["Intraday_Quote_Time"] = analysis_live_quote.get("quote_time", "")
+            data["Intraday_Quote_Freshness"] = analysis_live_quote.get("freshness", "")
+            data["Intraday_Quote_Status"] = "realtime"
+            save_analysis_cache(
+                target,
+                {"data": data, "fund": f_data, "inst_data": inst_data},
+                context=analysis_context,
+            )
+        elif is_intra:
+            if isinstance(cached_data, dict) and is_realtime_score_record(cached_data):
+                inst_data = cached_analysis.get("inst_data", [])
+                f_data = cached_analysis.get("fund", {})
+                data = dict(cached_data)
+                data["Score_Source"] = "最新報價暫缺，沿用 30 秒內盤中快照"
+            elif is_realtime_score_record(cached_doc):
+                data = dict(cached_doc)
+                f_data = support_data_from_postclose_record(
+                    cached_doc,
+                    current_price=float(data.get("收盤價") or df_slice['Close'].iloc[-1]),
+                )
+                inst_data = institutional_rows_from_record(cached_doc)
+                data["Score_Source"] = "最新報價暫缺，沿用名單盤中快照"
+            else:
+                f_data = support_data_from_postclose_record(
+                    cached_doc,
+                    current_price=float(df_slice['Close'].iloc[-1]),
+                )
+                inst_data = institutional_rows_from_record(cached_doc)
+                data = analyze_today(
+                    df_slice,
+                    target,
+                    inst_data,
+                    is_light_mode,
+                    f_data,
+                    cached_doc=cached_doc,
+                    is_intraday=False,
+                )
+                data["Score_Source"] = "盤中報價暫缺，沿用盤後行情"
+            data["Intraday_Quote_Status"] = "stale"
         else:
-            if analysis_target_date:
+            if cached_analysis:
+                inst_data = cached_analysis.get("inst_data", [])
+                f_data = cached_analysis.get("fund", {"Industry": (cached_doc or {}).get('產業', '一般產業')})
+            elif analysis_target_date:
                 source = cached_doc or {}
                 eps_value = source.get("EPS", "無")
                 eps_period = source.get("EPS_Period", "missing")
@@ -2631,16 +2680,15 @@ elif st.session_state.page == "analysis":
                 is_light_mode,
                 f_data,
                 cached_doc=cached_doc,
-                is_intraday=is_intra,
+                is_intraday=False,
                 historical_date=analysis_target_date,
             )
-            if is_intra:
-                data["Score_Source"] = "盤中重算"
-            save_analysis_cache(
-                target,
-                {"data": data, "fund": f_data, "inst_data": inst_data},
-                context=analysis_context,
-            )
+            if not cached_analysis:
+                save_analysis_cache(
+                    target,
+                    {"data": data, "fund": f_data, "inst_data": inst_data},
+                    context=analysis_context,
+                )
 
         analysis_price_date = latest_trading_date(df_slice.index)
         cached_score_date = safe_iso_date(
@@ -2666,6 +2714,12 @@ elif st.session_state.page == "analysis":
         data['評級'] = decision_label(sc)
         
         display_time = get_stock_data_time(df_slice, is_intraday=is_intra)
+        quote_source = str(data.get("Intraday_Quote_Source") or "")
+        quote_time = str(data.get("Intraday_Quote_Time") or "")
+        quote_freshness = str(data.get("Intraday_Quote_Freshness") or "")
+        if is_intra and quote_time:
+            quote_meta = "｜".join(part for part in (quote_freshness, quote_source) if part)
+            display_time = f"{quote_time}（{quote_meta or '盤中行情'}）"
         strategy_text = build_strategy_text(data)
             
         t_date = analysis_target_date
@@ -2674,20 +2728,21 @@ elif st.session_state.page == "analysis":
             
         render_stock_hero(data, target, c_name, strategy_text)
         score_source_text = f"　｜　來源：<b>{escape_html(data.get('Score_Source'))}</b>" if data.get("Score_Source") else ""
-        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🗓️ 行情資料時間: {escape_html(display_time)}　｜　採用：<b>{escape_html(data.get('Score_Mode', '盤後正式分數'))}</b>{score_source_text}</div>", unsafe_allow_html=True)
+        refresh_state_text = "每 30 秒自動更新" if is_intra and auto_refresh else ("自動更新未開啟" if is_intra else "盤後模式")
+        st.markdown(f"<div style='text-align: center; color: #888; font-size: 0.9rem; margin-bottom: 10px;'>🗓️ 行情資料時間: {escape_html(display_time)}　｜　採用：<b>{escape_html(data.get('Score_Mode', '盤後正式分數'))}</b>　｜　{escape_html(refresh_state_text)}{score_source_text}</div>", unsafe_allow_html=True)
+        if is_intra and data.get("Intraday_Quote_Status") != "realtime":
+            st.warning("最新盤中報價暫時無法取得，目前明確沿用最近一次盤中快照或盤後行情，不會把舊價標示為即時。")
         
         _, up_c, _ = st.columns([1, 2, 1])
         refresh_label = "重新載入歷史快照" if analysis_target_date else "更新個股即時數值"
         force_refresh_analysis = up_c.button(refresh_label, width="stretch")
         if force_refresh_analysis:
             st.session_state[force_key] = True
-            _get_ohlcv_base.clear()
+            get_analysis_live_quote.clear()
             get_stock_data.clear()
-            _get_company_profile.clear()
-            get_finmind_chip_and_revenue_payload.clear()
-            get_institutional_trading.clear()
-            clear_provider_cache()
             analyze_today.clear()
+            if analysis_target_date:
+                _get_ohlcv_base.clear()
             st.rerun()
         st.markdown("---")
         
@@ -2745,7 +2800,7 @@ elif st.session_state.page == "analysis":
             data['Backtest_Samples'] = closed_signals
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Score_Source"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Score_Source", "收盤價", "開盤價", "最高價", "最低價", "漲跌", "漲跌幅", "Est_Vol_Ratio", "Volume_Confirmed", "Entry_Status", "Entry_Status_Group", "Entry_Ready", "Entry_Reason", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target", "No_Chase_Price", "Intraday_Quote_Source", "Intraday_Quote_Time", "Intraday_Quote_Freshness", "Intraday_Quote_Status"]:
                         if k in data:
                             row[k] = data[k]
                     break
