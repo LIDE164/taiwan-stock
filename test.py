@@ -35,6 +35,7 @@ from scoring import decision_label, get_decision_score
 from strategy_advice import build_strategy_text
 try:
     from ui_components import (
+        credibility_label,
         generate_cards_html as build_cards_html,
         render_app_style,
         render_daily_scan_status_card,
@@ -2354,6 +2355,36 @@ elif st.session_state.page == "top10_tracking":
     positions = tracker_data.get("positions", []) if isinstance(tracker_data, dict) else []
     positions = [position for position in positions if isinstance(position, dict)]
 
+    def entry_backtest_text(record):
+        """Format the immutable entry-day backtest without turning missing values into zero."""
+        samples_value = optional_num(record.get("entry_backtest_samples"))
+        win_rate_value = optional_num(record.get("entry_win_rate"))
+        if samples_value is None:
+            return "--", "資料缺失", "#94A3B8"
+        sample_count = max(int(samples_value), 0)
+        cred_text, cred_color = credibility_label(sample_count)
+        win_rate_text = f"{win_rate_value:.1f}%" if sample_count > 0 and win_rate_value is not None else "--"
+        return win_rate_text, f"{sample_count}｜{cred_text}", cred_color
+
+    positions_by_id = {
+        str(position.get("position_id", "")): position
+        for position in positions
+        if position.get("position_id")
+    }
+
+    def with_position_entry_backtest(record):
+        """Use the position's saved entry snapshot for legacy daily rows that omitted it."""
+        position = positions_by_id.get(str(record.get("position_id", "")), {})
+        if not position:
+            return record
+        merged = dict(record)
+        for key in (
+            "entry_win_rate", "entry_backtest_samples", "entry_backtest_scope", "entry_backtest_status",
+        ):
+            if merged.get(key) is None and position.get(key) is not None:
+                merged[key] = position.get(key)
+        return merged
+
     latest_date = str(tracker_data.get("latest_date", "")) if isinstance(tracker_data, dict) else ""
     latest_snapshots = tracker_data.get("latest_snapshots", []) if isinstance(tracker_data, dict) else []
     history_dates = tracker_data.get("history_dates", []) if isinstance(tracker_data, dict) else []
@@ -2396,6 +2427,8 @@ elif st.session_state.page == "top10_tracking":
             status_labels = {"OPEN": "持有中", "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場"}
             display_rows = []
             for row in daily_records:
+                row = with_position_entry_backtest(row)
+                entry_win_rate_text, entry_sample_text, _ = entry_backtest_text(row)
                 display_rows.append({
                     "日期": row.get("date", selected_tracking_date),
                     "排名": row.get("top10_rank"),
@@ -2408,6 +2441,8 @@ elif st.session_state.page == "top10_tracking":
                     "最低": row.get("low"),
                     "收盤": row.get("close"),
                     "追蹤價": row.get("mark_price"),
+                    "入榜技術勝率": entry_win_rate_text,
+                    "入榜樣本/可信度": entry_sample_text,
                     "單日報酬%": row.get("daily_return_pct"),
                     "持有報酬%": row.get("pnl_pct"),
                     "期間最高": row.get("highest_price"),
@@ -2438,6 +2473,7 @@ elif st.session_state.page == "top10_tracking":
     else:
         for p in sorted(open_pos, key=lambda x: optional_num(x.get("pnl_pct")) if optional_num(x.get("pnl_pct")) is not None else float("-inf"), reverse=True):
             pnl = optional_num(p.get("pnl_pct"))
+            entry_win_rate_text, entry_sample_text, entry_cred_color = entry_backtest_text(p)
             ticker_text = escape_html(normalize_ticker(p.get('ticker', '')))
             name_text = escape_html(p.get('name', ''))
             color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
@@ -2450,6 +2486,8 @@ elif st.session_state.page == "top10_tracking":
                         f"</div>"
                         f"<div style='color:#cbd5e1; font-size:0.85rem; margin-top:5px;'>"
                         f"進場價: <b>{tracking_number_text(p.get('entry_price'))}</b> ｜ 目前價: <b>{tracking_number_text(p.get('current_price'))}</b> ｜ 期間最高: <b>{tracking_number_text(p.get('highest_price'))}</b>"
+                        f"</div><div style='color:#94a3b8; font-size:0.8rem; margin-top:5px;'>"
+                        f"入榜技術勝率: <b>{escape_html(entry_win_rate_text)}</b> ｜ 樣本/可信度: <b style='color:{entry_cred_color};'>{escape_html(entry_sample_text)}</b>"
                         f"</div></div>", unsafe_allow_html=True)
                         
     st.subheader("🏁 歷史結算 (已出場)")
@@ -2472,6 +2510,7 @@ elif st.session_state.page == "top10_tracking":
                     
         for p in sorted(closed_pos, key=lambda x: str(x.get("close_date", "")), reverse=True):
             pnl = optional_num(p.get("pnl_pct"))
+            entry_win_rate_text, entry_sample_text, entry_cred_color = entry_backtest_text(p)
             ticker_text = escape_html(normalize_ticker(p.get('ticker', '')))
             name_text = escape_html(p.get('name', ''))
             color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
@@ -2485,6 +2524,8 @@ elif st.session_state.page == "top10_tracking":
                         f"</div>"
                         f"<div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
                         f"{escape_html(p.get('entry_date', ''))} 進場 ({tracking_number_text(p.get('entry_price'))}) ➔ {escape_html(p.get('close_date', ''))} 出場 ({tracking_number_text(p.get('close_price'))})"
+                        f"</div><div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
+                        f"入榜技術勝率: <b>{escape_html(entry_win_rate_text)}</b> ｜ 樣本/可信度: <b style='color:{entry_cred_color};'>{escape_html(entry_sample_text)}</b>"
                         f"</div></div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "analysis":

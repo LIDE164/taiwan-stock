@@ -16,6 +16,34 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_number(value: Any) -> float | None:
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _entry_backtest_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize the technical backtest that existed when a name entered Top-10."""
+    raw_samples = _optional_number(row.get("Backtest_Samples"))
+    samples = int(raw_samples) if raw_samples is not None and raw_samples >= 0 else None
+    raw_win_rate = _optional_number(row.get("WinRate"))
+    win_rate = (
+        round(raw_win_rate, 2)
+        if samples is not None and samples > 0 and raw_win_rate is not None and 0 <= raw_win_rate <= 100
+        else None
+    )
+    scope = str(row.get("Backtest_Scope") or "").strip()
+    status = "ok" if win_rate is not None else ("no_samples" if samples == 0 else "missing")
+    return {
+        "entry_win_rate": win_rate,
+        "entry_backtest_samples": samples,
+        "entry_backtest_scope": scope or None,
+        "entry_backtest_status": status,
+    }
+
+
 def _quote(row: Mapping[str, Any] | None) -> dict[str, float] | None:
     """Return a complete, internally consistent OHLC bar or no quote at all."""
     if not isinstance(row, Mapping):
@@ -88,6 +116,10 @@ def _snapshot(
         "name": str(position.get("name", position.get("ticker", ""))),
         "entry_date": str(position.get("entry_date", "")),
         "entry_price": round(entry, 4),
+        "entry_win_rate": position.get("entry_win_rate"),
+        "entry_backtest_samples": position.get("entry_backtest_samples"),
+        "entry_backtest_scope": position.get("entry_backtest_scope"),
+        "entry_backtest_status": str(position.get("entry_backtest_status", "missing")),
         "open": round(quote["open"], 4) if quote else None,
         "high": round(quote["high"], 4) if quote else None,
         "low": round(quote["low"], 4) if quote else None,
@@ -140,6 +172,32 @@ def build_top10_history_rows(top10_results: Sequence[Mapping[str, Any]]) -> list
         cleaned["Rank"] = int(cleaned.get("Rank") or position)
         rows.append(cleaned)
     return rows
+
+
+def backfill_entry_backtest_snapshots(
+    positions: Sequence[Mapping[str, Any]],
+    history_by_date: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Recover authentic entry-day stats from saved rankings; never use a later ranking."""
+    updated = [deepcopy(dict(position)) for position in positions if isinstance(position, Mapping)]
+    for position in updated:
+        if position.get("entry_backtest_samples") is not None:
+            continue
+        entry_date = str(position.get("entry_date", ""))
+        ticker = str(position.get("ticker", ""))
+        ranking = history_by_date.get(entry_date, ())
+        source = next(
+            (
+                row for row in ranking
+                if isinstance(row, Mapping) and str(row.get("代號", "")) == ticker
+            ),
+            None,
+        )
+        if source is None:
+            continue
+        snapshot = _entry_backtest_snapshot(source)
+        position.update(snapshot)
+    return updated
 
 
 def update_positions_with_snapshots(
@@ -297,6 +355,7 @@ def update_positions_with_snapshots(
             "current_price": price,
             "pnl_pct": 0.0,
         }
+        position.update(_entry_backtest_snapshot(row))
         ranked_row = dict(row)
         ranked_row.setdefault("Rank", rank)
         snapshot = _snapshot(

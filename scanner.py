@@ -25,7 +25,11 @@ from scan_state import (
     should_complete_candidate,
 )
 from scoring import get_decision_score
-from top10_tracker import build_top10_history_rows, update_positions_with_snapshots
+from top10_tracker import (
+    backfill_entry_backtest_snapshots,
+    build_top10_history_rows,
+    update_positions_with_snapshots,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -390,6 +394,26 @@ def update_top10_tracker(top10_results, trading_date=None):
             missing_ranking_dates = data_field.get("missing_ranking_dates", [])
             partial_ranking_dates = data_field.get("partial_ranking_dates", [])
             unverified_ranking_dates = data_field.get("unverified_ranking_dates", [])
+
+        missing_entry_dates = sorted({
+            str(position.get("entry_date", ""))
+            for position in positions
+            if isinstance(position, dict)
+            and position.get("entry_date")
+            and position.get("entry_backtest_samples") is None
+            and position.get("entry_backtest_status") != "missing"
+        })
+        entry_history_by_date = {}
+        for entry_date in missing_entry_dates:
+            try:
+                history_doc = db.collection("top10_history").document(entry_date).get()
+                if history_doc.exists:
+                    history_data = (history_doc.to_dict() or {}).get("data", [])
+                    if isinstance(history_data, list):
+                        entry_history_by_date[entry_date] = history_data
+            except Exception as history_error:
+                logging.warning("讀取 %s Top10 入榜原始資料失敗，保留缺值: %s", entry_date, history_error)
+        positions = backfill_entry_backtest_snapshots(positions, entry_history_by_date)
         
         top10_tickers = {str(row.get("代號", "")) for row in top10_results}
         quotes = {}
