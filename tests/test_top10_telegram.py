@@ -75,24 +75,34 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(rows[0]["entry_zone_text"], "1200–1235")
         self.assertNotIn("source_rank_text", rows[0])
         self.assertNotIn("rrr_text", rows[0])
-        self.assertEqual(rows[0]["suggested_shares"], 4)
-        self.assertLessEqual(rows[0]["estimated_spend"], 5000)
+        self.assertEqual(rows[0]["suggested_shares"], 78)
+        self.assertLessEqual(rows[0]["estimated_loss"], 5000)
 
-    def test_odd_lot_plan_keeps_all_orders_and_fees_inside_daily_cap(self):
+    def test_odd_lot_plan_caps_each_trade_loss_independently(self):
         ready = [
             dict(
-                self.rows[0], 代號="1111", Entry_Status="現在可執行",
+                self.rows[0], 代號="1111", 收盤價=100, Entry_Status="現在可執行",
                 Entry_Low=95, Entry_High=100, Entry_Stop=90, Entry_Target=115,
             ),
             dict(
-                self.rows[0], 代號="2222", Entry_Status="現在可執行",
+                self.rows[0], 代號="2222", 收盤價=200, Entry_Status="現在可執行",
                 Entry_Low=190, Entry_High=200, Entry_Stop=180, Entry_Target=230,
             ),
         ]
         rows = build_executable_display_rows(ready)
         self.assertTrue(all(row["suggested_shares"] > 0 for row in rows))
-        self.assertLessEqual(sum(row["estimated_spend"] for row in rows), 5000)
-        self.assertGreater(sum(row["estimated_spend"] for row in rows), 4700)
+        self.assertEqual([row["suggested_shares"] for row in rows], [500, 250])
+        self.assertTrue(all(row["estimated_loss"] <= 5000 for row in rows))
+        self.assertGreater(sum(row["estimated_loss"] for row in rows), 9000)
+
+    def test_position_size_is_unavailable_when_stop_is_not_below_current_price(self):
+        ready = dict(
+            self.rows[0], Entry_Status="現在可執行", Entry_Stop=1234, Entry_Target=1300,
+        )
+        row = build_executable_display_rows([ready])[0]
+        self.assertEqual(row["suggested_shares"], 0)
+        self.assertEqual(row["suggested_shares_text"], "無法計算")
+        self.assertEqual(row["estimated_loss_text"], "--")
 
     def test_empty_executable_list_still_returns_an_honest_png(self):
         png = render_executable_image([dict(self.rows[0], Entry_Status="等待拉回")], "2026-08-27")

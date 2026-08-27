@@ -19,9 +19,7 @@ CARD_LEFT = 42
 CARD_WIDTH = 996
 CARD_HEIGHT = 100
 CARD_GAP = 10
-DAILY_EXECUTABLE_BUDGET = 5000.0
-BUY_COMMISSION_RATE = 0.001425
-MIN_BUY_COMMISSION = 20.0
+PER_TRADE_MAX_LOSS = 5000.0
 
 
 def _number(value: Any) -> float | None:
@@ -88,52 +86,28 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
     return rows
 
 
-def _estimated_buy_total(price: float, shares: int) -> float:
-    if price <= 0 or shares <= 0:
-        return 0.0
-    gross = price * shares
-    return float(math.ceil(gross + max(MIN_BUY_COMMISSION, gross * BUY_COMMISSION_RATE)))
-
-
-def _allocate_odd_lots(rows: list[dict[str, Any]], budget: float) -> None:
-    """Water-fill odd lots across displayed names while keeping fees inside the daily cap."""
-    shares = [0 for _ in rows]
-    total = 0.0
-    budget = max(float(budget), 0.0)
-    while rows:
-        added = False
-        candidates = sorted(
-            range(len(rows)),
-            key=lambda index: (shares[index] * float(rows[index]["allocation_price"] or 0), index),
-        )
-        for index in candidates:
-            price = float(rows[index]["allocation_price"] or 0)
-            if price <= 0:
-                continue
-            old_cost = _estimated_buy_total(price, shares[index])
-            new_cost = _estimated_buy_total(price, shares[index] + 1)
-            increment = new_cost - old_cost
-            if total + increment <= budget + 1e-9:
-                shares[index] += 1
-                total += increment
-                added = True
-                break
-        if not added:
-            break
-
-    for index, row in enumerate(rows):
-        estimated = _estimated_buy_total(float(row["allocation_price"] or 0), shares[index])
-        row["suggested_shares"] = shares[index]
-        row["suggested_shares_text"] = f"{shares[index]} 股" if shares[index] > 0 else "候補"
-        row["estimated_spend"] = estimated
-        row["estimated_spend_text"] = f"${estimated:,.0f}" if estimated > 0 else "--"
+def _position_size_for_max_loss(
+    entry_price: float | None,
+    stop_price: float | None,
+    max_loss: float,
+) -> tuple[int, float | None, float | None]:
+    """Size one odd-lot position so its price loss at the stop stays within max_loss."""
+    if entry_price is None or stop_price is None or max_loss <= 0:
+        return 0, None, None
+    risk_per_share = entry_price - stop_price
+    if entry_price <= 0 or stop_price <= 0 or risk_per_share <= 0:
+        return 0, None, None
+    shares = math.floor(max_loss / risk_per_share)
+    if shares <= 0:
+        return 0, risk_per_share, 0.0
+    return shares, risk_per_share, shares * risk_per_share
 
 
 def build_executable_display_rows(
     results: Sequence[Mapping[str, Any]],
-    daily_budget: float = DAILY_EXECUTABLE_BUDGET,
+    max_loss_per_trade: float = PER_TRADE_MAX_LOSS,
 ) -> list[dict[str, Any]]:
-    """Return executable records with an odd-lot allocation capped at the total daily budget."""
+    """Return executable records sized to a maximum NT$ loss for each individual trade."""
     executable = [
         record for record in results
         if str(record.get("Entry_Status") or "").strip() == "現在可執行"
@@ -153,6 +127,11 @@ def build_executable_display_rows(
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
         credibility, credibility_color = _credibility(samples)
+        shares, risk_per_share, estimated_loss = _position_size_for_max_loss(
+            close,
+            stop,
+            max_loss_per_trade,
+        )
         rows.append({
             "display_rank": display_rank,
             "ticker": _clean_text(record.get("代號")),
@@ -169,16 +148,20 @@ def build_executable_display_rows(
                 if low is not None and high is not None and low > 0 and high >= low
                 else "--"
             ),
-            "allocation_price": high if high is not None and high > 0 else None,
             "stop_text": "--" if stop is None or stop <= 0 else f"{stop:g}",
             "target_text": "--" if target is None or target <= 0 else f"{target:g}",
+            "suggested_shares": shares,
+            "suggested_shares_text": f"{shares:,} 股" if shares > 0 else "無法計算",
+            "risk_per_share": risk_per_share,
+            "risk_per_share_text": "--" if risk_per_share is None else f"${risk_per_share:,.2f}",
+            "estimated_loss": estimated_loss,
+            "estimated_loss_text": "--" if estimated_loss is None else f"${estimated_loss:,.0f}",
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
             "sample_credibility_text": (
                 "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
             ),
             "credibility_color": credibility_color,
         })
-    _allocate_odd_lots(rows, daily_budget)
     return rows
 
 
@@ -299,7 +282,6 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
 def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
     """Render the stocks whose saved post-close entry plan is executable now."""
     rows = build_executable_display_rows(results)
-    suggested_total = sum(float(row.get("estimated_spend") or 0) for row in rows)
     image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
@@ -308,7 +290,7 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
     draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
     draw.text(
         (IMAGE_WIDTH - 62, 91),
-        f"{len(rows)} 檔｜建議投入 ${suggested_total:,.0f} / $5,000",
+        f"{len(rows)} 檔｜每檔停損風險上限 $5,000",
         font=_font(19),
         fill="#94A3B8",
         anchor="ra",
@@ -344,8 +326,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
             labels = (
                 (128, "現價 / 漲跌", row["close_change_text"], current_color),
                 (300, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
-                (475, "零股配置", row["suggested_shares_text"], "#FBBF24"),
-                (595, "預估投入", row["estimated_spend_text"], "#F8FAFC"),
+                (475, "建議零股", row["suggested_shares_text"], "#FBBF24"),
+                (595, "停損最大虧損", row["estimated_loss_text"], "#F8FAFC"),
                 (720, "風險停損", row["stop_text"], "#4ADE80"),
                 (835, "策略目標", row["target_text"], "#F87171"),
                 (940, "技術勝率", row["win_rate_text"], "#60A5FA"),
@@ -356,8 +338,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
 
     footer_y = 1282
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 14), "零股依顯示標的平均分散，以買入區上緣及買進手續費估算。", font=_font(16), fill="#94A3B8")
-    draw.text((54, footer_y + 43), "建議合計不超過每日總上限 $5,000；仍請依停損控管風險。", font=_font(17, True), fill="#FBBF24")
+    draw.text((54, footer_y + 14), "建議股數 = floor($5,000 ÷（現價 − 停損價）)，每檔分別計算。", font=_font(16), fill="#94A3B8")
+    draw.text((54, footer_y + 43), "每檔停損價差損失不超過 $5,000；未計滑價、手續費與交易稅。", font=_font(17, True), fill="#FBBF24")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
