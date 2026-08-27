@@ -19,6 +19,9 @@ CARD_LEFT = 42
 CARD_WIDTH = 996
 CARD_HEIGHT = 100
 CARD_GAP = 10
+DAILY_EXECUTABLE_BUDGET = 5000.0
+BUY_COMMISSION_RATE = 0.001425
+MIN_BUY_COMMISSION = 20.0
 
 
 def _number(value: Any) -> float | None:
@@ -85,16 +88,58 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
     return rows
 
 
-def build_executable_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Return only genuinely executable records, preserving their full-list rank."""
+def _estimated_buy_total(price: float, shares: int) -> float:
+    if price <= 0 or shares <= 0:
+        return 0.0
+    gross = price * shares
+    return float(math.ceil(gross + max(MIN_BUY_COMMISSION, gross * BUY_COMMISSION_RATE)))
+
+
+def _allocate_odd_lots(rows: list[dict[str, Any]], budget: float) -> None:
+    """Water-fill odd lots across displayed names while keeping fees inside the daily cap."""
+    shares = [0 for _ in rows]
+    total = 0.0
+    budget = max(float(budget), 0.0)
+    while rows:
+        added = False
+        candidates = sorted(
+            range(len(rows)),
+            key=lambda index: (shares[index] * float(rows[index]["allocation_price"] or 0), index),
+        )
+        for index in candidates:
+            price = float(rows[index]["allocation_price"] or 0)
+            if price <= 0:
+                continue
+            old_cost = _estimated_buy_total(price, shares[index])
+            new_cost = _estimated_buy_total(price, shares[index] + 1)
+            increment = new_cost - old_cost
+            if total + increment <= budget + 1e-9:
+                shares[index] += 1
+                total += increment
+                added = True
+                break
+        if not added:
+            break
+
+    for index, row in enumerate(rows):
+        estimated = _estimated_buy_total(float(row["allocation_price"] or 0), shares[index])
+        row["suggested_shares"] = shares[index]
+        row["suggested_shares_text"] = f"{shares[index]} 股" if shares[index] > 0 else "候補"
+        row["estimated_spend"] = estimated
+        row["estimated_spend_text"] = f"${estimated:,.0f}" if estimated > 0 else "--"
+
+
+def build_executable_display_rows(
+    results: Sequence[Mapping[str, Any]],
+    daily_budget: float = DAILY_EXECUTABLE_BUDGET,
+) -> list[dict[str, Any]]:
+    """Return executable records with an odd-lot allocation capped at the total daily budget."""
     executable = [
         record for record in results
         if str(record.get("Entry_Status") or "").strip() == "現在可執行"
     ][:10]
     rows: list[dict[str, Any]] = []
     for display_rank, record in enumerate(executable, start=1):
-        source_rank_number = _number(record.get("Rank"))
-        source_rank = int(source_rank_number) if source_rank_number is not None and source_rank_number > 0 else None
         score = _number(record.get("Score"))
         close = _number(record.get("收盤價"))
         change = _number(record.get("漲跌幅"))
@@ -102,7 +147,6 @@ def build_executable_display_rows(results: Sequence[Mapping[str, Any]]) -> list[
         high = _number(record.get("Entry_High"))
         stop = _number(record.get("Entry_Stop"))
         target = _number(record.get("Entry_Target"))
-        rrr = _number(record.get("Entry_RRR", record.get("RRR")))
         samples_number = _number(record.get("Backtest_Samples"))
         samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
         win_rate = _number(record.get("WinRate"))
@@ -111,7 +155,6 @@ def build_executable_display_rows(results: Sequence[Mapping[str, Any]]) -> list[
         credibility, credibility_color = _credibility(samples)
         rows.append({
             "display_rank": display_rank,
-            "source_rank_text": "--" if source_rank is None else f"總榜 #{source_rank}",
             "ticker": _clean_text(record.get("代號")),
             "name": _clean_text(record.get("名稱"), _clean_text(record.get("代號"))),
             "score_text": "--" if score is None else f"{score:g} 分",
@@ -126,15 +169,16 @@ def build_executable_display_rows(results: Sequence[Mapping[str, Any]]) -> list[
                 if low is not None and high is not None and low > 0 and high >= low
                 else "--"
             ),
+            "allocation_price": high if high is not None and high > 0 else None,
             "stop_text": "--" if stop is None or stop <= 0 else f"{stop:g}",
             "target_text": "--" if target is None or target <= 0 else f"{target:g}",
-            "rrr_text": "--" if rrr is None or rrr <= 0 else f"1:{rrr:g}",
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
             "sample_credibility_text": (
                 "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
             ),
             "credibility_color": credibility_color,
         })
+    _allocate_odd_lots(rows, daily_budget)
     return rows
 
 
@@ -255,13 +299,20 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
 def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
     """Render the stocks whose saved post-close entry plan is executable now."""
     rows = build_executable_display_rows(results)
+    suggested_total = sum(float(row.get("estimated_spend") or 0) for row in rows)
     image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
     draw.text((62, 48), "EXECUTABLE WATCHLIST", font=_font(18, True), fill="#F87171")
     draw.text((62, 76), "今日可馬上執行", font=_font(39, True), fill="#F8FAFC")
     draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
-    draw.text((IMAGE_WIDTH - 62, 91), f"符合條件 {len(rows)} 檔｜最多顯示 10 檔", font=_font(19), fill="#94A3B8", anchor="ra")
+    draw.text(
+        (IMAGE_WIDTH - 62, 91),
+        f"{len(rows)} 檔｜建議投入 ${suggested_total:,.0f} / $5,000",
+        font=_font(19),
+        fill="#94A3B8",
+        anchor="ra",
+    )
 
     if not rows:
         draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
@@ -284,21 +335,20 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
             draw.text((83, top + 49), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
             stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(27, True), 285)
             draw.text((128, top + 14), stock_text, font=_font(27, True), fill="#F8FAFC")
-            draw.rounded_rectangle((430, top + 12, 552, top + 45), radius=16, fill="#172033", outline="#334155")
-            draw.text((491, top + 28), row["source_rank_text"], font=_font(16, True), fill="#93C5FD", anchor="mm")
             sample_text = _fit_text(draw, row["sample_credibility_text"], _font(17, True), 245)
-            draw.text((575, top + 19), sample_text, font=_font(17, True), fill=row["credibility_color"])
+            draw.text((435, top + 19), sample_text, font=_font(17, True), fill=row["credibility_color"])
             draw.text((1000, top + 13), row["score_text"], font=_font(29, True), fill="#F87171", anchor="ra")
 
             change = row["change_value"]
             current_color = "#E2E8F0" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
             labels = (
                 (128, "現價 / 漲跌", row["close_change_text"], current_color),
-                (320, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
-                (520, "風險停損", row["stop_text"], "#4ADE80"),
-                (650, "策略目標", row["target_text"], "#F87171"),
-                (780, "RRR", row["rrr_text"], "#FBBF24"),
-                (885, "技術勝率", row["win_rate_text"], "#60A5FA"),
+                (300, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
+                (475, "零股配置", row["suggested_shares_text"], "#FBBF24"),
+                (595, "預估投入", row["estimated_spend_text"], "#F8FAFC"),
+                (720, "風險停損", row["stop_text"], "#4ADE80"),
+                (835, "策略目標", row["target_text"], "#F87171"),
+                (940, "技術勝率", row["win_rate_text"], "#60A5FA"),
             )
             for x, label, value, color in labels:
                 draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
@@ -306,8 +356,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
 
     footer_y = 1282
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 18), "僅列入盤後判定為「現在可執行」的標的；價格與區間以榜單交易日資料為準。", font=_font(17), fill="#94A3B8")
-    draw.text((IMAGE_WIDTH - 54, footer_y + 18), "請依停損控管風險", font=_font(17, True), fill="#FBBF24", anchor="ra")
+    draw.text((54, footer_y + 14), "零股依顯示標的平均分散，以買入區上緣及買進手續費估算。", font=_font(16), fill="#94A3B8")
+    draw.text((54, footer_y + 43), "建議合計不超過每日總上限 $5,000；仍請依停損控管風險。", font=_font(17, True), fill="#FBBF24")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
