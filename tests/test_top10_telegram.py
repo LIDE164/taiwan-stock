@@ -6,6 +6,7 @@ from PIL import Image
 from top10_telegram import (
     build_executable_display_rows,
     build_top10_display_rows,
+    prediction_title,
     render_executable_image,
     render_top10_image,
     send_executable_photo,
@@ -63,6 +64,11 @@ class Top10TelegramTests(unittest.TestCase):
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.format, "PNG")
         self.assertEqual(image.size, (1080, 1400))
+
+    def test_prediction_title_uses_the_next_weekday(self):
+        self.assertEqual(prediction_title("2026-08-26"), "8/27股票預測")
+        self.assertEqual(prediction_title("2026-08-28"), "8/31股票預測")
+        self.assertEqual(prediction_title("invalid"), "下一交易日股票預測")
 
     def test_empty_executable_top10_has_an_honest_empty_image(self):
         png = render_top10_image([], "2026-08-27")
@@ -142,7 +148,7 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(message_id, 321)
         _, kwargs = session.calls[0]
         self.assertEqual(kwargs["files"]["photo"][0], "executable-2026-08-27.png")
-        self.assertIn("今日可馬上執行", kwargs["data"]["caption"])
+        self.assertIn("8/28股票預測", kwargs["data"]["caption"])
 
 
 if __name__ == "__main__":

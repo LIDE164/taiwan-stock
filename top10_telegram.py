@@ -6,6 +6,7 @@ import io
 import math
 import os
 from collections.abc import Mapping, Sequence
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -33,6 +34,18 @@ def _number(value: Any) -> float | None:
 def _clean_text(value: Any, fallback: str = "--") -> str:
     text = " ".join(str(value or "").split()).strip()
     return text or fallback
+
+
+def prediction_title(analysis_date: Any) -> str:
+    """Format the next weekday after an ISO analysis date as an M/D prediction title."""
+    try:
+        parsed = date.fromisoformat(str(analysis_date).strip()[:10])
+    except (TypeError, ValueError):
+        return "下一交易日股票預測"
+    prediction_date = parsed + timedelta(days=1)
+    while prediction_date.weekday() >= 5:
+        prediction_date += timedelta(days=1)
+    return f"{prediction_date.month}/{prediction_date.day}股票預測"
 
 
 def _credibility(sample_count: int | None) -> tuple[str, str]:
@@ -287,8 +300,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
     draw.text((62, 48), "EXECUTABLE WATCHLIST", font=_font(18, True), fill="#F87171")
-    draw.text((62, 76), "今日可馬上執行", font=_font(39, True), fill="#F8FAFC")
-    draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
+    draw.text((62, 76), prediction_title(trading_date), font=_font(39, True), fill="#F8FAFC")
+    draw.text((IMAGE_WIDTH - 62, 53), f"分析日 {_clean_text(trading_date)}", font=_font(22, True), fill="#FBBF24", anchor="ra")
     draw.text(
         (IMAGE_WIDTH - 62, 91),
         f"{len(rows)} 檔｜每檔停損風險上限 $5,000",
@@ -416,7 +429,7 @@ def send_executable_photo(
     return _send_photo_bytes(
         png,
         f"executable-{trading_date}.png",
-        f"今日可馬上執行｜{trading_date}\n{count_text}；請依圖片停損控管風險。",
+        f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；請依圖片停損控管風險。",
         bot_token,
         chat_id,
         session,
