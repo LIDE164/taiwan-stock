@@ -49,7 +49,19 @@ class ScannerTelegramTests(unittest.TestCase):
         self.rows = [{
             "Rank": 1, "代號": "2330", "名稱": "台積電", "Score": 78,
             "收盤價": 1234, "漲跌幅": 1.2, "WinRate": 55, "Backtest_Samples": 40,
+            "Entry_Status": "現在可執行",
         }]
+
+    def test_executable_top10_excludes_waiting_and_uses_actionable_rank(self):
+        rows = [
+            dict(self.rows[0], Rank=1, 代號="1111", Entry_Status="等待拉回"),
+            dict(self.rows[0], Rank=5, 代號="2222"),
+            dict(self.rows[0], Rank=9, 代號="3333"),
+        ]
+        selected = scanner.select_executable_top10(rows)
+        self.assertEqual([row["代號"] for row in selected], ["2222", "3333"])
+        self.assertEqual([row["Rank"] for row in selected], [1, 2])
+        self.assertEqual([row["Overall_Rank"] for row in selected], [5, 9])
 
     def test_same_ranking_is_sent_only_once(self):
         with (
@@ -74,6 +86,19 @@ class ScannerTelegramTests(unittest.TestCase):
             scanner.send_daily_top10_notification(self.rows, "2026-08-27")
             scanner.send_daily_top10_notification(changed, "2026-08-27")
         self.assertEqual(send.call_count, 2)
+
+    def test_waiting_names_do_not_fill_the_daily_top10(self):
+        waiting = [dict(self.rows[0], Entry_Status="等待拉回")]
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_top10_photo", return_value=103) as send,
+        ):
+            self.assertTrue(scanner.send_daily_top10_notification(waiting, "2026-08-27"))
+        send.assert_called_once_with([], "2026-08-27", "token", "chat")
+        saved = self.db.collection("notifications").document("daily_top10_2026-08-27").value
+        self.assertEqual(saved["ranking_count"], 0)
+        self.assertEqual(saved["ranking_type"], "executable")
 
     def test_executable_image_has_independent_deduplication(self):
         ready = [dict(

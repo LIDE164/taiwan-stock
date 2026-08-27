@@ -18,7 +18,7 @@ import streamlit as st
 from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
 from app_security import normalize_ticker
 from data_providers import fetch_institutional_rows, fetch_revenue_growth
-from entry_readiness import build_entry_readiness
+from entry_readiness import READY_STATUS, build_entry_readiness
 from market_http import call_with_backoff, http_get
 from scan_state import (
     build_scan_quality,
@@ -406,19 +406,36 @@ def _top10_notification_fingerprint(top10_results, trading_date):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def send_daily_top10_notification(top10_results, trading_date, *, resend=False):
-    """Send once per distinct daily ranking and persist delivery state in Firestore."""
+def select_executable_top10(scan_results):
+    """Select up to ten executable names and rank them within the actionable list."""
+    selected = []
+    for record in scan_results:
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("Entry_Status") or "").strip() != READY_STATUS:
+            continue
+        row = dict(record)
+        original_rank = row.get("Overall_Rank", row.get("Rank"))
+        if original_rank is not None:
+            row["Overall_Rank"] = original_rank
+        row["Rank"] = len(selected) + 1
+        selected.append(row)
+        if len(selected) == 10:
+            break
+    return selected
+
+
+def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
+    """Send the executable Top-10 once per distinct daily ranking."""
     if db is None:
         raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
-    top10 = list(top10_results[:10])
-    if not top10:
-        raise RuntimeError("Top10 榜單為空，已取消 Telegram 通知")
+    top10 = select_executable_top10(scan_results)
     fingerprint = _top10_notification_fingerprint(top10, trading_date)
     notification_ref = db.collection("notifications").document(f"daily_top10_{trading_date}")
     previous = notification_ref.get()
     previous_data = (previous.to_dict() or {}) if previous.exists else {}
     if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
-        logging.info("%s Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
+        logging.info("%s 可執行 Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
         return False
 
     token, chat_id = _telegram_credentials()
@@ -429,9 +446,10 @@ def send_daily_top10_notification(top10_results, trading_date, *, resend=False):
         "fingerprint": fingerprint,
         "message_id": message_id,
         "ranking_count": len(top10),
+        "ranking_type": "executable",
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
-    logging.info("✅ %s Top10 圖片已發送至 Telegram（message_id=%s）。", trading_date, message_id)
+    logging.info("✅ %s 可執行 Top10 圖片已發送至 Telegram（%d 檔，message_id=%s）。", trading_date, len(top10), message_id)
     return True
 
 
@@ -614,7 +632,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
             if send_telegram:
                 send_daily_top10_notification(
-                    previous_payload.get("data", [])[:10],
+                    previous_payload.get("data", []),
                     scan_date_str,
                     resend=resend_telegram,
                 )
@@ -795,16 +813,18 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             "update_time": firestore.SERVER_TIMESTAMP
         })
 
-        top10 = scan_results[:10]
+        top10 = select_executable_top10(scan_results)
         history_data = build_top10_history_rows(top10)
         db.collection("top10_history").document(scan_date_str).set({
             "data": history_data,
             "scan_date": scan_date_str,
             "scan_limit": universe_limit,
             "scan_profile": scan_profile,
+            "ranking_type": "executable",
+            "ranking_count": len(top10),
             "update_time": firestore.SERVER_TIMESTAMP,
         })
-        logging.info("已記錄 %s 前十名完整榜單", scan_date_str)
+        logging.info("已記錄 %s 可執行 Top10 榜單（%d 檔）", scan_date_str, len(top10))
         update_top10_tracker(top10, scan_date_str)
     except Exception as e:
         _finish_scan_lease(scan_date_str, "failed", len(scan_results), str(e))

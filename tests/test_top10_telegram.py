@@ -64,6 +64,11 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(image.format, "PNG")
         self.assertEqual(image.size, (1080, 1400))
 
+    def test_empty_executable_top10_has_an_honest_empty_image(self):
+        png = render_top10_image([], "2026-08-27")
+        image = Image.open(io.BytesIO(png))
+        self.assertEqual(image.size, (1080, 1400))
+
     def test_executable_list_filters_exact_status_and_keeps_original_rank(self):
         waiting = dict(self.rows[0], Rank=2, 代號="2317", Entry_Status="等待拉回")
         ready = dict(

@@ -213,61 +213,62 @@ def _rank_colors(rank: int) -> tuple[str, str]:
 
 
 def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
-    """Return a PNG report containing at most ten ranking rows."""
+    """Return a PNG report containing at most ten executable ranking rows."""
     rows = build_top10_display_rows(results)
-    if not rows:
-        raise ValueError("Top10 榜單為空，不能生成 Telegram 圖片")
 
     image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
     draw.text((62, 48), "TAIWAN STOCK RADAR", font=_font(18, True), fill="#60A5FA")
-    draw.text((62, 76), "每日量化 Top 10", font=_font(39, True), fill="#F8FAFC")
+    draw.text((62, 76), "每日可執行 Top 10", font=_font(39, True), fill="#F8FAFC")
     draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
-    draw.text((IMAGE_WIDTH - 62, 91), "盤後正式榜單｜依量化分數排序", font=_font(19), fill="#94A3B8", anchor="ra")
+    draw.text((IMAGE_WIDTH - 62, 91), f"現在可執行 {len(rows)} 檔｜依量化分數排序", font=_font(19), fill="#94A3B8", anchor="ra")
 
     start_y = 168
-    for index, row in enumerate(rows):
-        top = start_y + index * (CARD_HEIGHT + CARD_GAP)
-        bottom = top + CARD_HEIGHT
-        draw.rounded_rectangle(
-            (CARD_LEFT, top, CARD_LEFT + CARD_WIDTH, bottom),
-            radius=18,
-            fill="#0F172A",
-            outline="#1E293B",
-            width=2,
-        )
-        badge_fill, badge_text = _rank_colors(row["rank"])
-        draw.ellipse((58, top + 24, 108, top + 74), fill=badge_fill)
-        draw.text((83, top + 49), str(row["rank"]), font=_font(23, True), fill=badge_text, anchor="mm")
+    if not rows:
+        draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
+        draw.text((IMAGE_WIDTH // 2, 485), "今日沒有符合", font=_font(32, True), fill="#94A3B8", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 555), "「現在可執行」條件的股票", font=_font(42, True), fill="#F8FAFC", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 645), "不會使用等待拉回、等待量能或條件不足的股票補滿 Top 10", font=_font(20), fill="#64748B", anchor="mm")
+    else:
+        for index, row in enumerate(rows):
+            top = start_y + index * (CARD_HEIGHT + CARD_GAP)
+            bottom = top + CARD_HEIGHT
+            draw.rounded_rectangle(
+                (CARD_LEFT, top, CARD_LEFT + CARD_WIDTH, bottom),
+                radius=18,
+                fill="#0F172A",
+                outline="#1E293B",
+                width=2,
+            )
+            badge_fill, badge_text = _rank_colors(row["rank"])
+            draw.ellipse((58, top + 24, 108, top + 74), fill=badge_fill)
+            draw.text((83, top + 49), str(row["rank"]), font=_font(23, True), fill=badge_text, anchor="mm")
 
-        stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(27, True), 330)
-        draw.text((128, top + 14), stock_text, font=_font(27, True), fill="#F8FAFC")
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(27, True), 330)
+            draw.text((128, top + 14), stock_text, font=_font(27, True), fill="#F8FAFC")
 
-        entry_text = _fit_text(draw, row["entry_status"], _font(18, True), 220)
-        entry_color = "#FCA5A5" if row["entry_status"] == "現在可執行" else "#FDE68A"
-        if row["entry_status"] in ("條件不足", "條件未提供", "待新掃描"):
-            entry_color = "#CBD5E1"
-        draw.rounded_rectangle((470, top + 12, 716, top + 45), radius=16, fill="#172033", outline="#334155")
-        draw.text((593, top + 28), entry_text, font=_font(18, True), fill=entry_color, anchor="mm")
+            entry_text = _fit_text(draw, row["entry_status"], _font(18, True), 220)
+            draw.rounded_rectangle((470, top + 12, 716, top + 45), radius=16, fill="#172033", outline="#334155")
+            draw.text((593, top + 28), entry_text, font=_font(18, True), fill="#FCA5A5", anchor="mm")
 
-        score_color = "#F87171" if row["score_text"] != "--" else "#94A3B8"
-        draw.text((1000, top + 13), row["score_text"], font=_font(29, True), fill=score_color, anchor="ra")
-        draw.text((1000, top + 51), _fit_text(draw, row["rating"], _font(17, True), 155), font=_font(17, True), fill="#4ADE80", anchor="ra")
+            score_color = "#F87171" if row["score_text"] != "--" else "#94A3B8"
+            draw.text((1000, top + 13), row["score_text"], font=_font(29, True), fill=score_color, anchor="ra")
+            draw.text((1000, top + 51), _fit_text(draw, row["rating"], _font(17, True), 155), font=_font(17, True), fill="#4ADE80", anchor="ra")
 
-        change = row["change_value"]
-        change_color = "#94A3B8" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
-        labels = (
-            (128, "收盤", row["close_text"], "#E2E8F0"),
-            (265, "漲跌", row["change_text"], change_color),
-            (405, "技術勝率", row["win_rate_text"], "#60A5FA"),
-            (576, "樣本", row["sample_text"], "#E2E8F0"),
-            (682, "可信度", row["credibility"], row["credibility_color"]),
-            (880, "產業", _fit_text(draw, row["industry"], _font(17, True), 115), "#A5B4FC"),
-        )
-        for x, label, value, color in labels:
-            draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
-            draw.text((x, top + 76), value, font=_font(17, True), fill=color)
+            change = row["change_value"]
+            change_color = "#94A3B8" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
+            labels = (
+                (128, "收盤", row["close_text"], "#E2E8F0"),
+                (265, "漲跌", row["change_text"], change_color),
+                (405, "技術勝率", row["win_rate_text"], "#60A5FA"),
+                (576, "樣本", row["sample_text"], "#E2E8F0"),
+                (682, "可信度", row["credibility"], row["credibility_color"]),
+                (880, "產業", _fit_text(draw, row["industry"], _font(17, True), 115), "#A5B4FC"),
+            )
+            for x, label, value, color in labels:
+                draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
+                draw.text((x, top + 76), value, font=_font(17, True), fill=color)
 
     footer_y = start_y + 10 * (CARD_HEIGHT + CARD_GAP) + 14
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
@@ -393,7 +394,7 @@ def send_top10_photo(
     return _send_photo_bytes(
         png,
         f"top10-{trading_date}.png",
-        f"台股每日 Top 10｜{trading_date}\n盤後正式榜單；技術勝率為歷史回測，僅供研究參考。",
+        f"台股每日可執行 Top 10｜{trading_date}\n僅納入現在可執行標的；技術勝率為歷史回測，僅供研究參考。",
         bot_token,
         chat_id,
         session,
