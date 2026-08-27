@@ -70,8 +70,9 @@ jobs:
             --memory 1Gi \
             --cpu 1 \
             --concurrency 1 \
+            --cpu-throttling \
             --min 0 \
-            --max 3 \
+            --max 1 \
             --timeout 300 \
             --quiet
 

@@ -177,4 +177,3 @@ app = Starlette(routes=[
     Route("/healthz", healthz, methods=["GET"]),
     Route("/telegram/webhook", telegram_webhook, methods=["POST"]),
 ])
-
