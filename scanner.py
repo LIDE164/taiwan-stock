@@ -7,7 +7,11 @@ import concurrent.futures
 import logging
 import os
 import argparse
+import hashlib
+import json
+from collections.abc import Mapping
 from datetime import datetime, timezone, timedelta
+from typing import Any
 import streamlit as st
 
 # 引入共用核心演算法
@@ -30,6 +34,7 @@ from top10_tracker import (
     build_top10_history_rows,
     update_positions_with_snapshots,
 )
+from top10_telegram import send_top10_photo
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -375,6 +380,61 @@ def _finish_scan_lease(trading_date, status, result_count=0, error=""):
         logging.error("更新掃描鎖狀態失敗: %s", e)
 
 
+def _telegram_credentials() -> tuple[Any, Any]:
+    nested = get_secret("telegram", {})
+    nested = nested if isinstance(nested, Mapping) else {}
+    token = (
+        get_secret("TELEGRAM_BOT_TOKEN")
+        or get_secret("TELEGRAM_TOKEN")
+        or nested.get("bot_token")
+        or nested.get("token")
+    )
+    chat_id = (
+        get_secret("TELEGRAM_CHAT_ID")
+        or get_secret("TELEGRAM_USER_ID")
+        or nested.get("chat_id")
+    )
+    return token, chat_id
+
+
+def _top10_notification_fingerprint(top10_results, trading_date):
+    payload = {
+        "date": str(trading_date),
+        "rows": build_top10_history_rows(top10_results[:10]),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def send_daily_top10_notification(top10_results, trading_date, *, resend=False):
+    """Send once per distinct daily ranking and persist delivery state in Firestore."""
+    if db is None:
+        raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
+    top10 = list(top10_results[:10])
+    if not top10:
+        raise RuntimeError("Top10 榜單為空，已取消 Telegram 通知")
+    fingerprint = _top10_notification_fingerprint(top10, trading_date)
+    notification_ref = db.collection("notifications").document(f"daily_top10_{trading_date}")
+    previous = notification_ref.get()
+    previous_data = previous.to_dict() or {} if previous.exists else {}
+    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
+        logging.info("%s Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
+        return False
+
+    token, chat_id = _telegram_credentials()
+    message_id = send_top10_photo(top10, trading_date, token, chat_id)
+    notification_ref.set({
+        "date": trading_date,
+        "status": "sent",
+        "fingerprint": fingerprint,
+        "message_id": message_id,
+        "ranking_count": len(top10),
+        "sent_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    logging.info("✅ %s Top10 圖片已發送至 Telegram（message_id=%s）。", trading_date, message_id)
+    return True
+
+
 def update_top10_tracker(top10_results, trading_date=None):
     if db is None: return
     try:
@@ -487,7 +547,7 @@ def update_top10_tracker(top10_results, trading_date=None):
         logging.error("更新 top10_tracker 失敗: %s", e)
         raise
 
-def run_daily_scan(force=False, *, allow_local=False):
+def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend_telegram=False):
     force = bool(force or os.getenv("FORCE_SCAN") == "1")
     if db is None and not allow_local:
         raise RuntimeError("Firestore 初始化失敗；排程掃描已中止，避免 GitHub Actions 誤判成功")
@@ -517,6 +577,12 @@ def run_daily_scan(force=False, *, allow_local=False):
     if not _acquire_scan_lease(scan_date_str, force=force):
         if previous_payload.get("scan_date") == scan_date_str:
             logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
+            if send_telegram:
+                send_daily_top10_notification(
+                    previous_payload.get("data", [])[:10],
+                    scan_date_str,
+                    resend=resend_telegram,
+                )
             return previous_payload.get("data", [])
         logging.info("%s 掃描工作已由其他執行個體處理，本次略過。", scan_date_str)
         return []
@@ -706,11 +772,19 @@ def run_daily_scan(force=False, *, allow_local=False):
         raise
 
     _finish_scan_lease(scan_date_str, "completed", len(scan_results))
+    if send_telegram:
+        send_daily_top10_notification(top10, scan_date_str, resend=resend_telegram)
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Taiwan stock post-close scanner")
     parser.add_argument("--allow-local", action="store_true", help="允許無 Firestore 僅輸出本機結果")
+    parser.add_argument("--skip-telegram", action="store_true", help="維護時略過 Telegram Top10 圖片")
+    parser.add_argument("--resend-telegram", action="store_true", help="即使榜單內容相同仍重新發送圖片")
     args = parser.parse_args()
-    run_daily_scan(allow_local=args.allow_local)
+    run_daily_scan(
+        allow_local=args.allow_local,
+        send_telegram=not args.skip_telegram,
+        resend_telegram=args.resend_telegram,
+    )

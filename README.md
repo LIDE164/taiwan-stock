@@ -19,6 +19,8 @@ The configured `CORE_TICKERS` (default `2330,2317,2454`) are always retained wit
 
 Each daily Top-10 ranking is stored with its complete scan fields in `top10_history/{date}`. Position tracking writes an idempotent OHLC, daily return, holding return, MFE/MAE, rank, score, and action snapshot to `top10_tracking_history/{date}`. The current tracker document keeps the latest snapshot and recent history dates for the UI; a same-day forced rerun replaces that day's entries instead of duplicating them.
 
+After a completed ranking, the scanner renders the Top-10 as a 1080×1400 PNG and sends it through Telegram. Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` either as GitHub repository secrets or inside `STREAMLIT_SECRETS`. Delivery state is stored in `notifications/daily_top10_{date}`, so the 22:00 backup run does not resend an unchanged image; `python scanner.py --resend-telegram` intentionally overrides that guard.
+
 Historical gaps can be audited with `python backfill_top10.py` and applied only after reviewing the dry-run with `python backfill_top10.py --apply`. The tool backs up the current tracker, enriches archived rankings only with matching historical OHLC, and creates explicit `missing`, `partial`, or `unverified` date records when the original ranking cannot be recovered. It never recalculates a past ranking with present-day fundamentals.
 
 ## Data integrity

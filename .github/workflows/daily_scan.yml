@@ -35,6 +35,11 @@ jobs:
           python-version: '3.14'
           cache: pip
 
+      - name: 安裝 Top10 圖片中文字型
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+
       - name: 安裝相依套件
         run: |
           python -m pip install --upgrade pip
@@ -54,6 +59,8 @@ jobs:
       - name: 執行每日 300／每週 500 掃描程式
         env:
           INPUT_SCAN_LIMIT: ${{ inputs.scan_limit }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "$INPUT_SCAN_LIMIT" = "300" ] || [ "$INPUT_SCAN_LIMIT" = "500" ]; then

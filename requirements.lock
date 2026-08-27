@@ -151,7 +151,9 @@ pandas==3.0.3
 peewee==4.3.0
     # via yfinance
 pillow==12.3.0
-    # via streamlit
+    # via
+    #   -r requirements.txt
+    #   streamlit
 platformdirs==4.11.3
     # via yfinance
 plotly==6.8.0
