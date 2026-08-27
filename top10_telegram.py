@@ -85,6 +85,59 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
     return rows
 
 
+def build_executable_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Return only genuinely executable records, preserving their full-list rank."""
+    executable = [
+        record for record in results
+        if str(record.get("Entry_Status") or "").strip() == "現在可執行"
+    ][:10]
+    rows: list[dict[str, Any]] = []
+    for display_rank, record in enumerate(executable, start=1):
+        source_rank_number = _number(record.get("Rank"))
+        source_rank = int(source_rank_number) if source_rank_number is not None and source_rank_number > 0 else None
+        score = _number(record.get("Score"))
+        close = _number(record.get("收盤價"))
+        change = _number(record.get("漲跌幅"))
+        low = _number(record.get("Entry_Low"))
+        high = _number(record.get("Entry_High"))
+        stop = _number(record.get("Entry_Stop"))
+        target = _number(record.get("Entry_Target"))
+        rrr = _number(record.get("Entry_RRR", record.get("RRR")))
+        samples_number = _number(record.get("Backtest_Samples"))
+        samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
+        win_rate = _number(record.get("WinRate"))
+        if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
+            win_rate = None
+        credibility, credibility_color = _credibility(samples)
+        rows.append({
+            "display_rank": display_rank,
+            "source_rank_text": "--" if source_rank is None else f"總榜 #{source_rank}",
+            "ticker": _clean_text(record.get("代號")),
+            "name": _clean_text(record.get("名稱"), _clean_text(record.get("代號"))),
+            "score_text": "--" if score is None else f"{score:g} 分",
+            "close_change_text": (
+                "--" if close is None else f"{close:g}"
+            ) + (
+                " / --" if change is None else f" / {change:+.1f}%"
+            ),
+            "change_value": change,
+            "entry_zone_text": (
+                f"{low:g}–{high:g}"
+                if low is not None and high is not None and low > 0 and high >= low
+                else "--"
+            ),
+            "stop_text": "--" if stop is None or stop <= 0 else f"{stop:g}",
+            "target_text": "--" if target is None or target <= 0 else f"{target:g}",
+            "rrr_text": "--" if rrr is None or rrr <= 0 else f"1:{rrr:g}",
+            "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
+            "sample_credibility_text": (
+                "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
+            ),
+            "credibility_color": credibility_color,
+        })
+    return rows
+
+
 def _font_candidates(bold: bool) -> tuple[str, ...]:
     configured = os.getenv("TOP10_FONT_PATH", "").strip()
     common = (
@@ -199,35 +252,89 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
     return output.getvalue()
 
 
-def send_top10_photo(
-    results: Sequence[Mapping[str, Any]],
-    trading_date: str,
+def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
+    """Render the stocks whose saved post-close entry plan is executable now."""
+    rows = build_executable_display_rows(results)
+    image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
+    draw.text((62, 48), "EXECUTABLE WATCHLIST", font=_font(18, True), fill="#F87171")
+    draw.text((62, 76), "今日可馬上執行", font=_font(39, True), fill="#F8FAFC")
+    draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
+    draw.text((IMAGE_WIDTH - 62, 91), f"符合條件 {len(rows)} 檔｜最多顯示 10 檔", font=_font(19), fill="#94A3B8", anchor="ra")
+
+    if not rows:
+        draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
+        draw.text((IMAGE_WIDTH // 2, 485), "今日沒有符合", font=_font(32, True), fill="#94A3B8", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 555), "「現在可執行」條件的股票", font=_font(42, True), fill="#F8FAFC", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 645), "系統不會把等待拉回、等待量能或條件不足的股票塞入名單", font=_font(20), fill="#64748B", anchor="mm")
+    else:
+        start_y = 168
+        for index, row in enumerate(rows):
+            top = start_y + index * (CARD_HEIGHT + CARD_GAP)
+            bottom = top + CARD_HEIGHT
+            draw.rounded_rectangle(
+                (CARD_LEFT, top, CARD_LEFT + CARD_WIDTH, bottom),
+                radius=18,
+                fill="#0F172A",
+                outline="#3F2631",
+                width=2,
+            )
+            draw.ellipse((58, top + 24, 108, top + 74), fill="#7F1D1D")
+            draw.text((83, top + 49), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(27, True), 285)
+            draw.text((128, top + 14), stock_text, font=_font(27, True), fill="#F8FAFC")
+            draw.rounded_rectangle((430, top + 12, 552, top + 45), radius=16, fill="#172033", outline="#334155")
+            draw.text((491, top + 28), row["source_rank_text"], font=_font(16, True), fill="#93C5FD", anchor="mm")
+            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(17, True), 245)
+            draw.text((575, top + 19), sample_text, font=_font(17, True), fill=row["credibility_color"])
+            draw.text((1000, top + 13), row["score_text"], font=_font(29, True), fill="#F87171", anchor="ra")
+
+            change = row["change_value"]
+            current_color = "#E2E8F0" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
+            labels = (
+                (128, "現價 / 漲跌", row["close_change_text"], current_color),
+                (320, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
+                (520, "風險停損", row["stop_text"], "#4ADE80"),
+                (650, "策略目標", row["target_text"], "#F87171"),
+                (780, "RRR", row["rrr_text"], "#FBBF24"),
+                (885, "技術勝率", row["win_rate_text"], "#60A5FA"),
+            )
+            for x, label, value, color in labels:
+                draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
+                draw.text((x, top + 76), value, font=_font(17, True), fill=color)
+
+    footer_y = 1282
+    draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
+    draw.text((54, footer_y + 18), "僅列入盤後判定為「現在可執行」的標的；價格與區間以榜單交易日資料為準。", font=_font(17), fill="#94A3B8")
+    draw.text((IMAGE_WIDTH - 54, footer_y + 18), "請依停損控管風險", font=_font(17, True), fill="#FBBF24", anchor="ra")
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _send_photo_bytes(
+    png: bytes,
+    filename: str,
+    caption: str,
     bot_token: Any,
     chat_id: Any,
-    *,
-    session: requests.Session | None = None,
+    session: requests.Session | None,
 ) -> int | None:
-    """Send the rendered ranking through Telegram's sendPhoto API."""
     token = str(bot_token or "").strip()
     target_chat = str(chat_id or "").strip()
     if not token or not target_chat:
         raise RuntimeError("Telegram 設定缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
-
-    png = render_top10_image(results, trading_date)
     client = session or requests.Session()
     try:
         response = client.post(
             f"https://api.telegram.org/bot{token}/sendPhoto",
-            data={
-                "chat_id": target_chat,
-                "caption": f"台股每日 Top 10｜{trading_date}\n盤後正式榜單；技術勝率為歷史回測，僅供研究參考。",
-            },
-            files={"photo": (f"top10-{trading_date}.png", png, "image/png")},
+            data={"chat_id": target_chat, "caption": caption},
+            files={"photo": (filename, png, "image/png")},
             timeout=30,
         )
     except Exception as error:
         raise RuntimeError(f"Telegram 圖片發送連線失敗（{type(error).__name__}）") from None
-
     if response.status_code < 200 or response.status_code >= 300:
         raise RuntimeError(f"Telegram 圖片發送失敗（HTTP {response.status_code}）")
     try:
@@ -239,3 +346,45 @@ def send_top10_photo(
     result = payload.get("result")
     message_id = result.get("message_id") if isinstance(result, Mapping) else None
     return int(message_id) if isinstance(message_id, (int, float)) else None
+
+
+def send_top10_photo(
+    results: Sequence[Mapping[str, Any]],
+    trading_date: str,
+    bot_token: Any,
+    chat_id: Any,
+    *,
+    session: requests.Session | None = None,
+) -> int | None:
+    """Send the rendered ranking through Telegram's sendPhoto API."""
+    png = render_top10_image(results, trading_date)
+    return _send_photo_bytes(
+        png,
+        f"top10-{trading_date}.png",
+        f"台股每日 Top 10｜{trading_date}\n盤後正式榜單；技術勝率為歷史回測，僅供研究參考。",
+        bot_token,
+        chat_id,
+        session,
+    )
+
+
+def send_executable_photo(
+    results: Sequence[Mapping[str, Any]],
+    trading_date: str,
+    bot_token: Any,
+    chat_id: Any,
+    *,
+    session: requests.Session | None = None,
+) -> int | None:
+    """Send the second daily image containing only immediately executable names."""
+    rows = build_executable_display_rows(results)
+    png = render_executable_image(results, trading_date)
+    count_text = f"共 {len(rows)} 檔" if rows else "今日無符合標的"
+    return _send_photo_bytes(
+        png,
+        f"executable-{trading_date}.png",
+        f"今日可馬上執行｜{trading_date}\n{count_text}；請依圖片停損控管風險。",
+        bot_token,
+        chat_id,
+        session,
+    )

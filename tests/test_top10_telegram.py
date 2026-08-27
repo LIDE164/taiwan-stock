@@ -3,7 +3,14 @@ import unittest
 
 from PIL import Image
 
-from top10_telegram import build_top10_display_rows, render_top10_image, send_top10_photo
+from top10_telegram import (
+    build_executable_display_rows,
+    build_top10_display_rows,
+    render_executable_image,
+    render_top10_image,
+    send_executable_photo,
+    send_top10_photo,
+)
 
 
 class _Response:
@@ -57,6 +64,22 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(image.format, "PNG")
         self.assertEqual(image.size, (1080, 1400))
 
+    def test_executable_list_filters_exact_status_and_keeps_original_rank(self):
+        waiting = dict(self.rows[0], Rank=2, 代號="2317", Entry_Status="等待拉回")
+        ready = dict(
+            self.rows[0], Rank=26, Entry_Status="現在可執行",
+            Entry_Low=1200, Entry_High=1235, Entry_Stop=1170, Entry_Target=1330, Entry_RRR=1.5,
+        )
+        rows = build_executable_display_rows([waiting, ready])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source_rank_text"], "總榜 #26")
+        self.assertEqual(rows[0]["entry_zone_text"], "1200–1235")
+
+    def test_empty_executable_list_still_returns_an_honest_png(self):
+        png = render_executable_image([dict(self.rows[0], Entry_Status="等待拉回")], "2026-08-27")
+        image = Image.open(io.BytesIO(png))
+        self.assertEqual(image.size, (1080, 1400))
+
     def test_sender_posts_png_and_returns_message_id(self):
         session = _Session()
         message_id = send_top10_photo(
@@ -77,6 +100,15 @@ class Top10TelegramTests(unittest.TestCase):
     def test_sender_requires_both_credentials(self):
         with self.assertRaisesRegex(RuntimeError, "TELEGRAM_BOT_TOKEN"):
             send_top10_photo(self.rows, "2026-08-27", "", "12345")
+
+    def test_executable_sender_uses_a_separate_filename_and_caption(self):
+        session = _Session()
+        ready = dict(self.rows[0], Entry_Status="現在可執行")
+        message_id = send_executable_photo([ready], "2026-08-27", "token", "chat", session=session)
+        self.assertEqual(message_id, 321)
+        _, kwargs = session.calls[0]
+        self.assertEqual(kwargs["files"]["photo"][0], "executable-2026-08-27.png")
+        self.assertIn("今日可馬上執行", kwargs["data"]["caption"])
 
 
 if __name__ == "__main__":

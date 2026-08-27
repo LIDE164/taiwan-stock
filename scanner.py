@@ -34,7 +34,7 @@ from top10_tracker import (
     build_top10_history_rows,
     update_positions_with_snapshots,
 )
-from top10_telegram import send_top10_photo
+from top10_telegram import build_executable_display_rows, send_executable_photo, send_top10_photo
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -416,7 +416,7 @@ def send_daily_top10_notification(top10_results, trading_date, *, resend=False):
     fingerprint = _top10_notification_fingerprint(top10, trading_date)
     notification_ref = db.collection("notifications").document(f"daily_top10_{trading_date}")
     previous = notification_ref.get()
-    previous_data = previous.to_dict() or {} if previous.exists else {}
+    previous_data = (previous.to_dict() or {}) if previous.exists else {}
     if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
         logging.info("%s Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
         return False
@@ -432,6 +432,41 @@ def send_daily_top10_notification(top10_results, trading_date, *, resend=False):
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info("✅ %s Top10 圖片已發送至 Telegram（message_id=%s）。", trading_date, message_id)
+    return True
+
+
+def send_daily_executable_notification(scan_results, trading_date, *, resend=False):
+    """Send the second daily image, including an honest empty state when no name qualifies."""
+    if db is None:
+        raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
+    executable_rows = build_executable_display_rows(scan_results)
+    fingerprint_payload = {"date": str(trading_date), "rows": executable_rows}
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    notification_ref = db.collection("notifications").document(f"daily_executable_{trading_date}")
+    previous = notification_ref.get()
+    previous_data = (previous.to_dict() or {}) if previous.exists else {}
+    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
+        logging.info("%s 可馬上執行 Telegram 圖片已發送，略過重複通知。", trading_date)
+        return False
+
+    token, chat_id = _telegram_credentials()
+    message_id = send_executable_photo(scan_results, trading_date, token, chat_id)
+    notification_ref.set({
+        "date": trading_date,
+        "status": "sent",
+        "fingerprint": fingerprint,
+        "message_id": message_id,
+        "executable_count": len(executable_rows),
+        "sent_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    logging.info(
+        "✅ %s 可馬上執行圖片已發送至 Telegram（%d 檔，message_id=%s）。",
+        trading_date,
+        len(executable_rows),
+        message_id,
+    )
     return True
 
 
@@ -580,6 +615,11 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             if send_telegram:
                 send_daily_top10_notification(
                     previous_payload.get("data", [])[:10],
+                    scan_date_str,
+                    resend=resend_telegram,
+                )
+                send_daily_executable_notification(
+                    previous_payload.get("data", []),
                     scan_date_str,
                     resend=resend_telegram,
                 )
@@ -774,6 +814,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
     _finish_scan_lease(scan_date_str, "completed", len(scan_results))
     if send_telegram:
         send_daily_top10_notification(top10, scan_date_str, resend=resend_telegram)
+        send_daily_executable_notification(scan_results, scan_date_str, resend=resend_telegram)
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 

@@ -75,6 +75,35 @@ class ScannerTelegramTests(unittest.TestCase):
             scanner.send_daily_top10_notification(changed, "2026-08-27")
         self.assertEqual(send.call_count, 2)
 
+    def test_executable_image_has_independent_deduplication(self):
+        ready = [dict(
+            self.rows[0], Entry_Status="現在可執行",
+            Entry_Low=1200, Entry_High=1235, Entry_Stop=1170, Entry_Target=1330, Entry_RRR=1.5,
+        )]
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_executable_photo", return_value=101) as send,
+        ):
+            self.assertTrue(scanner.send_daily_executable_notification(ready, "2026-08-27"))
+            self.assertFalse(scanner.send_daily_executable_notification(ready, "2026-08-27"))
+        send.assert_called_once()
+        saved = self.db.collection("notifications").document("daily_executable_2026-08-27").value
+        self.assertEqual(saved["executable_count"], 1)
+
+    def test_empty_executable_result_is_still_sent_once(self):
+        waiting = [dict(self.rows[0], Entry_Status="等待拉回")]
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_executable_photo", return_value=102) as send,
+        ):
+            self.assertTrue(scanner.send_daily_executable_notification(waiting, "2026-08-27"))
+            self.assertFalse(scanner.send_daily_executable_notification(waiting, "2026-08-27"))
+        send.assert_called_once()
+        saved = self.db.collection("notifications").document("daily_executable_2026-08-27").value
+        self.assertEqual(saved["executable_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
