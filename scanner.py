@@ -64,9 +64,13 @@ def init_firestore():
     except ValueError:
         try:
             firebase_secrets = get_secret("firebase")
-            if not firebase_secrets:
+            if firebase_secrets:
+                firebase_admin.initialize_app(credentials.Certificate(dict(firebase_secrets)))
+            elif os.getenv("K_SERVICE") or os.getenv("GOOGLE_CLOUD_PROJECT"):
+                # Cloud Run uses its assigned service account through Application Default Credentials.
+                firebase_admin.initialize_app()
+            else:
                 raise ValueError("無法讀取 firebase 金鑰設定")
-            firebase_admin.initialize_app(credentials.Certificate(dict(firebase_secrets)))
             return firestore.client()
         except Exception as e:
             logging.error("Firebase 初始化失敗: %s", e)

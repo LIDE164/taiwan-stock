@@ -1,0 +1,9 @@
+.git
+.github
+.streamlit/secrets.toml
+.pytest_cache
+__pycache__
+*.pyc
+*.png
+data
+tests
