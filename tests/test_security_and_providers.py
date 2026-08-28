@@ -4,7 +4,14 @@ import ssl
 from datetime import datetime
 import pandas as pd
 
-from app_security import build_stock_url, escape_html, normalize_ticker, safe_iso_date, scoped_document_name
+from app_security import (
+    build_stock_url,
+    escape_html,
+    normalize_ticker,
+    resolve_stock_identifier,
+    safe_iso_date,
+    scoped_document_name,
+)
 from data_providers import (
     _parse_official_revenue_row,
     _parse_tpex_institutional_payload,
@@ -34,6 +41,13 @@ class SecurityTests(unittest.TestCase):
         second = scoped_document_name("orders", {"email": "me@example.com"}, "")
         self.assertEqual(first, second)
         self.assertNotIn("example", first)
+
+    def test_stock_name_links_resolve_only_unique_matches(self):
+        names = {"2330": "台積電", "1111": "甲科技", "2222": "乙科技"}
+        self.assertEqual(resolve_stock_identifier("2330", names), ("2330", "ok"))
+        self.assertEqual(resolve_stock_identifier("台積電", names), ("2330", "ok"))
+        self.assertEqual(resolve_stock_identifier("科技", names), ("", "ambiguous"))
+        self.assertEqual(resolve_stock_identifier("不存在", names), ("", "not_found"))
 
     def test_card_renderer_escapes_cloud_values(self):
         frame = pd.DataFrame([{

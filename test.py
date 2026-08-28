@@ -17,7 +17,15 @@ from streamlit_autorefresh import st_autorefresh
 # 引入自訂繪圖函式與共用大腦核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance
 from analysis_live import fetch_analysis_live_quote
-from app_security import build_stock_url, escape_html, normalize_ticker, safe_iso_date, safe_mode, scoped_document_name
+from app_security import (
+    build_stock_url,
+    escape_html,
+    normalize_ticker,
+    resolve_stock_identifier,
+    safe_iso_date,
+    safe_mode,
+    scoped_document_name,
+)
 from charts import draw_professional_chart
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import build_entry_readiness, ensure_entry_readiness
@@ -716,8 +724,18 @@ st.session_state.fav_groups = {
 }
 render_sidebar_favorites(fav_sidebar_slot)
 
-if 'stock' in st.query_params:
-    q_stock = normalize_ticker(st.query_params['stock'])
+if 'stock' in st.query_params or 'query' in st.query_params:
+    q_stock = normalize_ticker(st.query_params.get('stock', ''))
+    q_status = "ok" if q_stock else "empty"
+    if not q_stock and 'query' in st.query_params:
+        q_stock, q_status = resolve_stock_identifier(
+            st.query_params.get('query', ''),
+            CURRENT_STOCK_NAMES,
+        )
+        if q_status == "ambiguous":
+            st.warning("股票名稱不夠明確，請改用股票代號開啟解析。")
+        elif q_status == "not_found":
+            st.warning("找不到這個股票名稱，請確認名稱或改用股票代號。")
     q_mode = safe_mode(st.query_params.get('mode', ''))
     q_target_date = safe_iso_date(st.query_params.get('target_date', ''))
     if q_target_date:

@@ -17,6 +17,7 @@ from app_security import normalize_ticker
 from entry_readiness import build_entry_readiness
 from scan_state import build_scan_quality, latest_trading_date
 from scoring import get_decision_score
+from telegram_links import HELP_TEXT, extract_stock_query
 from top10_telegram import (
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -30,23 +31,11 @@ from top10_telegram import (
 )
 
 
-HELP_TEXT = (
-    "請輸入台股代號或名稱，例如：\n"
-    "2330\n台積電\n/stock 2330\n\n"
-    "系統會回傳最新可驗證資料的分析圖片；缺失欄位不會補成 0 或生成假資料。"
-)
-_COMMAND_RE = re.compile(r"^/(?:stock|analyze)(?:@[A-Za-z0-9_]+)?\s*", re.IGNORECASE)
 _DIGIT_TICKER_RE = re.compile(r"^\d{4,6}$")
 
 
 class StockQueryError(ValueError):
     """A display-safe query resolution error."""
-
-
-def extract_stock_query(text: Any) -> str:
-    value = " ".join(str(text or "").strip().split())
-    value = _COMMAND_RE.sub("", value).strip()
-    return value
 
 
 def _scan_rows() -> tuple[list[dict[str, Any]], str]:

@@ -95,6 +95,7 @@ def build_daily_scan_status(lock_doc: Mapping[str, Any] | None) -> dict[str, Any
     else:
         status_key, status_label, status_color = "missing", "尚無紀錄", "#94A3B8"
 
+    result_count: int | None
     try:
         result_count = int(payload["result_count"])
         if result_count < 0:

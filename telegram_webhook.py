@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -17,12 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 import scanner
-from telegram_stock_analysis import (
-    HELP_TEXT,
-    StockQueryError,
-    get_stock_analysis,
-    render_stock_analysis_image,
-)
+from telegram_links import HELP_TEXT, build_analysis_url, extract_stock_query, is_valid_stock_query
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -58,30 +54,18 @@ def _send_text(chat_id: str, text: str, reply_to: int | None = None) -> None:
     _telegram_api("sendMessage", data=data)
 
 
-def _send_typing(chat_id: str) -> None:
-    try:
-        _telegram_api("sendChatAction", data={"chat_id": chat_id, "action": "upload_photo"})
-    except Exception:
-        LOGGER.info("Telegram chat action failed; continuing with analysis")
-
-
-def _send_analysis_photo(chat_id: str, record: Mapping[str, Any], reply_to: int | None = None) -> None:
-    ticker = str(record.get("代號") or "").strip()
-    name = str(record.get("名稱") or ticker).strip()
-    data_date = str(record.get("Data_Date") or "").strip()
-    status = str(record.get("Entry_Status") or "條件不足").strip()
-    png = render_stock_analysis_image(record)
+def _send_analysis_link(chat_id: str, query: str, reply_to: int | None = None) -> None:
+    analysis_url = build_analysis_url(query, _secret("ANALYSIS_BASE_URL"))
     data: dict[str, Any] = {
         "chat_id": chat_id,
-        "caption": f"{ticker} {name}｜資料日 {data_date}\n進場狀態：{status}；缺失資料一律顯示 --。",
+        "text": f"{query} 股票解析連結：\n{analysis_url}",
+        "reply_markup": json.dumps({
+            "inline_keyboard": [[{"text": "開啟股票解析", "url": analysis_url}]],
+        }, ensure_ascii=False),
     }
     if reply_to is not None:
         data["reply_parameters"] = f'{{"message_id":{reply_to}}}'
-    _telegram_api(
-        "sendPhoto",
-        data=data,
-        files={"photo": (f"stock-analysis-{ticker}.png", png, "image/png")},
-    )
+    _telegram_api("sendMessage", data=data)
 
 
 def _claim_update(update_id: int) -> bool:
@@ -139,17 +123,20 @@ def _process_update(payload: Mapping[str, Any]) -> None:
             _send_text(chat_id, "目前只接受股票代號或名稱文字。\n\n" + HELP_TEXT, message_id)
             _finish_update(update_id, "sent")
             return
-        _send_typing(chat_id)
-        record = get_stock_analysis(text)
-        _send_analysis_photo(chat_id, record, message_id)
-        _finish_update(update_id, "sent", str(record.get("代號") or ""))
-    except StockQueryError as error:
+        query = extract_stock_query(text)
+        if not query or not is_valid_stock_query(query):
+            _send_text(chat_id, "請輸入有效的股票名稱或 4～6 位數代號。\n\n" + HELP_TEXT, message_id)
+            _finish_update(update_id, "rejected")
+            return
+        _send_analysis_link(chat_id, query, message_id)
+        _finish_update(update_id, "sent", query)
+    except ValueError as error:
         _send_text(chat_id, str(error), message_id)
         _finish_update(update_id, "rejected")
     except Exception as error:
-        LOGGER.exception("Telegram stock analysis failed: %s", type(error).__name__)
+        LOGGER.exception("Telegram stock-link reply failed: %s", type(error).__name__)
         try:
-            _send_text(chat_id, "目前資料來源暫時無法完成分析，請稍後再試。", message_id)
+            _send_text(chat_id, "目前暫時無法產生解析連結，請稍後再試。", message_id)
         finally:
             _finish_update(update_id, "failed")
 

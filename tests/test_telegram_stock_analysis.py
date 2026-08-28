@@ -75,13 +75,11 @@ class TelegramStockAnalysisTests(unittest.TestCase):
         with (
             patch.object(telegram_webhook, "_secret", side_effect=lambda name: "123" if "CHAT_ID" in name else "secret"),
             patch.object(telegram_webhook, "_claim_update", return_value=True),
-            patch.object(telegram_webhook, "get_stock_analysis", return_value=self.rows[0]),
-            patch.object(telegram_webhook, "_send_typing"),
-            patch.object(telegram_webhook, "_send_analysis_photo") as send,
+            patch.object(telegram_webhook, "_send_analysis_link") as send,
             patch.object(telegram_webhook, "_finish_update"),
         ):
             telegram_webhook._process_update(payload)
-        send.assert_called_once()
+        send.assert_called_once_with("123", "2330", 7)
 
 
 if __name__ == "__main__":

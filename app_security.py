@@ -59,6 +59,33 @@ def build_stock_url(ticker: Any, **params: Any) -> str:
     return "/?" + urlencode(query)
 
 
+def resolve_stock_identifier(
+    value: Any,
+    stock_names: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Resolve a ticker or a unique stock-name match for public analysis links."""
+    query = "".join(str(value or "").strip().split())
+    ticker = normalize_ticker(query)
+    if ticker:
+        return ticker, "ok"
+    normalized_query = query.casefold()
+    if not normalized_query:
+        return "", "empty"
+    normalized_names = [
+        (normalize_ticker(code), "".join(str(name or "").split()).casefold())
+        for code, name in stock_names.items()
+    ]
+    exact = [code for code, name in normalized_names if code and name == normalized_query]
+    if len(exact) == 1:
+        return exact[0], "ok"
+    partial = [code for code, name in normalized_names if code and normalized_query in name]
+    if len(partial) == 1:
+        return partial[0], "ok"
+    if exact or partial:
+        return "", "ambiguous"
+    return "", "not_found"
+
+
 def scoped_document_name(base_name: str, identity: Mapping[str, Any] | None, fallback: str) -> str:
     """Create a non-identifying Firestore document id for one user/session."""
     identity = identity or {}
