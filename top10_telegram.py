@@ -21,6 +21,7 @@ CARD_WIDTH = 996
 CARD_HEIGHT = 100
 CARD_GAP = 10
 PER_TRADE_MAX_LOSS = 5000.0
+TRACKING_PERFORMANCE_START_DATE = "2026-08-28"
 
 
 def _number(value: Any) -> float | None:
@@ -176,6 +177,136 @@ def build_executable_display_rows(
             "credibility_color": credibility_color,
         })
     return rows
+
+
+def _mean(values: Sequence[float]) -> float | None:
+    return (sum(values) / len(values)) if values else None
+
+
+def _percent_text(value: float | None, digits: int = 1) -> str:
+    if value is None:
+        return "--"
+    return f"{value:+.{digits}f}%"
+
+
+def build_tracking_performance_report(
+    records: Sequence[Mapping[str, Any]],
+    positions: Sequence[Mapping[str, Any]],
+    trading_date: str,
+) -> dict[str, Any]:
+    """Build an equal-weight daily tracking report without inventing missing prices.
+
+    When more than ten names are tracked, the image deliberately shows the five
+    strongest and five weakest holding returns so the visual is not survivorship
+    biased toward winners.
+    """
+    daily_records = [dict(row) for row in records if isinstance(row, Mapping)]
+    all_positions = [dict(row) for row in positions if isinstance(row, Mapping)]
+    valid_daily_returns = [
+        value
+        for row in daily_records
+        if str(row.get("data_status") or "") == "ok"
+        and (value := _number(row.get("daily_return_pct"))) is not None
+    ]
+    open_positions = [row for row in all_positions if str(row.get("status") or "") == "OPEN"]
+    open_returns = [
+        value
+        for row in open_positions
+        if (value := _number(row.get("pnl_pct"))) is not None
+    ]
+    closed_positions = [row for row in all_positions if str(row.get("status") or "") != "OPEN"]
+    closed_returns = [
+        value
+        for row in closed_positions
+        if (value := _number(row.get("pnl_pct"))) is not None
+    ]
+    closed_wins = sum(value > 0 for value in closed_returns)
+
+    action_labels = {
+        "ENTRY": "收盤進場",
+        "HOLD": "持有",
+        "TAKE_PROFIT": "停利",
+        "STOP_LOSS": "停損",
+        "DATA_MISSING": "行情缺漏",
+        "EXIT": "已出場",
+    }
+    display_rows: list[dict[str, Any]] = []
+    for row in daily_records:
+        ticker = _clean_text(row.get("ticker"))
+        if ticker == "--":
+            continue
+        pnl = _number(row.get("pnl_pct"))
+        daily_return = (
+            _number(row.get("daily_return_pct"))
+            if str(row.get("data_status") or "") == "ok"
+            else None
+        )
+        entry = _number(row.get("entry_price"))
+        mark = _number(row.get("mark_price")) if str(row.get("data_status") or "") == "ok" else None
+        sample_number = _number(row.get("entry_backtest_samples"))
+        samples = int(sample_number) if sample_number is not None and sample_number >= 0 else None
+        win_rate = _number(row.get("entry_win_rate"))
+        if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
+            win_rate = None
+        credibility, credibility_color = _credibility(samples)
+        display_rows.append({
+            "ticker": ticker,
+            "name": _clean_text(row.get("name"), ticker),
+            "entry_date": _clean_text(row.get("entry_date")),
+            "action": action_labels.get(str(row.get("action") or ""), _clean_text(row.get("action"))),
+            "entry_text": "--" if entry is None else f"{entry:g}",
+            "mark_text": "--" if mark is None else f"{mark:g}",
+            "daily_return": daily_return,
+            "daily_return_text": _percent_text(daily_return),
+            "pnl": pnl,
+            "pnl_text": _percent_text(pnl),
+            "backtest_text": (
+                "--"
+                if win_rate is None
+                else f"{win_rate:.1f}% / {samples}"
+            ),
+            "credibility": credibility,
+            "credibility_color": credibility_color,
+            "data_status": str(row.get("data_status") or "missing"),
+        })
+
+    display_rows.sort(
+        key=lambda row: row["pnl"] if row["pnl"] is not None else float("-inf"),
+        reverse=True,
+    )
+    if len(display_rows) > 10:
+        selected_rows = display_rows[:5] + display_rows[-5:]
+        display_mode = "持有報酬前 5／後 5"
+    else:
+        selected_rows = display_rows
+        display_mode = "全部追蹤標的"
+
+    missing_count = sum(str(row.get("data_status") or "") != "ok" for row in daily_records)
+    actions: dict[str, int] = {}
+    for row in daily_records:
+        action = str(row.get("action") or "UNKNOWN")
+        actions[action] = actions.get(action, 0) + 1
+    realized_win_rate = (
+        closed_wins / len(closed_returns) * 100 if closed_returns else None
+    )
+    return {
+        "date": str(trading_date),
+        "start_date": TRACKING_PERFORMANCE_START_DATE,
+        "tracked_count": len(daily_records),
+        "valid_count": len(daily_records) - missing_count,
+        "missing_count": missing_count,
+        "daily_average": _mean(valid_daily_returns),
+        "daily_positive_count": sum(value > 0 for value in valid_daily_returns),
+        "daily_sample_count": len(valid_daily_returns),
+        "open_count": len(open_positions),
+        "open_average": _mean(open_returns),
+        "closed_count": len(closed_positions),
+        "realized_win_rate": realized_win_rate,
+        "realized_average": _mean(closed_returns),
+        "actions": actions,
+        "rows": selected_rows,
+        "display_mode": display_mode,
+    }
 
 
 def _font_candidates(bold: bool) -> tuple[str, ...]:
@@ -359,6 +490,121 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
     return output.getvalue()
 
 
+def _return_color(value: float | None) -> str:
+    if value is None:
+        return "#94A3B8"
+    return "#F87171" if value >= 0 else "#4ADE80"
+
+
+def render_tracking_performance_image(
+    records: Sequence[Mapping[str, Any]],
+    positions: Sequence[Mapping[str, Any]],
+    trading_date: str,
+) -> bytes:
+    """Render the daily equal-weight tracking performance as a mobile PNG."""
+    report = build_tracking_performance_report(records, positions, trading_date)
+    rows = report["rows"]
+    image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
+    draw = ImageDraw.Draw(image)
+
+    draw.rounded_rectangle(
+        (30, 26, IMAGE_WIDTH - 30, 145),
+        radius=28,
+        fill="#0F172A",
+        outline="#1E293B",
+        width=2,
+    )
+    draw.text((62, 48), "DAILY TRACKING PERFORMANCE", font=_font(18, True), fill="#FBBF24")
+    draw.text((62, 76), "每日追蹤績效", font=_font(39, True), fill="#F8FAFC")
+    draw.text((IMAGE_WIDTH - 62, 53), report["date"], font=_font(24, True), fill="#FBBF24", anchor="ra")
+    draw.text(
+        (IMAGE_WIDTH - 62, 91),
+        f"從 {report['start_date']} 起｜真實盤後 OHLC",
+        font=_font(18),
+        fill="#94A3B8",
+        anchor="ra",
+    )
+
+    summary_cards = (
+        (42, "今日追蹤", f"{report['tracked_count']} 檔", "#E2E8F0"),
+        (296, "有效行情", f"{report['valid_count']} / {report['tracked_count']}", "#60A5FA"),
+        (550, "平均單日", _percent_text(report["daily_average"]), _return_color(report["daily_average"])),
+        (804, "持有均報酬", _percent_text(report["open_average"]), _return_color(report["open_average"])),
+    )
+    for left, label, value, color in summary_cards:
+        draw.rounded_rectangle((left, 168, left + 234, 275), radius=20, fill="#0F172A", outline="#1E293B", width=2)
+        draw.text((left + 18, 184), label, font=_font(16), fill="#64748B")
+        draw.text((left + 18, 218), value, font=_font(28, True), fill=color)
+
+    realized_text = (
+        "--"
+        if report["realized_win_rate"] is None
+        else f"{report['realized_win_rate']:.1f}%"
+    )
+    action_text = (
+        f"進場 {report['actions'].get('ENTRY', 0)}｜持有 {report['actions'].get('HOLD', 0)}｜"
+        f"停利 {report['actions'].get('TAKE_PROFIT', 0)}｜停損 {report['actions'].get('STOP_LOSS', 0)}"
+    )
+    draw.rounded_rectangle((42, 292, 1038, 372), radius=18, fill="#111827", outline="#1E293B", width=2)
+    draw.text((64, 307), action_text, font=_font(18, True), fill="#CBD5E1")
+    draw.text(
+        (1016, 307),
+        f"歷史結算 {report['closed_count']} 筆｜勝率 {realized_text}",
+        font=_font(18, True),
+        fill="#60A5FA" if report["realized_win_rate"] is not None else "#94A3B8",
+        anchor="ra",
+    )
+    draw.text(
+        (64, 340),
+        f"{report['display_mode']}｜行情缺漏 {report['missing_count']} 筆",
+        font=_font(16),
+        fill="#FACC15" if report["missing_count"] else "#64748B",
+    )
+
+    if not rows:
+        draw.rounded_rectangle((70, 430, IMAGE_WIDTH - 70, 1050), radius=36, fill="#0F172A", outline="#1E293B", width=2)
+        draw.text((IMAGE_WIDTH // 2, 680), "目前沒有可顯示的追蹤紀錄", font=_font(36, True), fill="#F8FAFC", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 745), "等待今日盤後掃描建立真實收盤資料", font=_font(21), fill="#94A3B8", anchor="mm")
+    else:
+        start_y = 394
+        row_height = 78
+        row_gap = 8
+        for index, row in enumerate(rows):
+            top = start_y + index * (row_height + row_gap)
+            bottom = top + row_height
+            outline = "#3F2631" if (row["pnl"] or 0) >= 0 else "#17392C"
+            draw.rounded_rectangle((42, top, 1038, bottom), radius=16, fill="#0F172A", outline=outline, width=2)
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(23, True), 290)
+            draw.text((62, top + 9), stock_text, font=_font(23, True), fill="#F8FAFC")
+            draw.rounded_rectangle((356, top + 8, 478, top + 38), radius=14, fill="#172033")
+            draw.text((417, top + 23), _fit_text(draw, row["action"], _font(15, True), 105), font=_font(15, True), fill="#CBD5E1", anchor="mm")
+            draw.text(
+                (62, top + 48),
+                f"{row['entry_date']}｜進 {row['entry_text']} → 追蹤 {row['mark_text']}",
+                font=_font(15),
+                fill="#64748B",
+            )
+
+            columns = (
+                (570, "今日", row["daily_return_text"], _return_color(row["daily_return"])),
+                (720, "持有", row["pnl_text"], _return_color(row["pnl"])),
+                (875, "入榜勝率/樣本", row["backtest_text"], row["credibility_color"]),
+            )
+            for x, label, value, color in columns:
+                draw.text((x, top + 9), label, font=_font(13), fill="#64748B")
+                draw.text((x, top + 35), value, font=_font(18, True), fill=color)
+
+    footer_y = 1270
+    draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
+    draw.text((54, footer_y + 15), "平均績效採等權計算，不等於實際資金報酬；缺失行情不納入平均。", font=_font(16), fill="#94A3B8")
+    draw.text((54, footer_y + 46), "停利 +15%／停損 -10%；同日雙觸及時保守先計停損。", font=_font(16, True), fill="#FBBF24")
+    draw.text((IMAGE_WIDTH - 54, footer_y + 46), "僅供研究參考", font=_font(16, True), fill="#FBBF24", anchor="ra")
+
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
 def _send_photo_bytes(
     png: bytes,
     filename: str,
@@ -430,6 +676,32 @@ def send_executable_photo(
         png,
         f"executable-{trading_date}.png",
         f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；請依圖片停損控管風險。",
+        bot_token,
+        chat_id,
+        session,
+    )
+
+
+def send_tracking_performance_photo(
+    records: Sequence[Mapping[str, Any]],
+    positions: Sequence[Mapping[str, Any]],
+    trading_date: str,
+    bot_token: Any,
+    chat_id: Any,
+    *,
+    session: requests.Session | None = None,
+) -> int | None:
+    """Send the daily tracking-performance image through Telegram."""
+    report = build_tracking_performance_report(records, positions, trading_date)
+    png = render_tracking_performance_image(records, positions, trading_date)
+    daily_average = _percent_text(report["daily_average"])
+    return _send_photo_bytes(
+        png,
+        f"tracking-performance-{trading_date}.png",
+        (
+            f"每日追蹤績效｜{trading_date}\n"
+            f"追蹤 {report['tracked_count']} 檔、平均單日 {daily_average}；只採真實盤後行情。"
+        ),
         bot_token,
         chat_id,
         session,

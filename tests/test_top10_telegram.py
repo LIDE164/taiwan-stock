@@ -5,11 +5,14 @@ from PIL import Image
 
 from top10_telegram import (
     build_executable_display_rows,
+    build_tracking_performance_report,
     build_top10_display_rows,
     prediction_title,
     render_executable_image,
+    render_tracking_performance_image,
     render_top10_image,
     send_executable_photo,
+    send_tracking_performance_photo,
     send_top10_photo,
 )
 
@@ -120,6 +123,41 @@ class Top10TelegramTests(unittest.TestCase):
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.size, (1080, 1400))
 
+    def test_tracking_report_uses_valid_equal_weight_returns_and_keeps_losers(self):
+        records = []
+        positions = []
+        for index in range(12):
+            pnl = float(11 - index)
+            records.append({
+                "ticker": f"{1000 + index}", "name": f"股票{index}",
+                "entry_date": "2026-08-27", "entry_price": 100, "mark_price": 100 + pnl,
+                "daily_return_pct": pnl / 10, "pnl_pct": pnl, "data_status": "ok",
+                "action": "HOLD", "entry_win_rate": 55, "entry_backtest_samples": 40,
+            })
+            positions.append({"ticker": f"{1000 + index}", "status": "OPEN", "pnl_pct": pnl})
+        records[-1]["data_status"] = "missing"
+        records[-1]["daily_return_pct"] = 999
+        report = build_tracking_performance_report(records, positions, "2026-08-28")
+        self.assertEqual(report["valid_count"], 11)
+        self.assertEqual(report["missing_count"], 1)
+        self.assertEqual(len(report["rows"]), 10)
+        self.assertEqual(report["display_mode"], "持有報酬前 5／後 5")
+        self.assertIn("1011", [row["ticker"] for row in report["rows"]])
+        self.assertNotEqual(report["daily_average"], 999)
+
+    def test_tracking_renderer_returns_a_valid_mobile_png(self):
+        records = [{
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "entry_price": 1230, "mark_price": 1234, "daily_return_pct": 1.2,
+            "pnl_pct": 0.3, "data_status": "ok", "action": "ENTRY",
+            "entry_win_rate": 56.7, "entry_backtest_samples": 42,
+        }]
+        positions = [{"ticker": "2330", "status": "OPEN", "pnl_pct": 0.3}]
+        png = render_tracking_performance_image(records, positions, "2026-08-28")
+        image = Image.open(io.BytesIO(png))
+        self.assertEqual(image.format, "PNG")
+        self.assertEqual(image.size, (1080, 1400))
+
     def test_sender_posts_png_and_returns_message_id(self):
         session = _Session()
         message_id = send_top10_photo(
@@ -149,6 +187,26 @@ class Top10TelegramTests(unittest.TestCase):
         _, kwargs = session.calls[0]
         self.assertEqual(kwargs["files"]["photo"][0], "executable-2026-08-27.png")
         self.assertIn("8/28股票預測", kwargs["data"]["caption"])
+
+    def test_tracking_sender_uses_separate_filename_and_truthful_caption(self):
+        session = _Session()
+        records = [{
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "entry_price": 100, "mark_price": 101, "daily_return_pct": 1,
+            "pnl_pct": 1, "data_status": "ok", "action": "ENTRY",
+        }]
+        message_id = send_tracking_performance_photo(
+            records,
+            [{"ticker": "2330", "status": "OPEN", "pnl_pct": 1}],
+            "2026-08-28",
+            "token",
+            "chat",
+            session=session,
+        )
+        self.assertEqual(message_id, 321)
+        _, kwargs = session.calls[0]
+        self.assertEqual(kwargs["files"]["photo"][0], "tracking-performance-2026-08-28.png")
+        self.assertIn("只採真實盤後行情", kwargs["data"]["caption"])
 
 
 if __name__ == "__main__":

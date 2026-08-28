@@ -34,7 +34,14 @@ from top10_tracker import (
     build_top10_history_rows,
     update_positions_with_snapshots,
 )
-from top10_telegram import build_executable_display_rows, send_executable_photo, send_top10_photo
+from top10_telegram import (
+    TRACKING_PERFORMANCE_START_DATE,
+    build_executable_display_rows,
+    build_tracking_performance_report,
+    send_executable_photo,
+    send_top10_photo,
+    send_tracking_performance_photo,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -492,6 +499,69 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     return True
 
 
+def _load_tracking_performance_data(trading_date):
+    history_snapshot = db.collection("top10_tracking_history").document(str(trading_date)).get()
+    history_document = (history_snapshot.to_dict() or {}) if history_snapshot.exists else {}
+    history_payload = history_document.get("data", history_document)
+    records = history_payload.get("records", []) if isinstance(history_payload, Mapping) else []
+
+    tracker_snapshot = db.collection("market_data").document("top10_tracker").get()
+    tracker_document = (tracker_snapshot.to_dict() or {}) if tracker_snapshot.exists else {}
+    tracker_payload = tracker_document.get("data", tracker_document)
+    positions = tracker_payload.get("positions", []) if isinstance(tracker_payload, Mapping) else []
+    return (
+        [row for row in records if isinstance(row, Mapping)],
+        [row for row in positions if isinstance(row, Mapping)],
+    )
+
+
+def send_daily_tracking_performance_notification(trading_date, *, resend=False):
+    """Send one truthful tracking-performance image per trading day from the requested start date."""
+    date_text = str(trading_date)
+    if date_text < TRACKING_PERFORMANCE_START_DATE:
+        logging.info("%s 早於追蹤績效圖片啟用日 %s，本次略過。", date_text, TRACKING_PERFORMANCE_START_DATE)
+        return False
+    if db is None:
+        raise RuntimeError("Firestore 未初始化，無法讀取每日追蹤績效")
+
+    records, positions = _load_tracking_performance_data(date_text)
+    report = build_tracking_performance_report(records, positions, date_text)
+    fingerprint_payload = {
+        "date": date_text,
+        "records": records,
+        "positions": positions,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    notification_ref = db.collection("notifications").document(f"daily_tracking_performance_{date_text}")
+    previous = notification_ref.get()
+    previous_data = (previous.to_dict() or {}) if previous.exists else {}
+    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
+        logging.info("%s 每日追蹤績效圖片已發送，略過重複通知。", date_text)
+        return False
+
+    token, chat_id = _telegram_credentials()
+    message_id = send_tracking_performance_photo(records, positions, date_text, token, chat_id)
+    notification_ref.set({
+        "date": date_text,
+        "status": "sent",
+        "fingerprint": fingerprint,
+        "message_id": message_id,
+        "tracked_count": report["tracked_count"],
+        "valid_count": report["valid_count"],
+        "missing_count": report["missing_count"],
+        "sent_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    logging.info(
+        "✅ %s 每日追蹤績效圖片已發送至 Telegram（追蹤 %d 檔，message_id=%s）。",
+        date_text,
+        report["tracked_count"],
+        message_id,
+    )
+    return True
+
+
 def update_top10_tracker(top10_results, trading_date=None):
     if db is None: return
     try:
@@ -642,6 +712,10 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                 )
                 send_daily_executable_notification(
                     previous_payload.get("data", []),
+                    scan_date_str,
+                    resend=resend_telegram,
+                )
+                send_daily_tracking_performance_notification(
                     scan_date_str,
                     resend=resend_telegram,
                 )
@@ -839,6 +913,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
     if send_telegram:
         send_daily_top10_notification(top10, scan_date_str, resend=resend_telegram)
         send_daily_executable_notification(scan_results, scan_date_str, resend=resend_telegram)
+        send_daily_tracking_performance_notification(scan_date_str, resend=resend_telegram)
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 

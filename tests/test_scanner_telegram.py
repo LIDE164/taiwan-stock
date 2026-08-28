@@ -129,6 +129,33 @@ class ScannerTelegramTests(unittest.TestCase):
         saved = self.db.collection("notifications").document("daily_executable_2026-08-27").value
         self.assertEqual(saved["executable_count"], 0)
 
+    def test_tracking_performance_starts_on_requested_date_and_deduplicates(self):
+        history = self.db.collection("top10_tracking_history").document("2026-08-28")
+        history.value = {"data": {"records": [{
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "entry_price": 100, "mark_price": 101, "daily_return_pct": 1,
+            "pnl_pct": 1, "data_status": "ok", "action": "ENTRY",
+        }]}}
+        tracker = self.db.collection("market_data").document("top10_tracker")
+        tracker.value = {"data": {"positions": [{
+            "ticker": "2330", "status": "OPEN", "pnl_pct": 1,
+        }]}}
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_tracking_performance_photo", return_value=104) as send,
+        ):
+            self.assertFalse(scanner.send_daily_tracking_performance_notification("2026-08-27"))
+            self.assertTrue(scanner.send_daily_tracking_performance_notification("2026-08-28"))
+            self.assertFalse(scanner.send_daily_tracking_performance_notification("2026-08-28"))
+        send.assert_called_once()
+        saved = self.db.collection("notifications").document(
+            "daily_tracking_performance_2026-08-28"
+        ).value
+        self.assertEqual(saved["tracked_count"], 1)
+        self.assertEqual(saved["valid_count"], 1)
+        self.assertEqual(saved["message_id"], 104)
+
 
 if __name__ == "__main__":
     unittest.main()
