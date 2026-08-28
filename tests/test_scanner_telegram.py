@@ -138,7 +138,7 @@ class ScannerTelegramTests(unittest.TestCase):
         }]}}
         tracker = self.db.collection("market_data").document("top10_tracker")
         tracker.value = {"data": {"positions": [{
-            "ticker": "2330", "status": "OPEN", "pnl_pct": 1,
+            "ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 1,
         }]}}
         with (
             patch.object(scanner, "db", self.db),
@@ -154,6 +154,7 @@ class ScannerTelegramTests(unittest.TestCase):
         ).value
         self.assertEqual(saved["tracked_count"], 1)
         self.assertEqual(saved["valid_count"], 1)
+        self.assertEqual(saved["page_count"], 1)
         self.assertEqual(saved["message_id"], 104)
 
 

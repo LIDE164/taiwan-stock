@@ -10,6 +10,7 @@ from top10_telegram import (
     prediction_title,
     render_executable_image,
     render_tracking_performance_image,
+    render_tracking_performance_images,
     render_top10_image,
     send_executable_photo,
     send_tracking_performance_photo,
@@ -123,27 +124,43 @@ class Top10TelegramTests(unittest.TestCase):
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.size, (1080, 1400))
 
-    def test_tracking_report_uses_valid_equal_weight_returns_and_keeps_losers(self):
+    def test_tracking_report_restarts_on_start_date_and_keeps_every_stock(self):
         records = []
         positions = []
         for index in range(12):
             pnl = float(11 - index)
             records.append({
                 "ticker": f"{1000 + index}", "name": f"股票{index}",
-                "entry_date": "2026-08-27", "entry_price": 100, "mark_price": 100 + pnl,
+                "entry_date": "2026-08-28", "entry_price": 100, "mark_price": 100 + pnl,
                 "daily_return_pct": pnl / 10, "pnl_pct": pnl, "data_status": "ok",
                 "action": "HOLD", "entry_win_rate": 55, "entry_backtest_samples": 40,
             })
-            positions.append({"ticker": f"{1000 + index}", "status": "OPEN", "pnl_pct": pnl})
+            positions.append({
+                "ticker": f"{1000 + index}", "entry_date": "2026-08-28",
+                "status": "OPEN", "pnl_pct": pnl,
+            })
         records[-1]["data_status"] = "missing"
         records[-1]["daily_return_pct"] = 999
+        records.append({
+            "ticker": "OLD", "name": "舊基準", "entry_date": "2026-08-27",
+            "daily_return_pct": 999, "pnl_pct": 999, "data_status": "ok", "action": "HOLD",
+        })
+        positions.append({
+            "ticker": "OLD", "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 999,
+        })
         report = build_tracking_performance_report(records, positions, "2026-08-28")
         self.assertEqual(report["valid_count"], 11)
         self.assertEqual(report["missing_count"], 1)
-        self.assertEqual(len(report["rows"]), 10)
-        self.assertEqual(report["display_mode"], "持有報酬前 5／後 5")
+        self.assertEqual(len(report["rows"]), 12)
+        self.assertEqual(report["page_count"], 2)
+        self.assertEqual(report["display_mode"], "全部追蹤標的")
         self.assertIn("1011", [row["ticker"] for row in report["rows"]])
+        self.assertNotIn("OLD", [row["ticker"] for row in report["rows"]])
         self.assertNotEqual(report["daily_average"], 999)
+
+        pages = render_tracking_performance_images(records, positions, "2026-08-28")
+        self.assertEqual(len(pages), 2)
+        self.assertTrue(all(page.startswith(b"\x89PNG") for page in pages))
 
     def test_tracking_renderer_returns_a_valid_mobile_png(self):
         records = [{
@@ -152,7 +169,9 @@ class Top10TelegramTests(unittest.TestCase):
             "pnl_pct": 0.3, "data_status": "ok", "action": "ENTRY",
             "entry_win_rate": 56.7, "entry_backtest_samples": 42,
         }]
-        positions = [{"ticker": "2330", "status": "OPEN", "pnl_pct": 0.3}]
+        positions = [{
+            "ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 0.3,
+        }]
         png = render_tracking_performance_image(records, positions, "2026-08-28")
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.format, "PNG")
@@ -197,7 +216,7 @@ class Top10TelegramTests(unittest.TestCase):
         }]
         message_id = send_tracking_performance_photo(
             records,
-            [{"ticker": "2330", "status": "OPEN", "pnl_pct": 1}],
+            [{"ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 1}],
             "2026-08-28",
             "token",
             "chat",
@@ -207,6 +226,34 @@ class Top10TelegramTests(unittest.TestCase):
         _, kwargs = session.calls[0]
         self.assertEqual(kwargs["files"]["photo"][0], "tracking-performance-2026-08-28.png")
         self.assertIn("只採真實盤後行情", kwargs["data"]["caption"])
+
+    def test_tracking_sender_sends_every_page(self):
+        session = _Session()
+        records = []
+        positions = []
+        for index in range(11):
+            ticker = str(2000 + index)
+            records.append({
+                "ticker": ticker, "name": f"股票{index}", "entry_date": "2026-08-28",
+                "entry_price": 100, "mark_price": 100, "daily_return_pct": 0,
+                "pnl_pct": 0, "data_status": "ok", "action": "ENTRY",
+            })
+            positions.append({
+                "ticker": ticker, "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 0,
+            })
+        message_id = send_tracking_performance_photo(
+            records, positions, "2026-08-28", "token", "chat", session=session,
+        )
+        self.assertEqual(message_id, 321)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(
+            session.calls[0][1]["files"]["photo"][0],
+            "tracking-performance-2026-08-28-p1-of-2.png",
+        )
+        self.assertEqual(
+            session.calls[1][1]["files"]["photo"][0],
+            "tracking-performance-2026-08-28-p2-of-2.png",
+        )
 
 
 if __name__ == "__main__":

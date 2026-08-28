@@ -509,14 +509,20 @@ def _load_tracking_performance_data(trading_date):
     tracker_document = (tracker_snapshot.to_dict() or {}) if tracker_snapshot.exists else {}
     tracker_payload = tracker_document.get("data", tracker_document)
     positions = tracker_payload.get("positions", []) if isinstance(tracker_payload, Mapping) else []
+    date_text = str(trading_date)
+
+    def in_tracking_window(row):
+        entry_date = str(row.get("entry_date") or "").strip()
+        return TRACKING_PERFORMANCE_START_DATE <= entry_date <= date_text
+
     return (
-        [row for row in records if isinstance(row, Mapping)],
-        [row for row in positions if isinstance(row, Mapping)],
+        [row for row in records if isinstance(row, Mapping) and in_tracking_window(row)],
+        [row for row in positions if isinstance(row, Mapping) and in_tracking_window(row)],
     )
 
 
 def send_daily_tracking_performance_notification(trading_date, *, resend=False):
-    """Send one truthful tracking-performance image per trading day from the requested start date."""
+    """Send all truthful tracking-performance image pages from the requested start date."""
     date_text = str(trading_date)
     if date_text < TRACKING_PERFORMANCE_START_DATE:
         logging.info("%s 早於追蹤績效圖片啟用日 %s，本次略過。", date_text, TRACKING_PERFORMANCE_START_DATE)
@@ -551,12 +557,14 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
         "tracked_count": report["tracked_count"],
         "valid_count": report["valid_count"],
         "missing_count": report["missing_count"],
+        "page_count": report["page_count"],
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info(
-        "✅ %s 每日追蹤績效圖片已發送至 Telegram（追蹤 %d 檔，message_id=%s）。",
+        "✅ %s 每日追蹤績效圖片已發送至 Telegram（追蹤 %d 檔，%d 張，message_id=%s）。",
         date_text,
         report["tracked_count"],
+        report["page_count"],
         message_id,
     )
     return True
@@ -581,6 +589,21 @@ def update_top10_tracker(top10_results, trading_date=None):
             missing_ranking_dates = data_field.get("missing_ranking_dates", [])
             partial_ranking_dates = data_field.get("partial_ranking_dates", [])
             unverified_ranking_dates = data_field.get("unverified_ranking_dates", [])
+
+        original_position_count = len(positions)
+        positions = [
+            position
+            for position in positions
+            if isinstance(position, Mapping)
+            and str(position.get("entry_date") or "") >= TRACKING_PERFORMANCE_START_DATE
+        ]
+        removed_position_count = original_position_count - len(positions)
+        if removed_position_count:
+            logging.info(
+                "追蹤績效從 %s 重新累積，已排除 %d 筆舊部位。",
+                TRACKING_PERFORMANCE_START_DATE,
+                removed_position_count,
+            )
 
         missing_entry_dates = sorted({
             str(position.get("entry_date", ""))

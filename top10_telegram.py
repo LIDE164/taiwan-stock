@@ -194,14 +194,23 @@ def build_tracking_performance_report(
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
 ) -> dict[str, Any]:
-    """Build an equal-weight daily tracking report without inventing missing prices.
+    """Build an equal-weight report for positions entered inside the active window."""
+    date_text = str(trading_date)
 
-    When more than ten names are tracked, the image deliberately shows the five
-    strongest and five weakest holding returns so the visual is not survivorship
-    biased toward winners.
-    """
-    daily_records = [dict(row) for row in records if isinstance(row, Mapping)]
-    all_positions = [dict(row) for row in positions if isinstance(row, Mapping)]
+    def in_tracking_window(row: Mapping[str, Any]) -> bool:
+        entry_date = str(row.get("entry_date") or "").strip()
+        return TRACKING_PERFORMANCE_START_DATE <= entry_date <= date_text
+
+    daily_records = [
+        dict(row)
+        for row in records
+        if isinstance(row, Mapping) and in_tracking_window(row)
+    ]
+    all_positions = [
+        dict(row)
+        for row in positions
+        if isinstance(row, Mapping) and in_tracking_window(row)
+    ]
     valid_daily_returns = [
         value
         for row in daily_records
@@ -274,12 +283,7 @@ def build_tracking_performance_report(
         key=lambda row: row["pnl"] if row["pnl"] is not None else float("-inf"),
         reverse=True,
     )
-    if len(display_rows) > 10:
-        selected_rows = display_rows[:5] + display_rows[-5:]
-        display_mode = "持有報酬前 5／後 5"
-    else:
-        selected_rows = display_rows
-        display_mode = "全部追蹤標的"
+    display_mode = "全部追蹤標的"
 
     missing_count = sum(str(row.get("data_status") or "") != "ok" for row in daily_records)
     actions: dict[str, int] = {}
@@ -304,8 +308,9 @@ def build_tracking_performance_report(
         "realized_win_rate": realized_win_rate,
         "realized_average": _mean(closed_returns),
         "actions": actions,
-        "rows": selected_rows,
+        "rows": display_rows,
         "display_mode": display_mode,
+        "page_count": max(1, math.ceil(len(display_rows) / 10)),
     }
 
 
@@ -500,10 +505,15 @@ def render_tracking_performance_image(
     records: Sequence[Mapping[str, Any]],
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
+    *,
+    page_index: int = 0,
 ) -> bytes:
-    """Render the daily equal-weight tracking performance as a mobile PNG."""
+    """Render one page of the daily equal-weight tracking performance."""
     report = build_tracking_performance_report(records, positions, trading_date)
-    rows = report["rows"]
+    page_count = report["page_count"]
+    page_index = min(max(int(page_index), 0), page_count - 1)
+    page_start = page_index * 10
+    rows = report["rows"][page_start:page_start + 10]
     image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
 
@@ -556,7 +566,10 @@ def render_tracking_performance_image(
     )
     draw.text(
         (64, 340),
-        f"{report['display_mode']}｜行情缺漏 {report['missing_count']} 筆",
+        (
+            f"{report['display_mode']}｜本頁 {len(rows)} 檔｜"
+            f"行情缺漏 {report['missing_count']} 筆"
+        ),
         font=_font(16),
         fill="#FACC15" if report["missing_count"] else "#64748B",
     )
@@ -597,12 +610,37 @@ def render_tracking_performance_image(
     footer_y = 1270
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
     draw.text((54, footer_y + 15), "平均績效採等權計算，不等於實際資金報酬；缺失行情不納入平均。", font=_font(16), fill="#94A3B8")
+    draw.text(
+        (IMAGE_WIDTH - 54, footer_y + 15),
+        f"第 {page_index + 1} / {page_count} 頁",
+        font=_font(16, True),
+        fill="#60A5FA",
+        anchor="ra",
+    )
     draw.text((54, footer_y + 46), "停利 +15%／停損 -10%；同日雙觸及時保守先計停損。", font=_font(16, True), fill="#FBBF24")
     draw.text((IMAGE_WIDTH - 54, footer_y + 46), "僅供研究參考", font=_font(16, True), fill="#FBBF24", anchor="ra")
 
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
+
+
+def render_tracking_performance_images(
+    records: Sequence[Mapping[str, Any]],
+    positions: Sequence[Mapping[str, Any]],
+    trading_date: str,
+) -> list[bytes]:
+    """Render every tracked stock across readable ten-row Telegram pages."""
+    report = build_tracking_performance_report(records, positions, trading_date)
+    return [
+        render_tracking_performance_image(
+            records,
+            positions,
+            trading_date,
+            page_index=page_index,
+        )
+        for page_index in range(report["page_count"])
+    ]
 
 
 def _send_photo_bytes(
@@ -691,18 +729,23 @@ def send_tracking_performance_photo(
     *,
     session: requests.Session | None = None,
 ) -> int | None:
-    """Send the daily tracking-performance image through Telegram."""
+    """Send every daily tracking-performance page through Telegram."""
     report = build_tracking_performance_report(records, positions, trading_date)
-    png = render_tracking_performance_image(records, positions, trading_date)
+    pages = render_tracking_performance_images(records, positions, trading_date)
     daily_average = _percent_text(report["daily_average"])
-    return _send_photo_bytes(
-        png,
-        f"tracking-performance-{trading_date}.png",
-        (
-            f"每日追蹤績效｜{trading_date}\n"
-            f"追蹤 {report['tracked_count']} 檔、平均單日 {daily_average}；只採真實盤後行情。"
-        ),
-        bot_token,
-        chat_id,
-        session,
-    )
+    message_ids: list[int | None] = []
+    for page_number, png in enumerate(pages, start=1):
+        page_suffix = "" if len(pages) == 1 else f"-p{page_number}-of-{len(pages)}"
+        message_ids.append(_send_photo_bytes(
+            png,
+            f"tracking-performance-{trading_date}{page_suffix}.png",
+            (
+                f"每日追蹤績效｜{trading_date}｜第 {page_number}/{len(pages)} 頁\n"
+                f"從 {TRACKING_PERFORMANCE_START_DATE} 重新累積；追蹤 {report['tracked_count']} 檔、"
+                f"平均單日 {daily_average}；只採真實盤後行情。"
+            ),
+            bot_token,
+            chat_id,
+            session,
+        ))
+    return message_ids[0] if message_ids else None
