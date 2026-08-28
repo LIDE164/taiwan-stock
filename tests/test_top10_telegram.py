@@ -124,37 +124,46 @@ class Top10TelegramTests(unittest.TestCase):
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.size, (1080, 1400))
 
-    def test_tracking_report_restarts_on_start_date_and_keeps_every_stock(self):
+    def test_tracking_report_uses_previous_analysis_and_excludes_rows_without_pnl(self):
         records = []
         positions = []
         for index in range(12):
             pnl = float(11 - index)
             records.append({
                 "ticker": f"{1000 + index}", "name": f"股票{index}",
-                "entry_date": "2026-08-28", "entry_price": 100, "mark_price": 100 + pnl,
+                "entry_date": "2026-08-27", "entry_price": 100, "mark_price": 100 + pnl,
                 "daily_return_pct": pnl / 10, "pnl_pct": pnl, "data_status": "ok",
                 "action": "HOLD", "entry_win_rate": 55, "entry_backtest_samples": 40,
             })
             positions.append({
-                "ticker": f"{1000 + index}", "entry_date": "2026-08-28",
+                "ticker": f"{1000 + index}", "entry_date": "2026-08-27",
                 "status": "OPEN", "pnl_pct": pnl,
             })
         records[-1]["data_status"] = "missing"
         records[-1]["daily_return_pct"] = 999
         records.append({
-            "ticker": "OLD", "name": "舊基準", "entry_date": "2026-08-27",
+            "ticker": "TODAY", "name": "當日新榜", "entry_date": "2026-08-28",
+            "daily_return_pct": None, "pnl_pct": 0, "data_status": "ok", "action": "ENTRY",
+        })
+        positions.append({
+            "ticker": "TODAY", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 0,
+        })
+        records.append({
+            "ticker": "OLD", "name": "舊基準", "entry_date": "2026-08-26",
             "daily_return_pct": 999, "pnl_pct": 999, "data_status": "ok", "action": "HOLD",
         })
         positions.append({
-            "ticker": "OLD", "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 999,
+            "ticker": "OLD", "entry_date": "2026-08-26", "status": "OPEN", "pnl_pct": 999,
         })
         report = build_tracking_performance_report(records, positions, "2026-08-28")
         self.assertEqual(report["valid_count"], 11)
-        self.assertEqual(report["missing_count"], 1)
-        self.assertEqual(len(report["rows"]), 12)
+        self.assertEqual(report["missing_count"], 0)
+        self.assertEqual(report["excluded_count"], 2)
+        self.assertEqual(len(report["rows"]), 11)
         self.assertEqual(report["page_count"], 2)
-        self.assertEqual(report["display_mode"], "全部追蹤標的")
-        self.assertIn("1011", [row["ticker"] for row in report["rows"]])
+        self.assertEqual(report["display_mode"], "已有當日損益的全部標的")
+        self.assertNotIn("1011", [row["ticker"] for row in report["rows"]])
+        self.assertNotIn("TODAY", [row["ticker"] for row in report["rows"]])
         self.assertNotIn("OLD", [row["ticker"] for row in report["rows"]])
         self.assertNotEqual(report["daily_average"], 999)
 
@@ -164,13 +173,13 @@ class Top10TelegramTests(unittest.TestCase):
 
     def test_tracking_renderer_returns_a_valid_mobile_png(self):
         records = [{
-            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-27",
             "entry_price": 1230, "mark_price": 1234, "daily_return_pct": 1.2,
             "pnl_pct": 0.3, "data_status": "ok", "action": "ENTRY",
             "entry_win_rate": 56.7, "entry_backtest_samples": 42,
         }]
         positions = [{
-            "ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 0.3,
+            "ticker": "2330", "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 0.3,
         }]
         png = render_tracking_performance_image(records, positions, "2026-08-28")
         image = Image.open(io.BytesIO(png))
@@ -210,13 +219,13 @@ class Top10TelegramTests(unittest.TestCase):
     def test_tracking_sender_uses_separate_filename_and_truthful_caption(self):
         session = _Session()
         records = [{
-            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-27",
             "entry_price": 100, "mark_price": 101, "daily_return_pct": 1,
             "pnl_pct": 1, "data_status": "ok", "action": "ENTRY",
         }]
         message_id = send_tracking_performance_photo(
             records,
-            [{"ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 1}],
+            [{"ticker": "2330", "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 1}],
             "2026-08-28",
             "token",
             "chat",
@@ -234,12 +243,12 @@ class Top10TelegramTests(unittest.TestCase):
         for index in range(11):
             ticker = str(2000 + index)
             records.append({
-                "ticker": ticker, "name": f"股票{index}", "entry_date": "2026-08-28",
+                "ticker": ticker, "name": f"股票{index}", "entry_date": "2026-08-27",
                 "entry_price": 100, "mark_price": 100, "daily_return_pct": 0,
                 "pnl_pct": 0, "data_status": "ok", "action": "ENTRY",
             })
             positions.append({
-                "ticker": ticker, "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 0,
+                "ticker": ticker, "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 0,
             })
         message_id = send_tracking_performance_photo(
             records, positions, "2026-08-28", "token", "chat", session=session,

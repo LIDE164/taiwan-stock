@@ -129,16 +129,16 @@ class ScannerTelegramTests(unittest.TestCase):
         saved = self.db.collection("notifications").document("daily_executable_2026-08-27").value
         self.assertEqual(saved["executable_count"], 0)
 
-    def test_tracking_performance_starts_on_requested_date_and_deduplicates(self):
+    def test_tracking_performance_uses_prior_analysis_and_deduplicates(self):
         history = self.db.collection("top10_tracking_history").document("2026-08-28")
         history.value = {"data": {"records": [{
-            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-28",
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-27",
             "entry_price": 100, "mark_price": 101, "daily_return_pct": 1,
             "pnl_pct": 1, "data_status": "ok", "action": "ENTRY",
         }]}}
         tracker = self.db.collection("market_data").document("top10_tracker")
         tracker.value = {"data": {"positions": [{
-            "ticker": "2330", "entry_date": "2026-08-28", "status": "OPEN", "pnl_pct": 1,
+            "ticker": "2330", "entry_date": "2026-08-27", "status": "OPEN", "pnl_pct": 1,
         }]}}
         with (
             patch.object(scanner, "db", self.db),

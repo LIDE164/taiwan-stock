@@ -3,12 +3,31 @@ import unittest
 from top10_tracker import (
     backfill_entry_backtest_snapshots,
     build_top10_history_rows,
+    restore_entry_positions_from_history,
     update_positions,
     update_positions_with_snapshots,
 )
 
 
 class Top10TrackerTests(unittest.TestCase):
+    def test_restores_missing_start_positions_from_saved_analysis(self):
+        history = [{
+            "代號": "2330", "名稱": "台積電", "Rank": 1,
+            "開盤價": 100, "最高價": 105, "最低價": 99, "收盤價": 103,
+            "WinRate": 55, "Backtest_Samples": 40,
+        }]
+        positions, added = restore_entry_positions_from_history([], history, "2026-08-27")
+        self.assertEqual(added, 1)
+        self.assertEqual(positions[0]["position_id"], "2330:2026-08-27")
+        self.assertEqual(positions[0]["entry_price"], 103)
+        self.assertEqual(positions[0]["entry_backtest_samples"], 40)
+
+        rerun, rerun_added = restore_entry_positions_from_history(
+            positions, history, "2026-08-27"
+        )
+        self.assertEqual(rerun_added, 0)
+        self.assertEqual(len(rerun), 1)
+
     def test_both_thresholds_hit_uses_conservative_stop_and_no_same_day_reentry(self):
         existing = [{
             "ticker": "2330", "name": "台積電", "entry_date": "2026-08-14",

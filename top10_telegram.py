@@ -21,7 +21,7 @@ CARD_WIDTH = 996
 CARD_HEIGHT = 100
 CARD_GAP = 10
 PER_TRADE_MAX_LOSS = 5000.0
-TRACKING_PERFORMANCE_START_DATE = "2026-08-28"
+TRACKING_PERFORMANCE_START_DATE = "2026-08-27"
 
 
 def _number(value: Any) -> float | None:
@@ -194,22 +194,37 @@ def build_tracking_performance_report(
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
 ) -> dict[str, Any]:
-    """Build an equal-weight report for positions entered inside the active window."""
+    """Build an equal-weight report from entry-day lists that already have a later close."""
     date_text = str(trading_date)
 
     def in_tracking_window(row: Mapping[str, Any]) -> bool:
         entry_date = str(row.get("entry_date") or "").strip()
         return TRACKING_PERFORMANCE_START_DATE <= entry_date <= date_text
 
-    daily_records = [
+    candidate_records = [
         dict(row)
         for row in records
         if isinstance(row, Mapping) and in_tracking_window(row)
     ]
+    daily_records = [
+        row
+        for row in candidate_records
+        if str(row.get("entry_date") or "") < date_text
+        and str(row.get("data_status") or "") == "ok"
+        and _number(row.get("daily_return_pct")) is not None
+        and _number(row.get("pnl_pct")) is not None
+    ]
+    eligible_position_ids = {
+        str(row.get("position_id") or f"{row.get('ticker', '')}:{row.get('entry_date', '')}")
+        for row in daily_records
+    }
     all_positions = [
         dict(row)
         for row in positions
-        if isinstance(row, Mapping) and in_tracking_window(row)
+        if isinstance(row, Mapping)
+        and in_tracking_window(row)
+        and str(row.get("position_id") or f"{row.get('ticker', '')}:{row.get('entry_date', '')}")
+        in eligible_position_ids
     ]
     valid_daily_returns = [
         value
@@ -283,9 +298,10 @@ def build_tracking_performance_report(
         key=lambda row: row["pnl"] if row["pnl"] is not None else float("-inf"),
         reverse=True,
     )
-    display_mode = "全部追蹤標的"
+    display_mode = "已有當日損益的全部標的"
 
-    missing_count = sum(str(row.get("data_status") or "") != "ok" for row in daily_records)
+    missing_count = 0
+    excluded_count = len(candidate_records) - len(daily_records)
     actions: dict[str, int] = {}
     for row in daily_records:
         action = str(row.get("action") or "UNKNOWN")
@@ -299,6 +315,7 @@ def build_tracking_performance_report(
         "tracked_count": len(daily_records),
         "valid_count": len(daily_records) - missing_count,
         "missing_count": missing_count,
+        "excluded_count": excluded_count,
         "daily_average": _mean(valid_daily_returns),
         "daily_positive_count": sum(value > 0 for value in valid_daily_returns),
         "daily_sample_count": len(valid_daily_returns),
@@ -529,14 +546,14 @@ def render_tracking_performance_image(
     draw.text((IMAGE_WIDTH - 62, 53), report["date"], font=_font(24, True), fill="#FBBF24", anchor="ra")
     draw.text(
         (IMAGE_WIDTH - 62, 91),
-        f"從 {report['start_date']} 起｜真實盤後 OHLC",
+        f"{report['start_date']} 分析名單起｜真實盤後 OHLC",
         font=_font(18),
         fill="#94A3B8",
         anchor="ra",
     )
 
     summary_cards = (
-        (42, "今日追蹤", f"{report['tracked_count']} 檔", "#E2E8F0"),
+        (42, "今日有損益", f"{report['tracked_count']} 檔", "#E2E8F0"),
         (296, "有效行情", f"{report['valid_count']} / {report['tracked_count']}", "#60A5FA"),
         (550, "平均單日", _percent_text(report["daily_average"]), _return_color(report["daily_average"])),
         (804, "持有均報酬", _percent_text(report["open_average"]), _return_color(report["open_average"])),
@@ -568,16 +585,16 @@ def render_tracking_performance_image(
         (64, 340),
         (
             f"{report['display_mode']}｜本頁 {len(rows)} 檔｜"
-            f"行情缺漏 {report['missing_count']} 筆"
+            f"未有損益排除 {report['excluded_count']} 檔"
         ),
         font=_font(16),
-        fill="#FACC15" if report["missing_count"] else "#64748B",
+        fill="#FACC15" if report["excluded_count"] else "#64748B",
     )
 
     if not rows:
         draw.rounded_rectangle((70, 430, IMAGE_WIDTH - 70, 1050), radius=36, fill="#0F172A", outline="#1E293B", width=2)
         draw.text((IMAGE_WIDTH // 2, 680), "目前沒有可顯示的追蹤紀錄", font=_font(36, True), fill="#F8FAFC", anchor="mm")
-        draw.text((IMAGE_WIDTH // 2, 745), "等待今日盤後掃描建立真實收盤資料", font=_font(21), fill="#94A3B8", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 745), "當日新入榜尚無損益，將於下一交易日納入", font=_font(21), fill="#94A3B8", anchor="mm")
     else:
         start_y = 394
         row_height = 78
@@ -741,7 +758,7 @@ def send_tracking_performance_photo(
             f"tracking-performance-{trading_date}{page_suffix}.png",
             (
                 f"每日追蹤績效｜{trading_date}｜第 {page_number}/{len(pages)} 頁\n"
-                f"從 {TRACKING_PERFORMANCE_START_DATE} 重新累積；追蹤 {report['tracked_count']} 檔、"
+                f"從 {TRACKING_PERFORMANCE_START_DATE} 分析名單起；本日有損益 {report['tracked_count']} 檔、"
                 f"平均單日 {daily_average}；只採真實盤後行情。"
             ),
             bot_token,

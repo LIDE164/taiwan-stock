@@ -174,6 +174,26 @@ def build_top10_history_rows(top10_results: Sequence[Mapping[str, Any]]) -> list
     return rows
 
 
+def restore_entry_positions_from_history(
+    positions: Sequence[Mapping[str, Any]],
+    history_rows: Sequence[Mapping[str, Any]],
+    entry_date: str,
+) -> tuple[list[dict[str, Any]], int]:
+    """Restore missing entry-day positions from the authentic saved ranking."""
+    updated = [deepcopy(dict(position)) for position in positions if isinstance(position, Mapping)]
+    restored, _ = update_positions_with_snapshots([], history_rows, {}, str(entry_date))
+    existing_ids = {_position_id(position) for position in updated}
+    added = 0
+    for position in restored:
+        position_id = _position_id(position)
+        if position_id in existing_ids:
+            continue
+        updated.append(position)
+        existing_ids.add(position_id)
+        added += 1
+    return updated, added
+
+
 def backfill_entry_backtest_snapshots(
     positions: Sequence[Mapping[str, Any]],
     history_by_date: Mapping[str, Sequence[Mapping[str, Any]]],

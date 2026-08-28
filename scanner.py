@@ -32,6 +32,7 @@ from scoring import get_decision_score
 from top10_tracker import (
     backfill_entry_backtest_snapshots,
     build_top10_history_rows,
+    restore_entry_positions_from_history,
     update_positions_with_snapshots,
 )
 from top10_telegram import (
@@ -532,6 +533,9 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
 
     records, positions = _load_tracking_performance_data(date_text)
     report = build_tracking_performance_report(records, positions, date_text)
+    if report["tracked_count"] == 0:
+        logging.info("%s 尚無已產生盤後損益的追蹤股票，本次不發送空白績效圖。", date_text)
+        return False
     fingerprint_payload = {
         "date": date_text,
         "records": records,
@@ -604,6 +608,33 @@ def update_top10_tracker(top10_results, trading_date=None):
                 TRACKING_PERFORMANCE_START_DATE,
                 removed_position_count,
             )
+
+        has_start_positions = any(
+            isinstance(position, Mapping)
+            and str(position.get("entry_date") or "") == TRACKING_PERFORMANCE_START_DATE
+            for position in positions
+        )
+        if date_str > TRACKING_PERFORMANCE_START_DATE and not has_start_positions:
+            start_history_doc = db.collection("top10_history").document(
+                TRACKING_PERFORMANCE_START_DATE
+            ).get()
+            start_history_data = (
+                (start_history_doc.to_dict() or {}).get("data", [])
+                if start_history_doc.exists
+                else []
+            )
+            if isinstance(start_history_data, list):
+                positions, restored_count = restore_entry_positions_from_history(
+                    positions,
+                    start_history_data,
+                    TRACKING_PERFORMANCE_START_DATE,
+                )
+                if restored_count:
+                    logging.info(
+                        "已從 %s 分析榜單還原 %d 筆績效起始部位。",
+                        TRACKING_PERFORMANCE_START_DATE,
+                        restored_count,
+                    )
 
         missing_entry_dates = sorted({
             str(position.get("entry_date", ""))
