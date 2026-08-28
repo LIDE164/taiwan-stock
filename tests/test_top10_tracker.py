@@ -118,6 +118,8 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["action"], "HOLD")
         self.assertEqual(snapshots[0]["top10_rank"], 2)
         self.assertEqual(snapshots[0]["daily_return_pct"], 5.0)
+        self.assertEqual(snapshots[0]["previous_mark_price"], 100.0)
+        self.assertEqual(snapshots[0]["daily_price_change"], 5.0)
         self.assertEqual(snapshots[0]["pnl_pct"], 5.0)
         self.assertEqual(
             [snapshots[0][field] for field in ("open", "high", "low", "close")],

@@ -166,6 +166,11 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertNotIn("TODAY", [row["ticker"] for row in report["rows"]])
         self.assertNotIn("OLD", [row["ticker"] for row in report["rows"]])
         self.assertNotEqual(report["daily_average"], 999)
+        first = next(row for row in report["rows"] if row["ticker"] == "1000")
+        self.assertEqual(first["daily_price_change"], 11)
+        self.assertEqual(first["holding_price_change"], 11)
+        self.assertTrue(first["daily_price_change_text"].startswith("+"))
+        self.assertEqual(first["holding_price_change_text"], "+11")
 
         pages = render_tracking_performance_images(records, positions, "2026-08-28")
         self.assertEqual(len(pages), 2)

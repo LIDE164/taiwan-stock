@@ -107,6 +107,7 @@ def _snapshot(
     highest = _number(position.get("highest_price"), entry)
     lowest = _number(position.get("lowest_price"), entry)
     daily_return = round((mark / previous_mark - 1) * 100, 2) if previous_mark > 0 else None
+    daily_price_change = round(mark - previous_mark, 4) if previous_mark > 0 else None
     quote = dict(bar or {})
     source = row or {}
     return {
@@ -125,6 +126,8 @@ def _snapshot(
         "low": round(quote["low"], 4) if quote else None,
         "close": round(quote["close"], 4) if quote else None,
         "mark_price": round(mark, 4),
+        "previous_mark_price": round(previous_mark, 4) if previous_mark > 0 else None,
+        "daily_price_change": daily_price_change,
         "daily_return_pct": daily_return,
         "pnl_pct": round(_number(position.get("pnl_pct")), 2),
         "highest_price": round(highest, 4),

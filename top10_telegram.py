@@ -22,6 +22,7 @@ CARD_HEIGHT = 100
 CARD_GAP = 10
 PER_TRADE_MAX_LOSS = 5000.0
 TRACKING_PERFORMANCE_START_DATE = "2026-08-27"
+TRACKING_PERFORMANCE_FIRST_DATE = "2026-08-28"
 
 
 def _number(value: Any) -> float | None:
@@ -189,6 +190,14 @@ def _percent_text(value: float | None, digits: int = 1) -> str:
     return f"{value:+.{digits}f}%"
 
 
+def _price_change_text(value: float | None) -> str:
+    if value is None:
+        return "--"
+    if abs(value) < 0.005:
+        return "0"
+    return f"{value:+.2f}".rstrip("0").rstrip(".")
+
+
 def build_tracking_performance_report(
     records: Sequence[Mapping[str, Any]],
     positions: Sequence[Mapping[str, Any]],
@@ -267,6 +276,27 @@ def build_tracking_performance_report(
         )
         entry = _number(row.get("entry_price"))
         mark = _number(row.get("mark_price")) if str(row.get("data_status") or "") == "ok" else None
+        daily_price_change = _number(row.get("daily_price_change"))
+        previous_mark = _number(row.get("previous_mark_price"))
+        if daily_price_change is None and mark is not None and previous_mark is not None:
+            daily_price_change = mark - previous_mark
+        if (
+            daily_price_change is None
+            and mark is not None
+            and entry is not None
+            and str(row.get("entry_date") or "") == TRACKING_PERFORMANCE_START_DATE
+            and date_text == TRACKING_PERFORMANCE_FIRST_DATE
+        ):
+            daily_price_change = mark - entry
+        if daily_price_change is None and mark is not None and daily_return is not None:
+            previous_ratio = 1 + daily_return / 100
+            if previous_ratio > 0:
+                daily_price_change = mark - (mark / previous_ratio)
+        holding_price_change = (
+            mark - entry
+            if mark is not None and entry is not None
+            else None
+        )
         sample_number = _number(row.get("entry_backtest_samples"))
         samples = int(sample_number) if sample_number is not None and sample_number >= 0 else None
         win_rate = _number(row.get("entry_win_rate"))
@@ -282,8 +312,12 @@ def build_tracking_performance_report(
             "mark_text": "--" if mark is None else f"{mark:g}",
             "daily_return": daily_return,
             "daily_return_text": _percent_text(daily_return),
+            "daily_price_change": daily_price_change,
+            "daily_price_change_text": _price_change_text(daily_price_change),
             "pnl": pnl,
             "pnl_text": _percent_text(pnl),
+            "holding_price_change": holding_price_change,
+            "holding_price_change_text": _price_change_text(holding_price_change),
             "backtest_text": (
                 "--"
                 if win_rate is None
@@ -615,14 +649,28 @@ def render_tracking_performance_image(
                 fill="#64748B",
             )
 
-            columns = (
-                (570, "今日", row["daily_return_text"], _return_color(row["daily_return"])),
-                (720, "持有", row["pnl_text"], _return_color(row["pnl"])),
-                (875, "入榜勝率/樣本", row["backtest_text"], row["credibility_color"]),
+            performance_columns = (
+                (
+                    570,
+                    "今日",
+                    row["daily_price_change_text"],
+                    row["daily_return_text"],
+                    _return_color(row["daily_return"]),
+                ),
+                (
+                    720,
+                    "持有",
+                    row["holding_price_change_text"],
+                    row["pnl_text"],
+                    _return_color(row["pnl"]),
+                ),
             )
-            for x, label, value, color in columns:
-                draw.text((x, top + 9), label, font=_font(13), fill="#64748B")
-                draw.text((x, top + 35), value, font=_font(18, True), fill=color)
+            for x, label, price_change, percent_change, color in performance_columns:
+                draw.text((x, top + 5), label, font=_font(12), fill="#64748B")
+                draw.text((x, top + 24), price_change, font=_font(16, True), fill=color)
+                draw.text((x, top + 47), f"({percent_change})", font=_font(15, True), fill=color)
+            draw.text((875, top + 9), "入榜勝率/樣本", font=_font(13), fill="#64748B")
+            draw.text((875, top + 35), row["backtest_text"], font=_font(18, True), fill=row["credibility_color"])
 
     footer_y = 1270
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
