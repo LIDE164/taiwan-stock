@@ -16,6 +16,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
+EXECUTABLE_IMAGE_HEIGHT = 1800
+EXECUTABLE_CARD_HEIGHT = 140
+EXECUTABLE_CARD_GAP = 8
 CARD_LEFT = 42
 CARD_WIDTH = 996
 CARD_HEIGHT = 100
@@ -60,6 +63,31 @@ def _credibility(sample_count: int | None) -> tuple[str, str]:
     if sample_count < 50:
         return "中等可信", "#60A5FA"
     return "統計較穩定", "#4ADE80"
+
+
+def _normalize_mini_kbars(value: Any, limit: int = 12) -> list[dict[str, float]]:
+    """Keep only complete, internally consistent OHLC bars; never synthesize candles."""
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    bars: list[dict[str, float]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        open_price = _number(item.get("open"))
+        high_price = _number(item.get("high"))
+        low_price = _number(item.get("low"))
+        close_price = _number(item.get("close"))
+        if any(number is None or number <= 0 for number in (open_price, high_price, low_price, close_price)):
+            continue
+        if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
+            continue
+        bars.append({
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close_price,
+        })
+    return bars[-max(1, int(limit)):]
 
 
 def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -176,6 +204,8 @@ def build_executable_display_rows(
                 "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
             ),
             "credibility_color": credibility_color,
+            "analysis": _clean_text(record.get("Entry_Reason"), "解析資料不足"),
+            "mini_kbars": _normalize_mini_kbars(record.get("Mini_K")),
         })
     return rows
 
@@ -412,6 +442,58 @@ def _rank_colors(rank: int) -> tuple[str, str]:
     return "#334155", "#E2E8F0"
 
 
+def _draw_mini_candles(
+    draw: ImageDraw.ImageDraw,
+    bars: Sequence[Mapping[str, float]],
+    box: tuple[int, int, int, int],
+) -> None:
+    """Draw a truthful compact OHLC chart, or an explicit missing-data state."""
+    left, top, right, bottom = box
+    draw.rounded_rectangle(box, radius=10, fill="#0A1222", outline="#263449", width=1)
+    draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
+    if not bars:
+        draw.text(
+            ((left + right) // 2, (top + bottom) // 2 + 7),
+            "K線資料不足",
+            font=_font(13, True),
+            fill="#94A3B8",
+            anchor="mm",
+        )
+        return
+
+    chart_left, chart_top = left + 8, top + 23
+    chart_right, chart_bottom = right - 8, bottom - 7
+    lows = [float(bar["low"]) for bar in bars]
+    highs = [float(bar["high"]) for bar in bars]
+    low_price, high_price = min(lows), max(highs)
+    span = high_price - low_price
+    if span <= 0:
+        span = max(high_price * 0.01, 0.01)
+        low_price -= span / 2
+        high_price += span / 2
+
+    def y(price: float) -> int:
+        ratio = (high_price - price) / (high_price - low_price)
+        return int(round(chart_top + ratio * (chart_bottom - chart_top)))
+
+    slot = (chart_right - chart_left) / max(len(bars), 1)
+    body_half_width = max(1, min(4, int(slot * 0.28)))
+    for index, bar in enumerate(bars):
+        center_x = int(round(chart_left + slot * (index + 0.5)))
+        open_price = float(bar["open"])
+        close_price = float(bar["close"])
+        color = "#F87171" if close_price > open_price else ("#4ADE80" if close_price < open_price else "#CBD5E1")
+        draw.line((center_x, y(float(bar["high"])), center_x, y(float(bar["low"]))), fill=color, width=1)
+        body_top, body_bottom = sorted((y(open_price), y(close_price)))
+        if body_top == body_bottom:
+            draw.line((center_x - body_half_width, body_top, center_x + body_half_width, body_top), fill=color, width=2)
+        else:
+            draw.rectangle(
+                (center_x - body_half_width, body_top, center_x + body_half_width, body_bottom),
+                fill=color,
+            )
+
+
 def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
     """Return a PNG report containing at most ten executable ranking rows."""
     rows = build_top10_display_rows(results)
@@ -483,7 +565,7 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
 def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
     """Render the stocks whose saved post-close entry plan is executable now."""
     rows = build_executable_display_rows(results)
-    image = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), "#070D1A")
+    image = Image.new("RGB", (IMAGE_WIDTH, EXECUTABLE_IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
     draw.text((62, 48), "EXECUTABLE WATCHLIST", font=_font(18, True), fill="#F87171")
@@ -505,8 +587,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
     else:
         start_y = 168
         for index, row in enumerate(rows):
-            top = start_y + index * (CARD_HEIGHT + CARD_GAP)
-            bottom = top + CARD_HEIGHT
+            top = start_y + index * (EXECUTABLE_CARD_HEIGHT + EXECUTABLE_CARD_GAP)
+            bottom = top + EXECUTABLE_CARD_HEIGHT
             draw.rounded_rectangle(
                 (CARD_LEFT, top, CARD_LEFT + CARD_WIDTH, bottom),
                 radius=18,
@@ -514,30 +596,33 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
                 outline="#3F2631",
                 width=2,
             )
-            draw.ellipse((58, top + 24, 108, top + 74), fill="#7F1D1D")
-            draw.text((83, top + 49), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
-            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(27, True), 285)
-            draw.text((128, top + 14), stock_text, font=_font(27, True), fill="#F8FAFC")
-            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(17, True), 245)
-            draw.text((435, top + 19), sample_text, font=_font(17, True), fill=row["credibility_color"])
-            draw.text((1000, top + 13), row["score_text"], font=_font(29, True), fill="#F87171", anchor="ra")
+            draw.ellipse((58, top + 20, 108, top + 70), fill="#7F1D1D")
+            draw.text((83, top + 45), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(25, True), 280)
+            draw.text((128, top + 10), stock_text, font=_font(25, True), fill="#F8FAFC")
+            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(15, True), 220)
+            draw.text((420, top + 16), sample_text, font=_font(15, True), fill=row["credibility_color"])
+            draw.text((815, top + 12), row["score_text"], font=_font(25, True), fill="#F87171", anchor="ra")
+            analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 675)
+            draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
+            _draw_mini_candles(draw, row["mini_kbars"], (835, top + 8, 1018, top + 86))
 
             change = row["change_value"]
             current_color = "#E2E8F0" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
             labels = (
                 (128, "現價 / 漲跌", row["close_change_text"], current_color),
-                (300, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
-                (475, "建議零股", row["suggested_shares_text"], "#FBBF24"),
-                (595, "停損最大虧損", row["estimated_loss_text"], "#F8FAFC"),
-                (720, "風險停損", row["stop_text"], "#4ADE80"),
-                (835, "策略目標", row["target_text"], "#F87171"),
-                (940, "技術勝率", row["win_rate_text"], "#60A5FA"),
+                (275, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
+                (430, "建議零股", row["suggested_shares_text"], "#FBBF24"),
+                (555, "停損最大虧損", row["estimated_loss_text"], "#F8FAFC"),
+                (685, "風險停損", row["stop_text"], "#4ADE80"),
+                (800, "策略目標", row["target_text"], "#F87171"),
+                (910, "技術勝率", row["win_rate_text"], "#60A5FA"),
             )
             for x, label, value, color in labels:
-                draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
-                draw.text((x, top + 76), value, font=_font(17, True), fill=color)
+                draw.text((x, top + 96), label, font=_font(12), fill="#64748B")
+                draw.text((x, top + 116), value, font=_font(15, True), fill=color)
 
-    footer_y = 1282
+    footer_y = 1670
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
     draw.text((54, footer_y + 14), "建議股數 = floor($5,000 ÷（現價 − 停損價）)，每檔分別計算。", font=_font(16), fill="#94A3B8")
     draw.text((54, footer_y + 43), "每檔停損價差損失不超過 $5,000；未計滑價、手續費與交易稅。", font=_font(17, True), fill="#FBBF24")

@@ -81,9 +81,14 @@ class Top10TelegramTests(unittest.TestCase):
 
     def test_executable_list_filters_exact_status_and_keeps_original_rank(self):
         waiting = dict(self.rows[0], Rank=2, 代號="2317", Entry_Status="等待拉回")
+        mini_k = [
+            {"open": 100, "high": 104, "low": 99, "close": 103},
+            {"open": 103, "high": 106, "low": 102, "close": 105},
+        ]
         ready = dict(
             self.rows[0], Rank=26, Entry_Status="現在可執行",
             Entry_Low=1200, Entry_High=1235, Entry_Stop=1170, Entry_Target=1330, Entry_RRR=1.5,
+            Entry_Reason="價格位於 20MA 回測區，且量比達標。", Mini_K=mini_k,
         )
         rows = build_executable_display_rows([waiting, ready])
         self.assertEqual(len(rows), 1)
@@ -92,6 +97,12 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertNotIn("rrr_text", rows[0])
         self.assertEqual(rows[0]["suggested_shares"], 78)
         self.assertLessEqual(rows[0]["estimated_loss"], 5000)
+        self.assertEqual(rows[0]["analysis"], "價格位於 20MA 回測區，且量比達標。")
+        self.assertEqual(len(rows[0]["mini_kbars"]), 2)
+
+        png = render_executable_image([ready], "2026-08-27")
+        image = Image.open(io.BytesIO(png))
+        self.assertEqual(image.size, (1080, 1800))
 
     def test_odd_lot_plan_caps_each_trade_loss_independently(self):
         ready = [
@@ -122,7 +133,7 @@ class Top10TelegramTests(unittest.TestCase):
     def test_empty_executable_list_still_returns_an_honest_png(self):
         png = render_executable_image([dict(self.rows[0], Entry_Status="等待拉回")], "2026-08-27")
         image = Image.open(io.BytesIO(png))
-        self.assertEqual(image.size, (1080, 1400))
+        self.assertEqual(image.size, (1080, 1800))
 
     def test_tracking_report_uses_previous_analysis_and_excludes_rows_without_pnl(self):
         records = []

@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
 import scanner
 
 
@@ -51,6 +53,20 @@ class ScannerTelegramTests(unittest.TestCase):
             "收盤價": 1234, "漲跌幅": 1.2, "WinRate": 55, "Backtest_Samples": 40,
             "Entry_Status": "現在可執行",
         }]
+
+    def test_mini_kbars_use_only_authentic_complete_ohlc(self):
+        frame = pd.DataFrame(
+            [
+                {"Open": 100, "High": 105, "Low": 99, "Close": 103},
+                {"Open": 103, "High": 102, "Low": 101, "Close": 104},
+                {"Open": 104, "High": 108, "Low": 103, "Close": 107},
+            ],
+            index=pd.to_datetime(["2026-08-27", "2026-08-28", "2026-08-31"]),
+        )
+        bars = scanner.build_mini_kbars(frame)
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[0]["date"], "2026-08-27")
+        self.assertEqual(bars[-1]["close"], 107)
 
     def test_executable_top10_excludes_waiting_and_uses_actionable_rank(self):
         rows = [

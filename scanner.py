@@ -316,6 +316,34 @@ def get_institutional_trading(ticker, with_status=False):
 def calc_winrate(df_slice):
     return calculate_historical_performance(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
 
+
+def build_mini_kbars(frame, limit=12):
+    """Serialize authentic recent OHLC bars for compact prediction-image charts."""
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    bars = []
+    for index, row in frame.tail(max(1, int(limit))).iterrows():
+        try:
+            open_price = float(row["Open"])
+            high_price = float(row["High"])
+            low_price = float(row["Low"])
+            close_price = float(row["Close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        values = (open_price, high_price, low_price, close_price)
+        if not all(pd.notna(value) and 0 < value < float("inf") for value in values):
+            continue
+        if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
+            continue
+        bars.append({
+            "date": pd.Timestamp(index).strftime("%Y-%m-%d"),
+            "open": round(open_price, 4),
+            "high": round(high_price, 4),
+            "low": round(low_price, 4),
+            "close": round(close_price, 4),
+        })
+    return bars
+
 def should_run_postclose_scan(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
     if os.getenv("FORCE_SCAN") == "1":
@@ -910,6 +938,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Est_Vol_Ratio": data.get("Est_Vol_Ratio"),
                     "Volume_Confirmed": bool(data.get("Volume_Confirmed")),
                     "Tomorrow_Plan": data.get("Tomorrow_Plan", {}),
+                    "_Mini_K": build_mini_kbars(df),
                     "Streak": next_streak(stock, previous_streaks, same_day_rerun),
                     "Prev_Rank": previous_ranks.get(stock, 999),
                 }
@@ -931,6 +960,15 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
 
         if not scan_results:
             raise RuntimeError("掃描結果為空，保留既有 daily_scan，避免以空資料覆寫")
+
+        top10_tickers = {
+            str(row.get("代號") or "")
+            for row in select_executable_top10(scan_results)
+        }
+        for result in scan_results:
+            mini_k = result.pop("_Mini_K", [])
+            if str(result.get("代號") or "") in top10_tickers:
+                result["Mini_K"] = mini_k
 
         if db is None:
             logging.warning("allow_local=True：Firestore 未初始化，僅回傳本機掃描結果。")
