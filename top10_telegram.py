@@ -450,8 +450,8 @@ def _draw_mini_candles(
     """Draw a truthful compact OHLC chart, or an explicit missing-data state."""
     left, top, right, bottom = box
     draw.rounded_rectangle(box, radius=10, fill="#0A1222", outline="#263449", width=1)
-    draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
     if not bars:
+        draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
         draw.text(
             ((left + right) // 2, (top + bottom) // 2 + 7),
             "K線資料不足",
@@ -466,6 +466,20 @@ def _draw_mini_candles(
     lows = [float(bar["low"]) for bar in bars]
     highs = [float(bar["high"]) for bar in bars]
     low_price, high_price = min(lows), max(highs)
+    draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
+    range_font = _font(10, True)
+    low_level = f"{low_price:.2f}".rstrip("0").rstrip(".")
+    high_level = f"{high_price:.2f}".rstrip("0").rstrip(".")
+    low_text = f"低 {low_level}"
+    low_width = draw.textlength(low_text, font=range_font)
+    draw.text((right - 6, top + 6), low_text, font=range_font, fill="#4ADE80", anchor="ra")
+    draw.text(
+        (right - 12 - low_width, top + 6),
+        f"高 {high_level}",
+        font=range_font,
+        fill="#F87171",
+        anchor="ra",
+    )
     span = high_price - low_price
     if span <= 0:
         span = max(high_price * 0.01, 0.01)
