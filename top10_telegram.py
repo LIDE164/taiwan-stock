@@ -65,7 +65,7 @@ def _credibility(sample_count: int | None) -> tuple[str, str]:
     return "統計較穩定", "#4ADE80"
 
 
-def _normalize_mini_kbars(value: Any, limit: int = 12) -> list[dict[str, float]]:
+def _normalize_mini_kbars(value: Any, limit: int = 30) -> list[dict[str, float]]:
     """Keep only complete, internally consistent OHLC bars; never synthesize candles."""
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return []
@@ -451,7 +451,7 @@ def _draw_mini_candles(
     left, top, right, bottom = box
     draw.rounded_rectangle(box, radius=10, fill="#0A1222", outline="#263449", width=1)
     if not bars:
-        draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
+        draw.text((left + 9, top + 5), "近30日 K", font=_font(11, True), fill="#64748B")
         draw.text(
             ((left + right) // 2, (top + bottom) // 2 + 7),
             "K線資料不足",
@@ -461,12 +461,18 @@ def _draw_mini_candles(
         )
         return
 
-    draw.text((left + 8, top + 4), "近12日 K", font=_font(10, True), fill="#64748B")
-    chart_left, chart_top = left + 8, top + 19
-    chart_right, chart_bottom = right - 8, bottom - 5
     lows = [float(bar["low"]) for bar in bars]
     highs = [float(bar["high"]) for bar in bars]
     low_price, high_price = min(lows), max(highs)
+    high_level = f"{high_price:.2f}".rstrip("0").rstrip(".")
+    low_level = f"{low_price:.2f}".rstrip("0").rstrip(".")
+    period_label = "近30日 K" if len(bars) >= 30 else f"近{len(bars)}/30日 K"
+    draw.text((left + 9, top + 4), period_label, font=_font(10, True), fill="#64748B")
+    draw.text((right - 9, top + 3), f"最高 {high_level}", font=_font(10, True), fill="#F87171", anchor="ra")
+    draw.text((right - 9, bottom - 15), f"最低 {low_level}", font=_font(10, True), fill="#4ADE80", anchor="ra")
+
+    chart_left, chart_top = left + 9, top + 20
+    chart_right, chart_bottom = right - 9, bottom - 18
     span = high_price - low_price
     if span <= 0:
         span = max(high_price * 0.01, 0.01)
@@ -498,30 +504,12 @@ def _draw_mini_candles(
 
     high_index = max(range(len(bars)), key=lambda index: float(bars[index]["high"]))
     low_index = min(range(len(bars)), key=lambda index: float(bars[index]["low"]))
-    range_font = _font(9, True)
-
-    def callout(index: int, price: float, prefix: str, color: str, *, above: bool) -> None:
-        point_x, point_y = centers[index], y(price)
-        level = f"{price:.2f}".rstrip("0").rstrip(".")
-        text = f"{prefix}{level}"
-        text_width = int(math.ceil(draw.textlength(text, font=range_font)))
-        label_width = text_width + 6
-        label_left = max(chart_left, min(point_x - label_width // 2, chart_right - label_width))
-        label_top = chart_top if above else chart_bottom - 11
-        connector_y = label_top + 11 if above else label_top
-        draw.line((point_x, point_y, point_x, connector_y), fill=color, width=1)
-        draw.ellipse((point_x - 2, point_y - 2, point_x + 2, point_y + 2), fill=color)
-        draw.rounded_rectangle(
-            (label_left, label_top, label_left + label_width, label_top + 11),
-            radius=3,
-            fill="#111827",
-            outline=color,
-            width=1,
-        )
-        draw.text((label_left + 3, label_top), text, font=range_font, fill=color)
-
-    callout(high_index, highs[high_index], "高", "#F87171", above=True)
-    callout(low_index, lows[low_index], "低", "#4ADE80", above=False)
+    high_point = (centers[high_index], y(highs[high_index]))
+    low_point = (centers[low_index], y(lows[low_index]))
+    draw.line((chart_left, chart_top, chart_right, chart_top), fill="#4B2530", width=1)
+    draw.line((chart_left, chart_bottom, chart_right, chart_bottom), fill="#164E3B", width=1)
+    draw.ellipse((high_point[0] - 3, high_point[1] - 3, high_point[0] + 3, high_point[1] + 3), fill="#F87171")
+    draw.ellipse((low_point[0] - 3, low_point[1] - 3, low_point[0] + 3, low_point[1] + 3), fill="#4ADE80")
 
 
 def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
@@ -628,14 +616,16 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
             )
             draw.ellipse((58, top + 20, 108, top + 70), fill="#7F1D1D")
             draw.text((83, top + 45), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
-            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(25, True), 280)
-            draw.text((128, top + 10), stock_text, font=_font(25, True), fill="#F8FAFC")
-            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(15, True), 220)
+            stock_font = _font(25, True)
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", stock_font, 210)
+            draw.text((128, top + 10), stock_text, font=stock_font, fill="#F8FAFC")
+            score_x = min(350, int(128 + draw.textlength(stock_text, font=stock_font) + 14))
+            draw.text((score_x, top + 12), row["score_text"], font=_font(22, True), fill="#F87171")
+            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(15, True), 165)
             draw.text((420, top + 16), sample_text, font=_font(15, True), fill=row["credibility_color"])
-            draw.text((815, top + 12), row["score_text"], font=_font(25, True), fill="#F87171", anchor="ra")
-            analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 675)
+            analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
             draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
-            _draw_mini_candles(draw, row["mini_kbars"], (835, top + 8, 1018, top + 86))
+            _draw_mini_candles(draw, row["mini_kbars"], (600, top + 8, 1018, top + 88))
 
             change = row["change_value"]
             current_color = "#E2E8F0" if change is None else ("#F87171" if change >= 0 else "#4ADE80")

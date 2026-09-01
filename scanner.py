@@ -317,7 +317,7 @@ def calc_winrate(df_slice):
     return calculate_historical_performance(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
 
 
-def build_mini_kbars(frame, limit=12):
+def build_mini_kbars(frame, limit=30):
     """Serialize authentic recent OHLC bars for compact prediction-image charts."""
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
         return []

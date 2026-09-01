@@ -121,6 +121,17 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertTrue(all(row["estimated_loss"] <= 5000 for row in rows))
         self.assertGreater(sum(row["estimated_loss"] for row in rows), 9000)
 
+    def test_executable_chart_keeps_the_latest_30_real_bars(self):
+        mini_k = [
+            {"open": 100 + index, "high": 102 + index, "low": 99 + index, "close": 101 + index}
+            for index in range(35)
+        ]
+        ready = dict(self.rows[0], Entry_Status="現在可執行", Mini_K=mini_k)
+        bars = build_executable_display_rows([ready])[0]["mini_kbars"]
+        self.assertEqual(len(bars), 30)
+        self.assertEqual(bars[0]["open"], 105)
+        self.assertEqual(bars[-1]["close"], 135)
+
     def test_position_size_is_unavailable_when_stop_is_not_below_current_price(self):
         ready = dict(
             self.rows[0], Entry_Status="現在可執行", Entry_Stop=1234, Entry_Target=1300,
