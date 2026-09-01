@@ -228,8 +228,11 @@ class Top10TelegramTests(unittest.TestCase):
         ready = dict(self.rows[0], Entry_Status="現在可執行")
         message_id = send_executable_photo([ready], "2026-08-27", "token", "chat", session=session)
         self.assertEqual(message_id, 321)
-        _, kwargs = session.calls[0]
-        self.assertEqual(kwargs["files"]["photo"][0], "executable-2026-08-27.png")
+        url, kwargs = session.calls[0]
+        self.assertEqual(url, "https://api.telegram.org/bottoken/sendDocument")
+        self.assertEqual(kwargs["files"]["document"][0], "executable-2026-08-27.png")
+        self.assertEqual(kwargs["files"]["document"][2], "image/png")
+        self.assertTrue(kwargs["files"]["document"][1].startswith(b"\x89PNG"))
         self.assertIn("8/28股票預測", kwargs["data"]["caption"])
 
     def test_tracking_sender_uses_separate_filename_and_truthful_caption(self):

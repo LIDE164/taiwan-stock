@@ -461,25 +461,12 @@ def _draw_mini_candles(
         )
         return
 
-    chart_left, chart_top = left + 8, top + 23
-    chart_right, chart_bottom = right - 8, bottom - 7
+    draw.text((left + 8, top + 4), "近12日 K", font=_font(10, True), fill="#64748B")
+    chart_left, chart_top = left + 8, top + 19
+    chart_right, chart_bottom = right - 8, bottom - 5
     lows = [float(bar["low"]) for bar in bars]
     highs = [float(bar["high"]) for bar in bars]
     low_price, high_price = min(lows), max(highs)
-    draw.text((left + 8, top + 5), "近12日 K", font=_font(11, True), fill="#64748B")
-    range_font = _font(10, True)
-    low_level = f"{low_price:.2f}".rstrip("0").rstrip(".")
-    high_level = f"{high_price:.2f}".rstrip("0").rstrip(".")
-    low_text = f"低 {low_level}"
-    low_width = draw.textlength(low_text, font=range_font)
-    draw.text((right - 6, top + 6), low_text, font=range_font, fill="#4ADE80", anchor="ra")
-    draw.text(
-        (right - 12 - low_width, top + 6),
-        f"高 {high_level}",
-        font=range_font,
-        fill="#F87171",
-        anchor="ra",
-    )
     span = high_price - low_price
     if span <= 0:
         span = max(high_price * 0.01, 0.01)
@@ -492,8 +479,10 @@ def _draw_mini_candles(
 
     slot = (chart_right - chart_left) / max(len(bars), 1)
     body_half_width = max(1, min(4, int(slot * 0.28)))
+    centers: list[int] = []
     for index, bar in enumerate(bars):
         center_x = int(round(chart_left + slot * (index + 0.5)))
+        centers.append(center_x)
         open_price = float(bar["open"])
         close_price = float(bar["close"])
         color = "#F87171" if close_price > open_price else ("#4ADE80" if close_price < open_price else "#CBD5E1")
@@ -506,6 +495,33 @@ def _draw_mini_candles(
                 (center_x - body_half_width, body_top, center_x + body_half_width, body_bottom),
                 fill=color,
             )
+
+    high_index = max(range(len(bars)), key=lambda index: float(bars[index]["high"]))
+    low_index = min(range(len(bars)), key=lambda index: float(bars[index]["low"]))
+    range_font = _font(9, True)
+
+    def callout(index: int, price: float, prefix: str, color: str, *, above: bool) -> None:
+        point_x, point_y = centers[index], y(price)
+        level = f"{price:.2f}".rstrip("0").rstrip(".")
+        text = f"{prefix}{level}"
+        text_width = int(math.ceil(draw.textlength(text, font=range_font)))
+        label_width = text_width + 6
+        label_left = max(chart_left, min(point_x - label_width // 2, chart_right - label_width))
+        label_top = chart_top if above else chart_bottom - 11
+        connector_y = label_top + 11 if above else label_top
+        draw.line((point_x, point_y, point_x, connector_y), fill=color, width=1)
+        draw.ellipse((point_x - 2, point_y - 2, point_x + 2, point_y + 2), fill=color)
+        draw.rounded_rectangle(
+            (label_left, label_top, label_left + label_width, label_top + 11),
+            radius=3,
+            fill="#111827",
+            outline=color,
+            width=1,
+        )
+        draw.text((label_left + 3, label_top), text, font=range_font, fill=color)
+
+    callout(high_index, highs[high_index], "高", "#F87171", above=True)
+    callout(low_index, lows[low_index], "低", "#4ADE80", above=False)
 
 
 def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
@@ -842,6 +858,42 @@ def _send_photo_bytes(
     return int(message_id) if isinstance(message_id, (int, float)) else None
 
 
+def _send_document_bytes(
+    png: bytes,
+    filename: str,
+    caption: str,
+    bot_token: Any,
+    chat_id: Any,
+    session: requests.Session | None,
+) -> int | None:
+    """Send a PNG as a document so Telegram does not recompress the image."""
+    token = str(bot_token or "").strip()
+    target_chat = str(chat_id or "").strip()
+    if not token or not target_chat:
+        raise RuntimeError("Telegram 設定缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
+    client = session or requests.Session()
+    try:
+        response = client.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data={"chat_id": target_chat, "caption": caption},
+            files={"document": (filename, png, "image/png")},
+            timeout=30,
+        )
+    except Exception as error:
+        raise RuntimeError(f"Telegram 原圖發送連線失敗（{type(error).__name__}）") from None
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(f"Telegram 原圖發送失敗（HTTP {response.status_code}）")
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        raise RuntimeError("Telegram 回應格式錯誤") from None
+    if not isinstance(payload, Mapping) or not payload.get("ok"):
+        raise RuntimeError("Telegram API 未確認原圖發送成功")
+    result = payload.get("result")
+    message_id = result.get("message_id") if isinstance(result, Mapping) else None
+    return int(message_id) if isinstance(message_id, (int, float)) else None
+
+
 def send_top10_photo(
     results: Sequence[Mapping[str, Any]],
     trading_date: str,
@@ -870,11 +922,11 @@ def send_executable_photo(
     *,
     session: requests.Session | None = None,
 ) -> int | None:
-    """Send the second daily image containing only immediately executable names."""
+    """Send the executable prediction as a lossless PNG document."""
     rows = build_executable_display_rows(results)
     png = render_executable_image(results, trading_date)
     count_text = f"共 {len(rows)} 檔" if rows else "今日無符合標的"
-    return _send_photo_bytes(
+    return _send_document_bytes(
         png,
         f"executable-{trading_date}.png",
         f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；請依圖片停損控管風險。",
