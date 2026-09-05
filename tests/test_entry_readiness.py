@@ -7,6 +7,7 @@ from entry_readiness import (
     WAIT_TRIGGER_STATUS,
     WAIT_VOLUME_STATUS,
     build_entry_readiness,
+    build_entry_summary,
     ensure_entry_readiness,
 )
 
@@ -44,6 +45,13 @@ class EntryReadinessTests(unittest.TestCase):
         self.assertEqual(result["Entry_Low"], 100)
         self.assertEqual(result["Entry_High"], 102)
         self.assertGreater(result["Entry_Target"], result["Entry_High"])
+        self.assertEqual(result["Entry_Reason"], "進入20MA回測區｜量比1.20×已確認")
+
+    def test_entry_summary_uses_real_evidence_and_prioritizes_risk(self):
+        institutional = build_entry_summary(self._base(Whale_Net=1234, Whale_Net_Days=3))
+        conflicted = build_entry_summary(self._base(Whale_Net=1234, Signal_Conflict="中"))
+        self.assertEqual(institutional, "進入20MA回測區｜法人3日買超1,234張")
+        self.assertEqual(conflicted, "進入20MA回測區｜訊號分歧，嚴守停損")
 
     def test_price_inside_zone_with_weak_volume_waits_for_confirmation(self):
         result = build_entry_readiness(self._base(Est_Vol_Ratio=0.96))

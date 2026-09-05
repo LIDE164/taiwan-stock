@@ -13,6 +13,8 @@ from typing import Any
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+from entry_readiness import build_entry_summary
+
 
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
@@ -205,7 +207,7 @@ def build_executable_display_rows(
                 "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
             ),
             "credibility_color": credibility_color,
-            "analysis": _clean_text(record.get("Entry_Reason"), "解析資料不足"),
+            "analysis": build_entry_summary(record),
             "mini_kbars": _normalize_mini_kbars(record.get("Mini_K")),
         })
     return rows

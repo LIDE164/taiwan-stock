@@ -39,6 +39,45 @@ def _truthy(value: Any) -> bool:
     return bool(value)
 
 
+def build_entry_summary(record: Mapping[str, Any]) -> str:
+    """Return one concise, evidence-based reason plus the most important caution."""
+    pattern = str(record.get("Entry_Pattern") or "").strip()
+    if pattern in {"趨勢突破型", "整理突破型"}:
+        main = "型態突破確認"
+    elif pattern == "低檔反彈型":
+        main = "低檔反彈轉強"
+    elif pattern == "回測支撐型":
+        main = "20MA支撐確認"
+    else:
+        main = "進入20MA回測區"
+
+    conflict = str(record.get("Signal_Conflict") or "").strip()
+    rsi = _number(record.get("RSI"))
+    bias = _number(record.get("BIAS"))
+    whale_net = _number(record.get("Whale_Net"))
+    whale_days = max(1, int(_number(record.get("Whale_Net_Days")) or 1))
+    volume_ratio = _number(record.get("Est_Vol_Ratio"))
+
+    if conflict in {"中", "高"}:
+        detail = "訊號分歧，嚴守停損"
+    elif rsi is not None and rsi >= 70:
+        detail = f"RSI {rsi:.0f}偏高，避免追價"
+    elif bias is not None and bias >= 5:
+        detail = f"乖離{bias:.1f}%偏高，避免追價"
+    elif whale_net is not None and whale_net >= 100:
+        detail = f"法人{whale_days}日買超{whale_net:,.0f}張"
+    elif whale_net is not None and whale_net <= -100:
+        detail = f"法人{whale_days}日賣超{abs(whale_net):,.0f}張"
+    elif volume_ratio is not None:
+        detail = f"量比{volume_ratio:.2f}×已確認"
+    else:
+        original = " ".join(str(record.get("Entry_Reason") or "").split()).strip()
+        if original:
+            return original
+        detail = "量能已確認"
+    return f"{main}｜{detail}"
+
+
 def _tick_size(price: float) -> float:
     if price < 10:
         return 0.01
@@ -211,7 +250,7 @@ def build_entry_readiness(
                     return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
                 if confidence is not None and confidence < 70:
                     return _result(WAIT_TRIGGER_STATUS, "wait", f"資料信心僅 {confidence:.0f}%，暫不執行。", **kwargs)
-                return _result(READY_STATUS, "ready", "價格已進入盤後規劃區間，且量比達標。", **kwargs)
+                return _result(READY_STATUS, "ready", build_entry_summary(record), **kwargs)
             if close < low:
                 return _result(WAIT_TRIGGER_STATUS, "wait", f"現價尚未進入 {low:g}–{high:g} 觀察區間。", **kwargs)
             return _result(WAIT_PULLBACK_STATUS, "wait", f"現價已高於 {low:g}–{high:g} 觀察區間。", **kwargs)
@@ -257,7 +296,7 @@ def build_entry_readiness(
             return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
         if confidence is not None and confidence < 70:
             return _result(WAIT_TRIGGER_STATUS, "wait", f"價格已進區間，但資料信心僅 {confidence:.0f}%。", **kwargs)
-        return _result(READY_STATUS, "ready", "價格位於 20MA 回測區，且量比達標。", **kwargs)
+        return _result(READY_STATUS, "ready", build_entry_summary(record), **kwargs)
     if close > level_values[1]:
         return _result(WAIT_PULLBACK_STATUS, "wait", "價格仍高於 20MA 回測區，不追價。", **kwargs)
     return _result(WAIT_TRIGGER_STATUS, "wait", "價格尚未站回 20MA 觀察區。", **kwargs)
