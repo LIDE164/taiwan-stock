@@ -9,6 +9,7 @@ import os
 import argparse
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -437,6 +438,36 @@ def _telegram_credentials() -> tuple[Any, Any]:
     return token, chat_id
 
 
+def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
+    """Build same-day TAIEX context without inventing values when data is missing."""
+    if frame is None or len(frame) < 2 or "Close" not in frame.columns:
+        return {}
+    try:
+        close = float(frame["Close"].iloc[-1])
+        previous_close = float(frame["Close"].iloc[-2])
+        ma20 = float(frame["MA20"].iloc[-1]) if "MA20" in frame.columns else float(frame["Close"].tail(20).mean())
+        ma60 = float(frame["MA60"].iloc[-1]) if "MA60" in frame.columns else float(frame["Close"].tail(60).mean())
+    except (TypeError, ValueError, IndexError):
+        return {}
+    if not all(math.isfinite(value) and value > 0 for value in (close, previous_close, ma20, ma60)):
+        return {}
+    if close >= ma20 and close >= ma60:
+        regime = "多頭"
+    elif close < ma20 and close < ma60:
+        regime = "空頭"
+    else:
+        regime = "震盪"
+    return {
+        "symbol": "TAIEX",
+        "close": round(close, 2),
+        "previous_close": round(previous_close, 2),
+        "daily_return_pct": round((close / previous_close - 1) * 100, 2),
+        "ma20": round(ma20, 2),
+        "ma60": round(ma60, 2),
+        "regime": regime,
+    }
+
+
 def _top10_notification_fingerprint(top10_results, trading_date):
     payload = {
         "date": str(trading_date),
@@ -541,8 +572,8 @@ def _load_tracking_performance_data(trading_date):
     date_text = str(trading_date)
 
     def in_tracking_window(row):
-        entry_date = str(row.get("entry_date") or "").strip()
-        return TRACKING_PERFORMANCE_START_DATE <= entry_date <= date_text
+        origin_date = str(row.get("signal_date") or row.get("entry_date") or "").strip()
+        return TRACKING_PERFORMANCE_START_DATE <= origin_date <= date_text
 
     return (
         [row for row in records if isinstance(row, Mapping) and in_tracking_window(row)],
@@ -566,8 +597,7 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
         return False
     fingerprint_payload = {
         "date": date_text,
-        "records": records,
-        "positions": positions,
+        "report": report,
     }
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
@@ -602,7 +632,7 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
     return True
 
 
-def update_top10_tracker(top10_results, trading_date=None):
+def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
     if db is None: return
     try:
         date_str = trading_date or datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
@@ -627,7 +657,8 @@ def update_top10_tracker(top10_results, trading_date=None):
             position
             for position in positions
             if isinstance(position, Mapping)
-            and str(position.get("entry_date") or "") >= TRACKING_PERFORMANCE_START_DATE
+            and str(position.get("signal_date") or position.get("entry_date") or "")
+            >= TRACKING_PERFORMANCE_START_DATE
         ]
         removed_position_count = original_position_count - len(positions)
         if removed_position_count:
@@ -639,7 +670,8 @@ def update_top10_tracker(top10_results, trading_date=None):
 
         has_start_positions = any(
             isinstance(position, Mapping)
-            and str(position.get("entry_date") or "") == TRACKING_PERFORMANCE_START_DATE
+            and str(position.get("signal_date") or position.get("entry_date") or "")
+            == TRACKING_PERFORMANCE_START_DATE
             for position in positions
         )
         if date_str > TRACKING_PERFORMANCE_START_DATE and not has_start_positions:
@@ -665,10 +697,10 @@ def update_top10_tracker(top10_results, trading_date=None):
                     )
 
         missing_entry_dates = sorted({
-            str(position.get("entry_date", ""))
+            str(position.get("signal_date") or position.get("entry_date") or "")
             for position in positions
             if isinstance(position, dict)
-            and position.get("entry_date")
+            and (position.get("signal_date") or position.get("entry_date"))
             and position.get("entry_backtest_samples") is None
             and position.get("entry_backtest_status") != "missing"
         })
@@ -688,7 +720,7 @@ def update_top10_tracker(top10_results, trading_date=None):
         quotes = {}
         for position in positions:
             ticker = str(position.get("ticker", ""))
-            if position.get("status") != "OPEN" or ticker in top10_tickers:
+            if position.get("status") not in {"OPEN", "PENDING"} or ticker in top10_tickers:
                 continue
             frame = get_stock_data(ticker)
             if frame is not None and not frame.empty:
@@ -704,7 +736,7 @@ def update_top10_tracker(top10_results, trading_date=None):
                     "Close": latest.get("Close"),
                 }
         all_positions, daily_snapshots = update_positions_with_snapshots(
-            positions, top10_results, quotes, date_str
+            positions, top10_results, quotes, date_str, benchmark=benchmark
         )
         history_dates = sorted({str(item) for item in history_dates if item} | {date_str}, reverse=True)[:120]
         action_counts: dict[str, int] = {}
@@ -727,6 +759,7 @@ def update_top10_tracker(top10_results, trading_date=None):
             "positions": all_positions,
             "latest_date": date_str,
             "latest_snapshots": daily_snapshots,
+            "latest_benchmark": dict(benchmark) if isinstance(benchmark, Mapping) else {},
             "history_dates": history_dates,
             "backfill_status": "partial" if has_historical_gaps else "complete",
             "missing_ranking_dates": remaining_missing_dates,
@@ -737,12 +770,14 @@ def update_top10_tracker(top10_results, trading_date=None):
         history_payload = {
             "date": date_str,
             "records": daily_snapshots,
+            "benchmark": dict(benchmark) if isinstance(benchmark, Mapping) else {},
             "ranking_status": "ok",
             "data_status": "ok",
             "missing_reason": "",
             "summary": {
                 "tracked_count": len(daily_snapshots),
                 "open_count": len([p for p in all_positions if p.get("status") == "OPEN"]),
+                "pending_count": len([p for p in all_positions if p.get("status") == "PENDING"]),
                 "actions": action_counts,
             },
         }
@@ -781,6 +816,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
     if not scan_date_str or twii_close <= 0:
         logging.error("無法確認最新實際交易日，本次不寫入掃描結果。")
         return []
+    benchmark_context = build_benchmark_context(twii_df)
 
     previous_payload = _load_daily_scan_doc()
     if not _acquire_scan_lease(scan_date_str, force=force):
@@ -856,6 +892,8 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                 "TWII_MA60": twii_ma60,
             }
             data = build_score_input(df, fund)
+            data["Market_Regime"] = benchmark_context.get("regime")
+            data["Market_Return"] = benchmark_context.get("daily_return_pct")
             initial_quality, initial_confidence = build_scan_quality({
                 "price": "ok",
                 "fundamental": f_data.get("_status", "unknown"),
@@ -890,11 +928,13 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     return None
 
                 backtest = calc_winrate(df)
+                change_pct = round((t_close - p_close) / p_close * 100, 2)
                 data.update({
                     "Score": sc,
                     "最高價": float(t_high),
                     "最低價": float(t_low),
                     "ATR": float(t.get("ATR", 0)),
+                    "漲跌幅": change_pct,
                 })
                 entry_plan = build_entry_readiness(data)
                 result = {
@@ -904,7 +944,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "開盤價": round(t_open, 2), "最高價": round(t_high, 2), "最低價": round(t_low, 2),
                     "收盤價": round(t_close, 2), "WinRate": backtest["win_rate"], "Whale_Net": whale_net,
                     "Whale_Net_Days": whale_days,
-                    "漲跌幅": round((t_close - p_close)/p_close*100, 2),
+                    "漲跌幅": change_pct,
                     "Feature": feature, "Reasons": rs, "Backtest_Samples": backtest["closed_signals"],
                     "Backtest_Scope": backtest["backtest_scope"],
                     "Validation_WinRate": backtest["validation_win_rate"],
@@ -916,6 +956,8 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Advanced_Pattern": data.get("Advanced_Pattern", ""),
                     "Advanced_Pattern_Signal": data.get("Advanced_Pattern_Signal", ""),
                     "Confidence": confidence, "Data_Quality": quality, "Institutional_Days": len(inst),
+                    "Market_Regime": benchmark_context.get("regime"),
+                    "Market_Return": benchmark_context.get("daily_return_pct"),
                     "Institutional_Status": inst_status,
                     "Institutional_Source": inst[0].get("_source", "") if inst else "",
                     "Institutional_Rows": [{
@@ -995,7 +1037,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             "update_time": firestore.SERVER_TIMESTAMP,
         })
         logging.info("已記錄 %s 可執行 Top10 榜單（%d 檔）", scan_date_str, len(top10))
-        update_top10_tracker(top10, scan_date_str)
+        update_top10_tracker(top10, scan_date_str, benchmark=benchmark_context)
     except Exception as e:
         _finish_scan_lease(scan_date_str, "failed", len(scan_results), str(e))
         logging.exception("全市場掃描失敗: %s", e)

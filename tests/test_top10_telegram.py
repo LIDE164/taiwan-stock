@@ -180,11 +180,11 @@ class Top10TelegramTests(unittest.TestCase):
         })
         report = build_tracking_performance_report(records, positions, "2026-08-28")
         self.assertEqual(report["valid_count"], 11)
-        self.assertEqual(report["missing_count"], 0)
+        self.assertEqual(report["missing_count"], 1)
         self.assertEqual(report["excluded_count"], 2)
         self.assertEqual(len(report["rows"]), 11)
         self.assertEqual(report["page_count"], 2)
-        self.assertEqual(report["display_mode"], "已有當日損益的全部標的")
+        self.assertEqual(report["display_mode"], "已成交且已有跨日損益的全部標的")
         self.assertNotIn("1011", [row["ticker"] for row in report["rows"]])
         self.assertNotIn("TODAY", [row["ticker"] for row in report["rows"]])
         self.assertNotIn("OLD", [row["ticker"] for row in report["rows"]])
@@ -198,6 +198,51 @@ class Top10TelegramTests(unittest.TestCase):
         pages = render_tracking_performance_images(records, positions, "2026-08-28")
         self.assertEqual(len(pages), 2)
         self.assertTrue(all(page.startswith(b"\x89PNG") for page in pages))
+
+    def test_historical_report_is_not_rewritten_by_latest_position_status(self):
+        records = [{
+            "position_id": "2330:2026-08-27", "ticker": "2330", "name": "台積電",
+            "signal_date": "2026-08-27", "entry_date": "2026-08-28",
+            "entry_price": 100, "mark_price": 102, "daily_return_pct": 1,
+            "pnl_pct": 2, "data_status": "ok", "action": "HOLD", "status": "OPEN",
+        }]
+        latest_positions = [{
+            "position_id": "2330:2026-08-27", "ticker": "2330",
+            "signal_date": "2026-08-27", "entry_date": "2026-08-28",
+            "status": "CLOSED_SL", "pnl_pct": -10, "close_date": "2026-09-03",
+        }]
+        report = build_tracking_performance_report(records, latest_positions, "2026-08-29")
+        self.assertEqual(report["open_count"], 1)
+        self.assertEqual(report["closed_count"], 0)
+        self.assertEqual(report["open_average"], 2)
+        self.assertEqual(report["rows"][0]["status"], "OPEN")
+
+    def test_tracking_report_exposes_observed_diagnostics_market_and_concentration(self):
+        records = []
+        for ticker, pnl in (("2330", -3.0), ("2454", 1.0)):
+            records.append({
+                "position_id": f"{ticker}:2026-08-27", "ticker": ticker, "name": ticker,
+                "signal_date": "2026-08-27", "entry_date": "2026-08-28",
+                "entry_price": 100, "mark_price": 100 + pnl,
+                "daily_return_pct": pnl, "pnl_pct": pnl, "data_status": "ok",
+                "action": "HOLD", "status": "OPEN", "execution_schema": 2,
+                "signal_industry": "半導體", "benchmark_return_pct": -1,
+                "excess_return_pct": pnl + 1,
+                "signal_change_pct": 4 if pnl < 0 else 1,
+                "decline_diagnostic": "與大盤同步走弱（大盤 -1.0%）" if pnl < 0 else None,
+                "net_pnl_amount": pnl * 100, "estimated_transaction_cost": 42,
+            })
+        report = build_tracking_performance_report(records, [], "2026-08-29")
+        self.assertEqual(report["largest_industry"], "半導體")
+        self.assertEqual(report["largest_industry_share"], 100)
+        self.assertEqual(report["benchmark_average"], -1)
+        self.assertEqual(report["excess_average"], 0)
+        self.assertEqual(report["leading_decline_category"], "大盤同步")
+        self.assertEqual(report["leading_decline_count"], 1)
+        self.assertEqual(report["hot_entry_losing_count"], 1)
+        loser = next(row for row in report["rows"] if row["ticker"] == "2330")
+        self.assertIn("大盤", loser["decline_diagnostic"])
+        self.assertEqual(loser["net_pnl_amount"], -300)
 
     def test_tracking_renderer_returns_a_valid_mobile_png(self):
         records = [{

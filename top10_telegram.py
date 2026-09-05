@@ -181,6 +181,7 @@ def build_executable_display_rows(
             "display_rank": display_rank,
             "ticker": _clean_text(record.get("代號")),
             "name": _clean_text(record.get("名稱"), _clean_text(record.get("代號"))),
+            "industry": _clean_text(record.get("產業"), "未分類"),
             "score_text": "--" if score is None else f"{score:g} 分",
             "close_value": close,
             "close_change_text": (
@@ -213,6 +214,21 @@ def build_executable_display_rows(
     return rows
 
 
+def _concentration_text(rows: Sequence[Mapping[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for row in rows:
+        industry = _clean_text(row.get("industry"), "")
+        if industry:
+            counts[industry] = counts.get(industry, 0) + 1
+    if not counts:
+        return ""
+    industry, count = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+    share = count / len(rows) * 100 if rows else 0
+    if count < 3 or share < 50:
+        return ""
+    return f"產業集中提醒：{industry} {count}/{len(rows)}（{share:.0f}%）"
+
+
 def _mean(values: Sequence[float]) -> float | None:
     return (sum(values) / len(values)) if values else None
 
@@ -231,42 +247,142 @@ def _price_change_text(value: float | None) -> str:
     return f"{value:+.2f}".rstrip("0").rstrip(".")
 
 
+def _money_text(value: float | None) -> str:
+    if value is None:
+        return "--"
+    return f"NT${value:+,.0f}"
+
+
+_TRACKING_IMMUTABLE_FALLBACK_FIELDS = (
+    "signal_date",
+    "execution_schema",
+    "entry_plan_type",
+    "planned_entry_low",
+    "planned_entry_high",
+    "stop_price",
+    "target_price",
+    "max_risk_amount",
+    "signal_score",
+    "signal_rank",
+    "signal_change_pct",
+    "signal_industry",
+    "signal_rsi",
+    "signal_bias",
+    "signal_volume_ratio",
+    "signal_conflict",
+    "signal_pattern",
+    "signal_confidence",
+    "entry_win_rate",
+    "entry_backtest_samples",
+    "entry_backtest_scope",
+    "entry_backtest_status",
+)
+
+
+def _tracking_identity(row: Mapping[str, Any]) -> str:
+    existing = str(row.get("position_id") or "").strip()
+    if existing:
+        return existing
+    ticker = str(row.get("ticker") or "").strip()
+    origin_date = str(row.get("signal_date") or row.get("entry_date") or "").strip()
+    return f"{ticker}:{origin_date}"
+
+
+def _tracking_action_label(row: Mapping[str, Any]) -> str:
+    action = str(row.get("action") or "")
+    if action == "ENTRY":
+        schema = _number(row.get("execution_schema")) or 1
+        return "區間成交" if schema >= 2 else "收盤進場（舊）"
+    return {
+        "SIGNAL": "待次日觸價",
+        "ENTRY_EXPIRED": "進場訊號失效",
+        "HOLD": "持有",
+        "TAKE_PROFIT": "停利",
+        "STOP_LOSS": "停損",
+        "DATA_MISSING": "行情缺漏",
+        "EXIT": "已出場",
+    }.get(action, _clean_text(action))
+
+
+def _tracking_as_of_status(row: Mapping[str, Any]) -> str:
+    """Recover legacy daily status only from that day's recorded action."""
+    status = str(row.get("status") or "").strip()
+    if status:
+        return status
+    return {
+        "ENTRY": "OPEN",
+        "HOLD": "OPEN",
+        "TAKE_PROFIT": "CLOSED_TP",
+        "STOP_LOSS": "CLOSED_SL",
+        "SIGNAL": "PENDING",
+        "ENTRY_EXPIRED": "EXPIRED",
+    }.get(str(row.get("action") or ""), "")
+
+
+def _decline_category(value: Any) -> str:
+    text = _clean_text(value, "")
+    if not text:
+        return ""
+    for needle, label in (
+        ("觸發策略停損", "策略停損"),
+        ("跳空走弱", "跳空走弱"),
+        ("盤中賣壓", "盤中賣壓"),
+        ("大盤同步", "大盤同步"),
+        ("弱於大盤", "弱於大盤"),
+        ("入榜日已漲", "入榜日偏強"),
+    ):
+        if needle in text:
+            return label
+    return "一般走弱"
+
+
 def build_tracking_performance_report(
     records: Sequence[Mapping[str, Any]],
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
 ) -> dict[str, Any]:
-    """Build an equal-weight report from entry-day lists that already have a later close."""
+    """Build a date-faithful report from the supplied daily tracker records.
+
+    Current positions are deliberately not a source of status, prices, or P/L: a
+    later stop must never rewrite an older report.  They may only repair missing
+    immutable signal-time metadata in legacy daily rows.
+    """
     date_text = str(trading_date)
 
     def in_tracking_window(row: Mapping[str, Any]) -> bool:
-        entry_date = str(row.get("entry_date") or "").strip()
-        return TRACKING_PERFORMANCE_START_DATE <= entry_date <= date_text
+        origin_date = str(row.get("signal_date") or row.get("entry_date") or "").strip()
+        record_date = str(row.get("date") or date_text).strip()
+        return (
+            TRACKING_PERFORMANCE_START_DATE <= origin_date <= date_text
+            and record_date <= date_text
+        )
 
-    candidate_records = [
-        dict(row)
-        for row in records
-        if isinstance(row, Mapping) and in_tracking_window(row)
-    ]
+    position_metadata = {
+        _tracking_identity(row): dict(row)
+        for row in positions
+        if isinstance(row, Mapping) and _tracking_identity(row) != ":"
+    }
+
+    candidate_records: list[dict[str, Any]] = []
+    for source in records:
+        if not isinstance(source, Mapping) or not in_tracking_window(source):
+            continue
+        row = dict(source)
+        fallback = position_metadata.get(_tracking_identity(row), {})
+        for key in _TRACKING_IMMUTABLE_FALLBACK_FIELDS:
+            if row.get(key) in (None, "") and fallback.get(key) not in (None, ""):
+                row[key] = fallback[key]
+        candidate_records.append(row)
+
     daily_records = [
         row
         for row in candidate_records
         if str(row.get("entry_date") or "") < date_text
+        and str(row.get("action") or "") not in {"SIGNAL", "ENTRY_EXPIRED"}
+        and _tracking_as_of_status(row) not in {"PENDING", "EXPIRED"}
         and str(row.get("data_status") or "") == "ok"
         and _number(row.get("daily_return_pct")) is not None
         and _number(row.get("pnl_pct")) is not None
-    ]
-    eligible_position_ids = {
-        str(row.get("position_id") or f"{row.get('ticker', '')}:{row.get('entry_date', '')}")
-        for row in daily_records
-    }
-    all_positions = [
-        dict(row)
-        for row in positions
-        if isinstance(row, Mapping)
-        and in_tracking_window(row)
-        and str(row.get("position_id") or f"{row.get('ticker', '')}:{row.get('entry_date', '')}")
-        in eligible_position_ids
     ]
     valid_daily_returns = [
         value
@@ -274,28 +390,22 @@ def build_tracking_performance_report(
         if str(row.get("data_status") or "") == "ok"
         and (value := _number(row.get("daily_return_pct"))) is not None
     ]
-    open_positions = [row for row in all_positions if str(row.get("status") or "") == "OPEN"]
+    open_positions = [row for row in daily_records if _tracking_as_of_status(row) == "OPEN"]
     open_returns = [
         value
         for row in open_positions
         if (value := _number(row.get("pnl_pct"))) is not None
     ]
-    closed_positions = [row for row in all_positions if str(row.get("status") or "") != "OPEN"]
+    closed_positions = [
+        row for row in daily_records
+        if _tracking_as_of_status(row) in {"CLOSED_TP", "CLOSED_SL"}
+    ]
     closed_returns = [
         value
         for row in closed_positions
         if (value := _number(row.get("pnl_pct"))) is not None
     ]
     closed_wins = sum(value > 0 for value in closed_returns)
-
-    action_labels = {
-        "ENTRY": "收盤進場",
-        "HOLD": "持有",
-        "TAKE_PROFIT": "停利",
-        "STOP_LOSS": "停損",
-        "DATA_MISSING": "行情缺漏",
-        "EXIT": "已出場",
-    }
     display_rows: list[dict[str, Any]] = []
     for row in daily_records:
         ticker = _clean_text(row.get("ticker"))
@@ -336,11 +446,17 @@ def build_tracking_performance_report(
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
         credibility, credibility_color = _credibility(samples)
+        diagnostic = _clean_text(row.get("decline_diagnostic"), "")
+        net_pnl = _number(row.get("net_pnl_amount"))
+        estimated_cost = _number(row.get("estimated_transaction_cost"))
+        benchmark_return = _number(row.get("benchmark_return_pct"))
+        excess_return = _number(row.get("excess_return_pct"))
         display_rows.append({
             "ticker": ticker,
             "name": _clean_text(row.get("name"), ticker),
             "entry_date": _clean_text(row.get("entry_date")),
-            "action": action_labels.get(str(row.get("action") or ""), _clean_text(row.get("action"))),
+            "action": _tracking_action_label(row),
+            "status": _tracking_as_of_status(row),
             "entry_text": "--" if entry is None else f"{entry:g}",
             "mark_text": "--" if mark is None else f"{mark:g}",
             "daily_return": daily_return,
@@ -358,6 +474,17 @@ def build_tracking_performance_report(
             ),
             "credibility": credibility,
             "credibility_color": credibility_color,
+            "decline_diagnostic": diagnostic or None,
+            "net_pnl_amount": net_pnl,
+            "net_pnl_text": _money_text(net_pnl),
+            "estimated_transaction_cost": estimated_cost,
+            "estimated_cost_text": _money_text(estimated_cost),
+            "benchmark_return": benchmark_return,
+            "excess_return": excess_return,
+            "signal_industry": _clean_text(row.get("signal_industry"), "") or None,
+            "execution_schema": int(_number(row.get("execution_schema")) or 1),
+            "stop_price": _number(row.get("stop_price")),
+            "target_price": _number(row.get("target_price")),
             "data_status": str(row.get("data_status") or "missing"),
         })
 
@@ -365,14 +492,68 @@ def build_tracking_performance_report(
         key=lambda row: row["pnl"] if row["pnl"] is not None else float("-inf"),
         reverse=True,
     )
-    display_mode = "已有當日損益的全部標的"
+    display_mode = "已成交且已有跨日損益的全部標的"
 
-    missing_count = 0
+    missing_count = sum(
+        str(row.get("entry_date") or "") < date_text
+        and str(row.get("data_status") or "") != "ok"
+        and _tracking_as_of_status(row) not in {"PENDING", "EXPIRED"}
+        for row in candidate_records
+    )
     excluded_count = len(candidate_records) - len(daily_records)
     actions: dict[str, int] = {}
-    for row in daily_records:
+    for row in candidate_records:
         action = str(row.get("action") or "UNKNOWN")
         actions[action] = actions.get(action, 0) + 1
+
+    industry_counts: dict[str, int] = {}
+    for row in daily_records:
+        industry = _clean_text(row.get("signal_industry"), "")
+        if industry:
+            industry_counts[industry] = industry_counts.get(industry, 0) + 1
+    industry_sample_count = sum(industry_counts.values())
+    largest_industry = None
+    largest_industry_count = 0
+    if industry_counts:
+        largest_industry, largest_industry_count = sorted(
+            industry_counts.items(), key=lambda item: (-item[1], item[0])
+        )[0]
+    largest_industry_share = (
+        largest_industry_count / industry_sample_count * 100
+        if largest_industry and industry_sample_count
+        else None
+    )
+
+    benchmark_returns = [
+        value for row in daily_records
+        if (value := _number(row.get("benchmark_return_pct"))) is not None
+    ]
+    excess_returns = [
+        value for row in daily_records
+        if (value := _number(row.get("excess_return_pct"))) is not None
+    ]
+    strategy_count = sum(int(_number(row.get("execution_schema")) or 1) >= 2 for row in daily_records)
+    legacy_count = len(daily_records) - strategy_count
+    decline_counts: dict[str, int] = {}
+    losing_count = 0
+    hot_entry_losing_count = 0
+    for row in daily_records:
+        daily_return = _number(row.get("daily_return_pct"))
+        if daily_return is None or daily_return >= 0:
+            continue
+        losing_count += 1
+        signal_change = _number(row.get("signal_change_pct"))
+        if signal_change is not None and signal_change >= 3:
+            hot_entry_losing_count += 1
+        category = _decline_category(row.get("decline_diagnostic"))
+        if category:
+            decline_counts[category] = decline_counts.get(category, 0) + 1
+    leading_decline_category = None
+    leading_decline_count = 0
+    if decline_counts:
+        leading_decline_category, leading_decline_count = sorted(
+            decline_counts.items(), key=lambda item: (-item[1], item[0])
+        )[0]
     realized_win_rate = (
         closed_wins / len(closed_returns) * 100 if closed_returns else None
     )
@@ -380,7 +561,7 @@ def build_tracking_performance_report(
         "date": str(trading_date),
         "start_date": TRACKING_PERFORMANCE_START_DATE,
         "tracked_count": len(daily_records),
-        "valid_count": len(daily_records) - missing_count,
+        "valid_count": len(daily_records),
         "missing_count": missing_count,
         "excluded_count": excluded_count,
         "daily_average": _mean(valid_daily_returns),
@@ -392,6 +573,27 @@ def build_tracking_performance_report(
         "realized_win_rate": realized_win_rate,
         "realized_average": _mean(closed_returns),
         "actions": actions,
+        "pending_count": sum(
+            _tracking_as_of_status(row) == "PENDING" for row in candidate_records
+        ),
+        "expired_count": sum(
+            _tracking_as_of_status(row) == "EXPIRED" for row in candidate_records
+        ),
+        "strategy_count": strategy_count,
+        "legacy_count": legacy_count,
+        "industry_sample_count": industry_sample_count,
+        "largest_industry": largest_industry,
+        "largest_industry_count": largest_industry_count,
+        "largest_industry_share": largest_industry_share,
+        "benchmark_average": _mean(benchmark_returns),
+        "benchmark_sample_count": len(benchmark_returns),
+        "excess_average": _mean(excess_returns),
+        "excess_sample_count": len(excess_returns),
+        "losing_count": losing_count,
+        "decline_categories": decline_counts,
+        "leading_decline_category": leading_decline_category,
+        "leading_decline_count": leading_decline_count,
+        "hot_entry_losing_count": hot_entry_losing_count,
         "rows": display_rows,
         "display_mode": display_mode,
         "page_count": max(1, math.ceil(len(display_rows) / 10)),
@@ -546,6 +748,9 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
     draw.text((62, 76), "每日可執行 Top 10", font=_font(39, True), fill="#F8FAFC")
     draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
     draw.text((IMAGE_WIDTH - 62, 91), f"現在可執行 {len(rows)} 檔｜依量化分數排序", font=_font(19), fill="#94A3B8", anchor="ra")
+    concentration_text = _concentration_text(rows)
+    if concentration_text:
+        draw.text((IMAGE_WIDTH - 62, 119), concentration_text, font=_font(14, True), fill="#FBBF24", anchor="ra")
 
     start_y = 168
     if not rows:
@@ -619,6 +824,9 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
         fill="#94A3B8",
         anchor="ra",
     )
+    concentration_text = _concentration_text(rows)
+    if concentration_text:
+        draw.text((IMAGE_WIDTH - 62, 119), concentration_text, font=_font(14, True), fill="#FBBF24", anchor="ra")
 
     if not rows:
         draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
@@ -719,9 +927,20 @@ def render_tracking_performance_image(
         anchor="ra",
     )
 
+    relative_label = "相對大盤" if report["excess_average"] is not None else "有效行情"
+    relative_value = (
+        _percent_text(report["excess_average"])
+        if report["excess_average"] is not None
+        else f"{report['valid_count']} 檔"
+    )
+    relative_color = (
+        _return_color(report["excess_average"])
+        if report["excess_average"] is not None
+        else "#60A5FA"
+    )
     summary_cards = (
         (42, "今日有損益", f"{report['tracked_count']} 檔", "#E2E8F0"),
-        (296, "有效行情", f"{report['valid_count']} / {report['tracked_count']}", "#60A5FA"),
+        (296, relative_label, relative_value, relative_color),
         (550, "平均單日", _percent_text(report["daily_average"]), _return_color(report["daily_average"])),
         (804, "持有均報酬", _percent_text(report["open_average"]), _return_color(report["open_average"])),
     )
@@ -735,12 +954,25 @@ def render_tracking_performance_image(
         if report["realized_win_rate"] is None
         else f"{report['realized_win_rate']:.1f}%"
     )
-    action_text = (
-        f"進場 {report['actions'].get('ENTRY', 0)}｜持有 {report['actions'].get('HOLD', 0)}｜"
-        f"停利 {report['actions'].get('TAKE_PROFIT', 0)}｜停損 {report['actions'].get('STOP_LOSS', 0)}"
-    )
+    action_text = "｜".join(
+        f"{label} {report['actions'].get(action, 0)}"
+        for action, label in (
+            ("SIGNAL", "訊號"),
+            ("ENTRY", "成交"),
+            ("HOLD", "持有"),
+            ("ENTRY_EXPIRED", "失效"),
+            ("TAKE_PROFIT", "停利"),
+            ("STOP_LOSS", "停損"),
+        )
+        if report["actions"].get(action, 0)
+    ) or "本日沒有追蹤動作"
     draw.rounded_rectangle((42, 292, 1038, 372), radius=18, fill="#111827", outline="#1E293B", width=2)
-    draw.text((64, 307), action_text, font=_font(18, True), fill="#CBD5E1")
+    draw.text(
+        (64, 307),
+        _fit_text(draw, action_text, _font(16, True), 610),
+        font=_font(16, True),
+        fill="#CBD5E1",
+    )
     draw.text(
         (1016, 307),
         f"歷史結算 {report['closed_count']} 筆｜勝率 {realized_text}",
@@ -748,13 +980,22 @@ def render_tracking_performance_image(
         fill="#60A5FA" if report["realized_win_rate"] is not None else "#94A3B8",
         anchor="ra",
     )
+    context_parts = [
+        f"未有跨日損益排除 {report['excluded_count']} 檔",
+        f"待成交 {report['pending_count']}／失效 {report['expired_count']}",
+    ]
+    if report["largest_industry"]:
+        context_parts.append(
+            f"最大產業 {report['largest_industry']} "
+            f"{report['largest_industry_count']}/{report['industry_sample_count']} "
+            f"({report['largest_industry_share']:.0f}%)"
+        )
+    if report["benchmark_average"] is not None:
+        context_parts.append(f"大盤 {_percent_text(report['benchmark_average'])}")
     draw.text(
         (64, 340),
-        (
-            f"{report['display_mode']}｜本頁 {len(rows)} 檔｜"
-            f"未有損益排除 {report['excluded_count']} 檔"
-        ),
-        font=_font(16),
+        _fit_text(draw, "｜".join(context_parts), _font(15), 940),
+        font=_font(15),
         fill="#FACC15" if report["excluded_count"] else "#64748B",
     )
 
@@ -775,10 +1016,13 @@ def render_tracking_performance_image(
             draw.text((62, top + 9), stock_text, font=_font(23, True), fill="#F8FAFC")
             draw.rounded_rectangle((356, top + 8, 478, top + 38), radius=14, fill="#172033")
             draw.text((417, top + 23), _fit_text(draw, row["action"], _font(15, True), 105), font=_font(15, True), fill="#CBD5E1", anchor="mm")
+            detail_text = f"{row['entry_date']}｜進 {row['entry_text']} → 追蹤 {row['mark_text']}"
+            if row["decline_diagnostic"]:
+                detail_text += f"｜觀察：{row['decline_diagnostic']}"
             draw.text(
                 (62, top + 48),
-                f"{row['entry_date']}｜進 {row['entry_text']} → 追蹤 {row['mark_text']}",
-                font=_font(15),
+                _fit_text(draw, detail_text, _font(14), 490),
+                font=_font(14),
                 fill="#64748B",
             )
 
@@ -804,10 +1048,34 @@ def render_tracking_performance_image(
                 draw.text((x, top + 47), f"({percent_change})", font=_font(15, True), fill=color)
             draw.text((875, top + 9), "入榜勝率/樣本", font=_font(13), fill="#64748B")
             draw.text((875, top + 35), row["backtest_text"], font=_font(18, True), fill=row["credibility_color"])
+            if row["net_pnl_amount"] is not None or row["estimated_transaction_cost"] is not None:
+                net_text = f"淨 {row['net_pnl_text']}｜費 {row['estimated_cost_text'].replace('NT$', '')}"
+                draw.text(
+                    (875, top + 59),
+                    _fit_text(draw, net_text, _font(11), 145),
+                    font=_font(11),
+                    fill=_return_color(row["net_pnl_amount"]),
+                )
 
     footer_y = 1270
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 15), "平均績效採等權計算，不等於實際資金報酬；缺失行情不納入平均。", font=_font(16), fill="#94A3B8")
+    observation_footer = "平均績效採等權計算；跌幅標籤為價格觀察，不代表已證實原因。"
+    if report["leading_decline_category"]:
+        observation_footer = (
+            f"跌幅觀察：{report['leading_decline_category']} "
+            f"{report['leading_decline_count']}/{report['losing_count']}"
+        )
+        if report["hot_entry_losing_count"]:
+            observation_footer += (
+                f"；入榜日漲幅≥3% {report['hot_entry_losing_count']}/{report['losing_count']}"
+            )
+        observation_footer += "（僅觀察，非因果）"
+    draw.text(
+        (54, footer_y + 15),
+        _fit_text(draw, observation_footer, _font(15), 770),
+        font=_font(15),
+        fill="#94A3B8",
+    )
     draw.text(
         (IMAGE_WIDTH - 54, footer_y + 15),
         f"第 {page_index + 1} / {page_count} 頁",
@@ -815,7 +1083,10 @@ def render_tracking_performance_image(
         fill="#60A5FA",
         anchor="ra",
     )
-    draw.text((54, footer_y + 46), "停利 +15%／停損 -10%；同日雙觸及時保守先計停損。", font=_font(16, True), fill="#FBBF24")
+    strategy_footer = "新版依凍結進場區、停損與目標；僅次一交易日觸區成交。"
+    if report["legacy_count"]:
+        strategy_footer += " 舊版仍沿用 +15%/-10%。"
+    draw.text((54, footer_y + 46), strategy_footer, font=_font(14, True), fill="#FBBF24")
     draw.text((IMAGE_WIDTH - 54, footer_y + 46), "僅供研究參考", font=_font(16, True), fill="#FBBF24", anchor="ra")
 
     output = io.BytesIO()

@@ -2,7 +2,6 @@
 
 import math
 
-
 REQUIRED_SCORE_FIELDS = (
     "收盤價",
     "5MA",
@@ -18,6 +17,48 @@ REQUIRED_SCORE_FIELDS = (
     "Momentum_Score",
     "Confidence",
 )
+
+
+# The score is a ranking signal, not a probability. A smooth calibration keeps
+# unusually strong evidence distinguishable without turning every good setup
+# into the same hard-capped 99.
+_SCORE_MIDPOINT = 50
+_SCORE_SPAN = 49
+_SCORE_EVIDENCE_SCALE = 18.0
+
+
+def _combine_correlated_scores(values, secondary_weight=0.35, limit=8.0):
+    """Combine related evidence with diminishing credit after the first signal.
+
+    Indicators such as RSI, KDJ, Bollinger position and bias often describe the
+    same price condition. The strongest observation receives full weight;
+    additional observations on the same side receive partial confirmation
+    weight. Positive and negative observations are reduced independently so a
+    genuine conflict is still reflected in the result.
+    """
+    finite_values = [
+        float(value)
+        for value in values
+        if value is not None and math.isfinite(float(value)) and float(value) != 0
+    ]
+
+    def reduce_side(side):
+        if not side:
+            return 0.0
+        strongest = max(side)
+        return strongest + secondary_weight * (sum(side) - strongest)
+
+    positive = reduce_side([value for value in finite_values if value > 0])
+    negative = reduce_side([-value for value in finite_values if value < 0])
+    return max(-limit, min(limit, positive - negative))
+
+
+def _calibrate_score(evidence):
+    """Map accumulated evidence to 5-99 while reducing upper-tail saturation."""
+    calibrated = _SCORE_MIDPOINT + _SCORE_SPAN * math.tanh(
+        float(evidence) / _SCORE_EVIDENCE_SCALE
+    )
+    return max(5, min(99, round(calibrated)))
 
 
 def decision_label(final_score):
@@ -63,7 +104,13 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         reasons = ["⚠️ 必要技術資料不足，未產生量化評分"] if with_reason else []
         return 0, "⚪ 資料不足", reasons, "資料不足"
 
-    sc = 0
+    sc = 0.0
+    correlated = {
+        "trend": [],
+        "reversal": [],
+        "breakout": [],
+        "overheat": [],
+    }
     rs = []
 
     data = data or {}
@@ -74,9 +121,12 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     strong_trend = is_trending and roc_20 > 5
     macd_penalty = -1 if mode == "realtime" else -3
 
-    def add(score, text):
+    def add(score, text, group=None):
         nonlocal sc
-        sc += score
+        if group:
+            correlated[group].append(score)
+        else:
+            sc += score
         if with_reason and text:
             sign = "+" if score > 0 else ""
             rs.append(f"{text} ({sign}{score}分)")
@@ -113,19 +163,19 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
 
     if data.get("訊號", False):
         if is_trending:
-            add(3, f"✅ 穩在月線上且動能充沛 (ADX:{adx:.1f} 趨勢明確)")
+            add(3, f"✅ 穩在月線上且動能充沛 (ADX:{adx:.1f} 趨勢明確)", "trend")
         else:
-            add(1, f"⚠️ 穩在月線上 (但 ADX:{adx:.1f} 偏盤整，動能稍弱)")
+            add(1, f"⚠️ 穩在月線上 (但 ADX:{adx:.1f} 偏盤整，動能稍弱)", "trend")
 
     if close and bb_dn and close <= bb_dn * 1.02:
-        add(2, "✅ 觸及布林下軌支撐")
+        add(2, "✅ 觸及布林下軌支撐", "reversal")
     if bias < -5:
-        add(1, "✅ 負乖離過大，具反彈空間")
+        add(1, "✅ 負乖離過大，具反彈空間", "reversal")
 
     if roc_20 > 10:
-        add(2, f"🔥 近月漲幅 {roc_20:.2f}% 表現亮眼")
+        add(2, f"🔥 近月漲幅 {roc_20:.2f}% 表現亮眼", "trend")
     elif roc_20 < -5:
-        add(-2, f"🩸 近月跌幅 {roc_20:.2f}% 表現弱勢，避免接刀")
+        add(-2, f"🩸 近月跌幅 {roc_20:.2f}% 表現弱勢，避免接刀", "trend")
 
     if mom > 0 and yoy > 0:
         add(3, f"🔥 月營收雙增 (MoM: {mom:.2f}%, YoY: {yoy:.2f}%)")
@@ -159,14 +209,14 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-1, "⚠️ 盤中量能尚未確認，避免假量追高")
     elif vol_ratio >= 4:
         if is_breakout:
-            add(1, f"🔥 突破伴隨爆量 {vol_ratio:.1f} 倍，視為關鍵換手")
+            add(1, f"🔥 突破伴隨爆量 {vol_ratio:.1f} 倍，視為關鍵換手", "breakout")
         else:
-            add(-4, f"⚠️ 量能爆量 {vol_ratio:.1f} 倍，隔日賣壓風險升高")
+            add(-4, f"⚠️ 量能爆量 {vol_ratio:.1f} 倍，隔日賣壓風險升高", "overheat")
     elif vol_ratio > 3:
         if is_breakout:
-            add(2, f"🔥 突破出量 {vol_ratio:.1f} 倍，動能強勁")
+            add(2, f"🔥 突破出量 {vol_ratio:.1f} 倍，動能強勁", "breakout")
         else:
-            add(-2, f"⚠️ 量能過熱 {vol_ratio:.1f} 倍，避免追高")
+            add(-2, f"⚠️ 量能過熱 {vol_ratio:.1f} 倍，避免追高", "overheat")
     elif 1.2 <= vol_ratio <= 2.5:
         add(2, f"✅ 量能溫和放大 {vol_ratio:.1f} 倍")
     elif volume_5d > 0 and volume > volume_5d * 1.1:
@@ -175,30 +225,30 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         add(-1, "⚠️ 量能未明顯放大")
 
     if macd_hist > prev_macd_hist:
-        add(2, "✅ MACD 綠柱收斂或紅柱放大")
+        add(2, "✅ MACD 綠柱收斂或紅柱放大", "trend")
     else:
-        add(macd_penalty, "⚠️ MACD 空方動能擴大")
+        add(macd_penalty, "⚠️ MACD 空方動能擴大", "trend")
 
     if data.get("紅吞", False):
-        add(4 if is_trending else 1, "🔥 出現紅吞反轉型態")
+        add(4 if is_trending else 1, "🔥 出現紅吞反轉型態", "reversal")
     if data.get("黑吞", False):
-        add(-3, "🩸 出現黑吞反轉型態")
+        add(-3, "🩸 出現黑吞反轉型態", "reversal")
     if data.get("回測有撐", False):
-        add(2, "🔥 帶量長下影線，回測支撐成功")
+        add(2, "🔥 帶量長下影線，回測支撐成功", "reversal")
     if data.get("反彈遇壓", False):
-        add(-2, "🩸 反彈遇壓，留意上方賣壓")
+        add(-2, "🩸 反彈遇壓，留意上方賣壓", "reversal")
 
     if close >= ma5 and ma5_up:
-        add(1, "🔥 5MA 已上彎，短線結構轉強")
+        add(1, "🔥 5MA 已上彎，短線結構轉強", "trend")
     if close < ma5 and not ma5_up:
-        add(-1, "⚠️ 短均線仍有壓力")
+        add(-1, "⚠️ 短均線仍有壓力", "trend")
     if tomorrow_turn_price > 0 and close < tomorrow_turn_price:
-        add(-1, f"⚠️ 明日 5MA 扣抵價 {tomorrow_turn_price:.2f}，短線轉強門檻仍高")
+        add(-1, f"⚠️ 明日 5MA 扣抵價 {tomorrow_turn_price:.2f}，短線轉強門檻仍高", "trend")
 
     if momentum_score >= 75:
-        add(2, f"✅ 趨勢品質佳 ({momentum_score:.0f}/100)")
+        add(2, f"✅ 趨勢品質佳 ({momentum_score:.0f}/100)", "trend")
     elif momentum_score <= 35:
-        add(-2, f"⚠️ 趨勢品質偏弱 ({momentum_score:.0f}/100)")
+        add(-2, f"⚠️ 趨勢品質偏弱 ({momentum_score:.0f}/100)", "trend")
 
     whale_vol_ratio = 0
     if volume_5d > 0:
@@ -216,25 +266,23 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
 
     if j_value >= 80:
         if not strong_trend:
-            add(-3, "⚠️ KDJ 高檔過熱")
+            add(-3, "⚠️ KDJ 高檔過熱", "overheat")
     elif j_value <= 20 and close >= ma20:
-        add(1, "✅ KDJ 低檔但仍守月線")
+        add(1, "✅ KDJ 低檔但仍守月線", "reversal")
         
     if rsi >= 75:
         if not strong_trend:
-            add(-2, "⚠️ RSI 過熱")
+            add(-2, "⚠️ RSI 過熱", "overheat")
     elif 45 <= rsi <= 65 and close >= ma20:
-        add(1, "✅ RSI 位於健康動能區")
+        add(1, "✅ RSI 位於健康動能區", "trend")
         
-    if close and bb_up and close >= bb_up * 0.98:
-        if not strong_trend:
-            add(-2, "⚠️ 接近布林上軌壓力")
+    if close and bb_up and close >= bb_up * 0.98 and not strong_trend:
+        add(-2, "⚠️ 接近布林上軌壓力", "overheat")
             
-    if bias > 7:
-        if not strong_trend:
-            add(-2, "⚠️ 正乖離過大")
+    if bias > 7 and not strong_trend:
+        add(-2, "⚠️ 正乖離過大", "overheat")
     if close and ma20 and close < ma20:
-        add(-2, "⚠️ 跌破月線支撐")
+        add(-2, "⚠️ 跌破月線支撐", "trend")
     if vix >= 25:
         add(-2, f"⚠️ VIX {vix:.1f} 偏高，系統性風險升溫")
     if confidence < 60:
@@ -244,12 +292,23 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     if signal_conflict == "高":
         add(-3, "⚠️ 多空訊號衝突高，不適合列為主清單")
     if entry_pattern in ["過熱追高型", "假突破風險型"]:
-        add(-4, f"⚠️ 型態為 {entry_pattern}，隔日追價風險高")
+        add(-4, f"⚠️ 型態為 {entry_pattern}，隔日追價風險高", "overheat")
     elif entry_pattern in ["趨勢突破型", "回測支撐型"]:
-        add(2, f"✅ 型態為 {entry_pattern}，較符合明日觀察")
+        add(2, f"✅ 型態為 {entry_pattern}，較符合明日觀察", "breakout")
     if data.get("Box_Breakout", False):
-        add(2, "✅ 近 10 日整理後突破")
-    final_score = max(5, min(99, int(50 + sc * 3)))
+        add(2, "✅ 近 10 日整理後突破", "breakout")
+
+    group_limits = {
+        "trend": 9.0,
+        "reversal": 7.0,
+        "breakout": 7.0,
+        "overheat": 7.0,
+    }
+    effective_evidence = sc + sum(
+        _combine_correlated_scores(values, limit=group_limits[group])
+        for group, values in correlated.items()
+    )
+    final_score = _calibrate_score(effective_evidence)
 
     label = decision_label(final_score)
 

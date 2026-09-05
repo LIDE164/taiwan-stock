@@ -10,14 +10,20 @@ logger = logging.getLogger(__name__)
 
 BACKTEST_LOOKBACK_DAYS = 380
 BACKTEST_HOLD_DAYS = 9
-BACKTEST_MIN_GAP_DAYS = 5
+# Keep historical signals non-overlapping by default.  A signal's holding window
+# starts on the following trading day, so the next accepted entry must not begin
+# before the configured holding window has finished.
+BACKTEST_MIN_GAP_DAYS = BACKTEST_HOLD_DAYS
 BACKTEST_SCORE_THRESHOLD = 60
 DEFAULT_BUY_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_TAX_RATE = 0.003
 DEFAULT_MIN_COMMISSION = 20.0
 DEFAULT_TRADE_SHARES = 1000
-BACKTEST_SCOPE = "純技術面逐步前推（不含歷史營收、EPS 與法人籌碼）"
+BACKTEST_SCOPE = (
+    "純技術面逐步前推（隔日進場、樣本不重疊、排除未完成交易、含交易成本；"
+    "不含歷史營收、EPS 與法人籌碼）"
+)
 
 # 產業英中文對照 (單一來源，由 scanner.py 和 test.py 共用)
 ENG_TO_TW_INDUSTRY = {
@@ -603,6 +609,12 @@ def calculate_historical_performance(
             stop_mult=stop_mult,
         )
         if result is None:
+            continue
+        # The final rows do not yet have a complete forward holding window.  Do
+        # not turn those still-open observations into artificial expiry trades;
+        # a target/stop hit inside the available partial window is already a
+        # genuinely closed trade and remains eligible.
+        if len(future_df) < hold_days and result.get("exit_reason") == "到期出場":
             continue
 
         last_buy_idx = entry_idx

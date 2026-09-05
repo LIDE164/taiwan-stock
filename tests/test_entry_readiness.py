@@ -50,8 +50,10 @@ class EntryReadinessTests(unittest.TestCase):
     def test_entry_summary_uses_real_evidence_and_prioritizes_risk(self):
         institutional = build_entry_summary(self._base(Whale_Net=1234, Whale_Net_Days=3))
         conflicted = build_entry_summary(self._base(Whale_Net=1234, Signal_Conflict="中"))
+        bearish = build_entry_summary(self._base(Whale_Net=1234, Market_Regime="空頭"))
         self.assertEqual(institutional, "進入20MA回測區｜法人3日買超1,234張")
         self.assertEqual(conflicted, "進入20MA回測區｜訊號分歧，嚴守停損")
+        self.assertEqual(bearish, "進入20MA回測區｜大盤在月季線下，降低部位")
 
     def test_price_inside_zone_with_weak_volume_waits_for_confirmation(self):
         result = build_entry_readiness(self._base(Est_Vol_Ratio=0.96))

@@ -52,6 +52,7 @@ def build_entry_summary(record: Mapping[str, Any]) -> str:
         main = "進入20MA回測區"
 
     conflict = str(record.get("Signal_Conflict") or "").strip()
+    market_regime = str(record.get("Market_Regime") or "").strip()
     rsi = _number(record.get("RSI"))
     bias = _number(record.get("BIAS"))
     whale_net = _number(record.get("Whale_Net"))
@@ -60,6 +61,8 @@ def build_entry_summary(record: Mapping[str, Any]) -> str:
 
     if conflict in {"中", "高"}:
         detail = "訊號分歧，嚴守停損"
+    elif market_regime == "空頭":
+        detail = "大盤在月季線下，降低部位"
     elif rsi is not None and rsi >= 70:
         detail = f"RSI {rsi:.0f}偏高，避免追價"
     elif bias is not None and bias >= 5:

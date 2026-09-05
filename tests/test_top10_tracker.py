@@ -43,23 +43,45 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "CLOSED_SL")
         self.assertEqual(result[0]["close_price"], 90)
 
-    def test_new_close_entry_does_not_use_earlier_intraday_extremes(self):
+    def test_new_signal_waits_for_next_session_before_entry(self):
         top10 = [{
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 130, "最低價": 70, "收盤價": 110,
             "WinRate": 54.32, "Backtest_Samples": 37,
             "Backtest_Scope": "純技術面逐步前推",
+            "Entry_Low": 105, "Entry_High": 110,
+            "Entry_Stop": 100, "Entry_Target": 120,
         }]
         positions, snapshots = update_positions_with_snapshots([], top10, {}, "2026-08-17")
-        self.assertEqual(positions[0]["status"], "OPEN")
-        self.assertEqual(positions[0]["entry_price"], 110)
-        self.assertEqual(positions[0]["highest_price"], 110)
+        self.assertEqual(positions[0]["status"], "PENDING")
+        self.assertIsNone(positions[0]["entry_price"])
+        self.assertIsNone(positions[0]["highest_price"])
+        self.assertEqual(positions[0]["signal_date"], "2026-08-17")
         self.assertEqual(positions[0]["entry_win_rate"], 54.32)
         self.assertEqual(positions[0]["entry_backtest_samples"], 37)
         self.assertEqual(positions[0]["entry_backtest_scope"], "純技術面逐步前推")
         self.assertEqual(positions[0]["entry_backtest_status"], "ok")
         self.assertEqual(snapshots[0]["entry_win_rate"], 54.32)
         self.assertEqual(snapshots[0]["entry_backtest_samples"], 37)
+        self.assertEqual(snapshots[0]["action"], "SIGNAL")
+        self.assertIsNone(snapshots[0]["pnl_pct"])
+        self.assertIsNone(snapshots[0]["highest_price"])
+        self.assertIsNone(snapshots[0]["lowest_price"])
+
+        quotes = {"2454": {"Open": 108, "High": 115, "Low": 90, "Close": 109}}
+        positions, snapshots = update_positions_with_snapshots(
+            positions, [], quotes, "2026-08-18"
+        )
+        self.assertEqual(positions[0]["status"], "OPEN")
+        self.assertEqual(positions[0]["entry_date"], "2026-08-18")
+        self.assertEqual(positions[0]["entry_price"], 108)
+        self.assertEqual(positions[0]["highest_price"], 108)
+        self.assertEqual(positions[0]["lowest_price"], 108)
+        self.assertEqual(positions[0]["shares"], 625)
+        self.assertEqual(positions[0]["planned_risk_amount"], 5000)
+        self.assertEqual(snapshots[0]["action"], "ENTRY")
+        self.assertEqual(snapshots[0]["stop_price"], 100)
+        self.assertEqual(snapshots[0]["target_price"], 120)
 
     def test_entry_backtest_snapshot_is_not_replaced_by_later_ranking(self):
         existing = [{
@@ -85,6 +107,8 @@ class Top10TrackerTests(unittest.TestCase):
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 111, "最低價": 99, "收盤價": 110,
             "WinRate": 0, "Backtest_Samples": 0,
+            "Entry_Low": 105, "Entry_High": 110,
+            "Entry_Stop": 100, "Entry_Target": 120,
         }]
         positions, snapshots = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         self.assertIsNone(positions[0]["entry_win_rate"])
@@ -131,6 +155,8 @@ class Top10TrackerTests(unittest.TestCase):
         top10 = [{
             "代號": "2454", "名稱": "聯發科", "Rank": 1, "Score": 70,
             "開盤價": 100, "最高價": 111, "最低價": 99, "收盤價": 110,
+            "Entry_Low": 105, "Entry_High": 110,
+            "Entry_Stop": 100, "Entry_Target": 120,
         }]
         first_positions, first_snapshots = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         second_positions, second_snapshots = update_positions_with_snapshots(
@@ -140,6 +166,79 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(len(second_positions), 1)
         self.assertEqual(first_positions[0]["position_id"], second_positions[0]["position_id"])
         self.assertEqual(first_snapshots, second_snapshots)
+        self.assertEqual(first_positions[0]["status"], "PENDING")
+
+    def test_next_session_without_zone_touch_expires_signal(self):
+        top10 = [{
+            "代號": "2454", "名稱": "聯發科", "Rank": 1, "Score": 70,
+            "開盤價": 100, "最高價": 103, "最低價": 99, "收盤價": 101,
+            "Entry_Low": 100, "Entry_High": 102,
+            "Entry_Stop": 95, "Entry_Target": 110,
+        }]
+        positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
+        quotes = {"2454": {"Open": 110, "High": 112, "Low": 105, "Close": 108}}
+        positions, snapshots = update_positions_with_snapshots(
+            positions, [], quotes, "2026-08-18"
+        )
+        self.assertEqual(positions[0]["status"], "EXPIRED")
+        self.assertEqual(positions[0]["expire_date"], "2026-08-18")
+        self.assertEqual(snapshots[0]["action"], "ENTRY_EXPIRED")
+        self.assertIsNone(snapshots[0]["entry_price"])
+
+    def test_strategy_levels_and_risk_sizing_are_immutable_after_fill(self):
+        top10 = [{
+            "代號": "2454", "名稱": "聯發科", "Rank": 1, "Score": 88,
+            "漲跌幅": 2.5, "產業": "半導體",
+            "開盤價": 100, "最高價": 103, "最低價": 99, "收盤價": 101,
+            "Entry_Low": 100, "Entry_High": 102,
+            "Entry_Stop": 95, "Entry_Target": 110,
+        }]
+        positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
+        fill_quote = {"2454": {"Open": 101, "High": 104, "Low": 98, "Close": 102}}
+        positions, fill_snapshots = update_positions_with_snapshots(
+            positions, [], fill_quote, "2026-08-18"
+        )
+        self.assertEqual(positions[0]["shares"], 833)
+        self.assertEqual(positions[0]["planned_risk_amount"], 4998)
+        self.assertEqual(positions[0]["signal_score"], 88)
+        self.assertEqual(positions[0]["signal_industry"], "半導體")
+        self.assertEqual(fill_snapshots[0]["action"], "ENTRY")
+        self.assertIsNotNone(fill_snapshots[0]["net_pnl_amount"])
+
+        later_ranking = [{
+            "代號": "2454", "名稱": "聯發科", "Rank": 9, "Score": 61,
+            "開盤價": 101, "最高價": 105, "最低價": 94, "收盤價": 96,
+            "Entry_Low": 90, "Entry_High": 92,
+            "Entry_Stop": 80, "Entry_Target": 130,
+        }]
+        positions, snapshots = update_positions_with_snapshots(
+            positions, later_ranking, {}, "2026-08-19"
+        )
+        self.assertEqual(positions[0]["status"], "CLOSED_SL")
+        self.assertEqual(positions[0]["close_price"], 95)
+        self.assertEqual(snapshots[0]["stop_price"], 95)
+        self.assertEqual(snapshots[0]["target_price"], 110)
+        self.assertEqual(snapshots[0]["signal_score"], 88)
+        self.assertLess(snapshots[0]["net_pnl_amount"], -4998)
+
+    def test_daily_snapshot_records_market_and_excess_return_without_claiming_cause(self):
+        existing = [{
+            "ticker": "2330", "name": "台積電", "entry_date": "2026-08-14",
+            "entry_price": 100, "status": "OPEN", "highest_price": 102,
+            "lowest_price": 98, "current_price": 100, "pnl_pct": 0,
+        }]
+        quotes = {"2330": {"Open": 98.5, "High": 100, "Low": 96, "Close": 97}}
+        benchmark = {
+            "symbol": "TAIEX", "close": 22000, "daily_return_pct": -1.2,
+            "regime": "空頭",
+        }
+        _, snapshots = update_positions_with_snapshots(
+            existing, [], quotes, "2026-08-17", benchmark=benchmark
+        )
+        self.assertEqual(snapshots[0]["benchmark_return_pct"], -1.2)
+        self.assertEqual(snapshots[0]["excess_return_pct"], -1.8)
+        self.assertEqual(snapshots[0]["market_regime"], "空頭")
+        self.assertIn("大盤", snapshots[0]["decline_diagnostic"])
 
     def test_missing_quote_creates_explicit_daily_record_without_settlement(self):
         existing = [{
@@ -152,6 +251,8 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["action"], "DATA_MISSING")
         self.assertEqual(snapshots[0]["data_status"], "missing")
         self.assertIsNone(snapshots[0]["close"])
+        self.assertIsNone(snapshots[0]["daily_return_pct"])
+        self.assertIsNone(snapshots[0]["daily_price_change"])
 
     def test_partial_quote_does_not_fill_ohl_with_close(self):
         existing = [{
@@ -195,6 +296,14 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(rows[0]["Confidence"], 88)
         self.assertEqual(rows[0]["最高價"], 1020)
         self.assertEqual(rows[0]["Reasons"], ["量價齊揚"])
+
+    def test_non_finite_history_values_are_stored_as_missing_not_fake_numbers(self):
+        rows = build_top10_history_rows([{
+            "代號": "2330", "名稱": "台積電", "Score": 70,
+            "Confidence": float("nan"), "Validation_WinRate": float("inf"),
+        }])
+        self.assertIsNone(rows[0]["Confidence"])
+        self.assertIsNone(rows[0]["Validation_WinRate"])
 
     def test_legacy_position_backfills_only_from_its_entry_day_ranking(self):
         positions = [{

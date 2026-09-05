@@ -2367,7 +2367,7 @@ elif st.session_state.page == "top10_tracking":
     if st.button("回雷達總機", width="stretch"):
         st.session_state.page = "home"; st.rerun()
     
-    st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>每日以 OHLC 追蹤前 10 名，預設 <b>+15% 停利</b>、<b>-10% 停損</b>。若同日同時觸及兩者，因日 K 無法判定先後，系統保守先算停損；收盤新進場不套用當日較早的高低價。</p></div>", unsafe_allow_html=True)
+    st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>新訊號不再用分析日收盤假設成交：只在<b>下一交易日</b>的真實 OHLC 觸及凍結進場區時成交，並沿用入榜時的策略停損與目標；未觸及即失效。舊版既有持倉仍沿用 +15%／-10%，同日雙觸及時保守先計停損。</p></div>", unsafe_allow_html=True)
     
     tracker_data = load_cloud_data("market_data", "top10_tracker", {})
     positions = tracker_data.get("positions", []) if isinstance(tracker_data, dict) else []
@@ -2398,6 +2398,11 @@ elif st.session_state.page == "top10_tracking":
         merged = dict(record)
         for key in (
             "entry_win_rate", "entry_backtest_samples", "entry_backtest_scope", "entry_backtest_status",
+            "signal_date", "execution_schema", "entry_plan_type", "planned_entry_low",
+            "planned_entry_high", "stop_price", "target_price", "signal_score",
+            "signal_rank", "signal_change_pct", "signal_industry", "signal_rsi",
+            "signal_bias", "signal_volume_ratio", "signal_conflict", "signal_pattern",
+            "signal_confidence",
         ):
             if merged.get(key) is None and position.get(key) is not None:
                 merged[key] = position.get(key)
@@ -2439,19 +2444,30 @@ elif st.session_state.page == "top10_tracking":
             st.warning("此交易日沒有可顯示的追蹤明細。")
         else:
             action_labels = {
-                "ENTRY": "收盤進場", "HOLD": "持有", "TAKE_PROFIT": "停利",
-                "STOP_LOSS": "停損", "DATA_MISSING": "行情缺漏", "EXIT": "已出場",
+                "SIGNAL": "待次日觸價", "ENTRY": "區間成交", "ENTRY_EXPIRED": "進場訊號失效",
+                "HOLD": "持有", "TAKE_PROFIT": "停利", "STOP_LOSS": "停損",
+                "DATA_MISSING": "行情缺漏", "EXIT": "已出場",
             }
-            status_labels = {"OPEN": "持有中", "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場"}
+            status_labels = {
+                "PENDING": "等待次日觸價", "OPEN": "持有中", "EXPIRED": "進場訊號失效",
+                "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場",
+            }
             display_rows = []
             for row in daily_records:
                 row = with_position_entry_backtest(row)
                 entry_win_rate_text, entry_sample_text, _ = entry_backtest_text(row)
                 display_rows.append({
                     "日期": row.get("date", selected_tracking_date),
+                    "訊號日": row.get("signal_date"),
                     "排名": row.get("top10_rank"),
                     "代號": normalize_ticker(row.get("ticker", "")),
                     "名稱": str(row.get("name", "")),
+                    "入榜分數": row.get("signal_score"),
+                    "入榜日漲幅%": row.get("signal_change_pct"),
+                    "入榜RSI": row.get("signal_rsi"),
+                    "入榜乖離%": row.get("signal_bias"),
+                    "入榜量比": row.get("signal_volume_ratio"),
+                    "訊號衝突": row.get("signal_conflict") or "--",
                     "動作": action_labels.get(str(row.get("action", "")), str(row.get("action", ""))),
                     "狀態": status_labels.get(str(row.get("status", "")), str(row.get("status", ""))),
                     "開盤": row.get("open"),
@@ -2459,6 +2475,13 @@ elif st.session_state.page == "top10_tracking":
                     "最低": row.get("low"),
                     "收盤": row.get("close"),
                     "追蹤價": row.get("mark_price"),
+                    "凍結進場區": (
+                        f"{row.get('planned_entry_low')}–{row.get('planned_entry_high')}"
+                        if row.get("planned_entry_low") is not None and row.get("planned_entry_high") is not None
+                        else "--"
+                    ),
+                    "策略停損": row.get("stop_price"),
+                    "策略目標": row.get("target_price"),
                     "入榜技術勝率": entry_win_rate_text,
                     "入榜樣本/可信度": entry_sample_text,
                     "單日報酬%": row.get("daily_return_pct"),
@@ -2467,6 +2490,12 @@ elif st.session_state.page == "top10_tracking":
                     "期間最低": row.get("lowest_price"),
                     "MFE%": row.get("mfe_pct"),
                     "MAE%": row.get("mae_pct"),
+                    "跌幅觀察（非因果）": row.get("decline_diagnostic") or "--",
+                    "估計淨損益": row.get("net_pnl_amount"),
+                    "估計交易成本": row.get("estimated_transaction_cost"),
+                    "大盤報酬%": row.get("benchmark_return_pct"),
+                    "超額報酬%": row.get("excess_return_pct"),
+                    "入榜產業": row.get("signal_industry") or "--",
                     "榜單狀態": "完整" if row.get("ranking_status", ranking_status) == "ok" else "原榜單缺失",
                     "資料狀態": "完整" if row.get("data_status") == "ok" else "缺漏",
                 })
@@ -2478,12 +2507,56 @@ elif st.session_state.page == "top10_tracking":
             if missing_count:
                 st.warning(f"本日有 {missing_count} 筆行情不完整；系統保留前一追蹤價，不會用錯誤價格結算。")
     
+    pending_pos = [p for p in positions if p.get("status") == "PENDING"]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
-    closed_pos = [p for p in positions if p.get("status") != "OPEN"]
+    expired_pos = [p for p in positions if p.get("status") == "EXPIRED"]
+    closed_pos = [p for p in positions if str(p.get("status") or "").startswith("CLOSED_")]
 
     def tracking_number_text(value, digits=1, suffix=""):
         number = optional_num(value)
         return "--" if number is None else f"{number:.{digits}f}{suffix}"
+
+    def tracking_money_text(value):
+        number = optional_num(value)
+        return "--" if number is None else f"NT${number:+,.0f}"
+
+    def tracking_shares_text(value):
+        number = optional_num(value)
+        return "--" if number is None or number <= 0 else f"{int(number):,}"
+
+    st.subheader("🟡 等待次一交易日觸價")
+    st.caption("訊號只保留到下一個有完整 OHLC 的交易日；價格觸及凍結進場區才建立持倉，否則列為失效。")
+    if not pending_pos:
+        st.info("目前沒有等待成交的進場訊號。")
+    else:
+        for p in sorted(pending_pos, key=lambda x: (str(x.get("signal_date", "")), int(safe_num(x.get("signal_rank"), 999)))):
+            ticker_text = escape_html(normalize_ticker(p.get("ticker", "")))
+            name_text = escape_html(p.get("name", ""))
+            zone_text = f"{tracking_number_text(p.get('planned_entry_low'))}–{tracking_number_text(p.get('planned_entry_high'))}"
+            st.markdown(
+                f"<div style='background-color:#172033; padding:14px; border-radius:8px; margin-bottom:10px; border-left:4px solid #facc15;'>"
+                f"<b style='color:#f8fafc;'>{ticker_text} {name_text}</b>"
+                f"<span style='color:#94a3b8; margin-left:10px;'>訊號日 {escape_html(p.get('signal_date', ''))}</span>"
+                f"<div style='color:#cbd5e1; margin-top:6px;'>凍結進場區 <b>{zone_text}</b> ｜ 停損 <b>{tracking_number_text(p.get('stop_price'))}</b> ｜ 目標 <b>{tracking_number_text(p.get('target_price'))}</b></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.subheader("⚪ 未成交／已失效訊號")
+    if not expired_pos:
+        st.info("目前沒有失效的進場訊號。")
+    else:
+        for p in sorted(expired_pos, key=lambda x: str(x.get("expire_date", "")), reverse=True):
+            ticker_text = escape_html(normalize_ticker(p.get("ticker", "")))
+            name_text = escape_html(p.get("name", ""))
+            st.markdown(
+                f"<div style='background-color:#0f172a; padding:12px; border-radius:8px; margin-bottom:8px; border:1px solid #334155;'>"
+                f"<b style='color:#e2e8f0;'>{ticker_text} {name_text}</b>"
+                f"<span style='color:#94a3b8; margin-left:10px;'>{escape_html(p.get('signal_date', ''))} 訊號 → {escape_html(p.get('expire_date', ''))} 失效</span>"
+                f"<div style='color:#94a3b8; margin-top:5px;'>{escape_html(p.get('expire_reason', '下一交易日未成交'))}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
     
     st.subheader("🟢 目前持有中 (未實現損益)")
     if not open_pos:
@@ -2496,6 +2569,9 @@ elif st.session_state.page == "top10_tracking":
             name_text = escape_html(p.get('name', ''))
             color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
             pnl_text = "--" if pnl is None else f"{'+' if pnl > 0 else ''}{pnl:.1f}%"
+            net_pnl_text = tracking_money_text(p.get("net_pnl_amount"))
+            cost_text = tracking_money_text(p.get("estimated_transaction_cost"))
+            diagnostic_text = escape_html(p.get("last_snapshot", {}).get("decline_diagnostic", "") or "--")
             st.markdown(f"<div style='background-color:#1e293b; padding:15px; border-radius:8px; margin-bottom:10px; border-left:4px solid {color};'>"
                         f"<div style='display:flex; justify-content:space-between;'>"
                         f"<div><span style='font-size:1.1rem; font-weight:bold; color:#f8fafc;'>{ticker_text} {name_text}</span>"
@@ -2504,8 +2580,11 @@ elif st.session_state.page == "top10_tracking":
                         f"</div>"
                         f"<div style='color:#cbd5e1; font-size:0.85rem; margin-top:5px;'>"
                         f"進場價: <b>{tracking_number_text(p.get('entry_price'))}</b> ｜ 目前價: <b>{tracking_number_text(p.get('current_price'))}</b> ｜ 期間最高: <b>{tracking_number_text(p.get('highest_price'))}</b>"
+                        f"</div><div style='color:#cbd5e1; font-size:0.82rem; margin-top:5px;'>"
+                        f"{tracking_shares_text(p.get('shares'))} 股 ｜ 停損 <b>{tracking_number_text(p.get('stop_price'))}</b> ｜ 目標 <b>{tracking_number_text(p.get('target_price'))}</b> ｜ 估計淨損益 <b>{net_pnl_text}</b>（成本 {cost_text}）"
                         f"</div><div style='color:#94a3b8; font-size:0.8rem; margin-top:5px;'>"
                         f"入榜技術勝率: <b>{escape_html(entry_win_rate_text)}</b> ｜ 樣本/可信度: <b style='color:{entry_cred_color};'>{escape_html(entry_sample_text)}</b>"
+                        f" ｜ 跌幅觀察（非因果）: <b>{diagnostic_text}</b>"
                         f"</div></div>", unsafe_allow_html=True)
                         
     st.subheader("🏁 歷史結算 (已出場)")
@@ -2533,6 +2612,9 @@ elif st.session_state.page == "top10_tracking":
             name_text = escape_html(p.get('name', ''))
             color = "#94a3b8" if pnl is None else ("#ef4444" if pnl >= 0 else "#22c55e")
             pnl_text = "--" if pnl is None else f"{'+' if pnl > 0 else ''}{pnl:.1f}%"
+            net_pnl_text = tracking_money_text(p.get("net_pnl_amount"))
+            cost_text = tracking_money_text(p.get("estimated_transaction_cost"))
+            diagnostic_text = escape_html(p.get("last_snapshot", {}).get("decline_diagnostic", "") or "--")
             status_text = "🎯 停利出場" if p.get("status") == "CLOSED_TP" else "🛑 停損出場"
             st.markdown(f"<div style='background-color:#0f172a; padding:15px; border-radius:8px; margin-bottom:10px; border:1px solid #1e293b; opacity:0.8;'>"
                         f"<div style='display:flex; justify-content:space-between;'>"
@@ -2542,8 +2624,10 @@ elif st.session_state.page == "top10_tracking":
                         f"</div>"
                         f"<div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
                         f"{escape_html(p.get('entry_date', ''))} 進場 ({tracking_number_text(p.get('entry_price'))}) ➔ {escape_html(p.get('close_date', ''))} 出場 ({tracking_number_text(p.get('close_price'))})"
+                        f" ｜ {tracking_shares_text(p.get('shares'))} 股 ｜ 估計淨損益 {net_pnl_text}（成本 {cost_text}）"
                         f"</div><div style='color:#64748b; font-size:0.8rem; margin-top:5px;'>"
                         f"入榜技術勝率: <b>{escape_html(entry_win_rate_text)}</b> ｜ 樣本/可信度: <b style='color:{entry_cred_color};'>{escape_html(entry_sample_text)}</b>"
+                        f" ｜ 跌幅觀察（非因果）: <b>{diagnostic_text}</b>"
                         f"</div></div>", unsafe_allow_html=True)
 
 elif st.session_state.page == "analysis":
