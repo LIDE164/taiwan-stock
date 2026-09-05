@@ -93,6 +93,7 @@ class Top10TelegramTests(unittest.TestCase):
         rows = build_executable_display_rows([waiting, ready])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["entry_zone_text"], "1200–1235")
+        self.assertEqual(rows[0]["close_value"], 1234)
         self.assertNotIn("source_rank_text", rows[0])
         self.assertNotIn("rrr_text", rows[0])
         self.assertEqual(rows[0]["suggested_shares"], 78)

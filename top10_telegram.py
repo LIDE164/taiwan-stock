@@ -180,6 +180,7 @@ def build_executable_display_rows(
             "ticker": _clean_text(record.get("代號")),
             "name": _clean_text(record.get("名稱"), _clean_text(record.get("代號"))),
             "score_text": "--" if score is None else f"{score:g} 分",
+            "close_value": close,
             "close_change_text": (
                 "--" if close is None else f"{close:g}"
             ) + (
@@ -446,6 +447,7 @@ def _draw_mini_candles(
     draw: ImageDraw.ImageDraw,
     bars: Sequence[Mapping[str, float]],
     box: tuple[int, int, int, int],
+    current_price: float | None = None,
 ) -> None:
     """Draw a truthful compact OHLC chart, or an explicit missing-data state."""
     left, top, right, bottom = box
@@ -468,6 +470,15 @@ def _draw_mini_candles(
     low_level = f"{low_price:.2f}".rstrip("0").rstrip(".")
     period_label = "近30日 K" if len(bars) >= 30 else f"近{len(bars)}/30日 K"
     draw.text((left + 9, top + 4), period_label, font=_font(10, True), fill="#64748B")
+    if current_price is not None and math.isfinite(current_price) and current_price > 0:
+        current_level = f"{current_price:.2f}".rstrip("0").rstrip(".")
+        draw.text(
+            ((left + right) // 2, top + 3),
+            f"現價 {current_level}",
+            font=_font(10, True),
+            fill="#60A5FA",
+            anchor="ma",
+        )
     draw.text((right - 9, top + 3), f"最高 {high_level}", font=_font(10, True), fill="#F87171", anchor="ra")
     draw.text((right - 9, bottom - 15), f"最低 {low_level}", font=_font(10, True), fill="#4ADE80", anchor="ra")
 
@@ -482,6 +493,16 @@ def _draw_mini_candles(
     def y(price: float) -> int:
         ratio = (high_price - price) / (high_price - low_price)
         return int(round(chart_top + ratio * (chart_bottom - chart_top)))
+
+    current_y: int | None = None
+    if current_price is not None and math.isfinite(current_price) and current_price > 0:
+        current_y = max(chart_top, min(y(current_price), chart_bottom))
+        for segment_left in range(chart_left, chart_right, 10):
+            draw.line(
+                (segment_left, current_y, min(segment_left + 5, chart_right), current_y),
+                fill="#2563EB",
+                width=1,
+            )
 
     slot = (chart_right - chart_left) / max(len(bars), 1)
     body_half_width = max(1, min(4, int(slot * 0.28)))
@@ -625,7 +646,12 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
             draw.text((420, top + 16), sample_text, font=_font(15, True), fill=row["credibility_color"])
             analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
             draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
-            _draw_mini_candles(draw, row["mini_kbars"], (600, top + 8, 1018, top + 88))
+            _draw_mini_candles(
+                draw,
+                row["mini_kbars"],
+                (600, top + 8, 1018, top + 88),
+                row["close_value"],
+            )
 
             change = row["change_value"]
             current_color = "#E2E8F0" if change is None else ("#F87171" if change >= 0 else "#4ADE80")
