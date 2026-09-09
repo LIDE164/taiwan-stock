@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -20,9 +22,15 @@ from firebase_admin import firestore
 
 import scanner
 from app_security import normalize_ticker, safe_iso_date
-from top10_tracker import update_positions_with_snapshots
+from chunked_firestore import (
+    STORAGE_SCHEMA_VERSION,
+    build_chunk_documents,
+    manifest_chunk_ids,
+)
+from top10_tracker import build_cumulative_performance_summary, update_positions_with_snapshots
 
 TPE = timezone(timedelta(hours=8))
+TRACKER_CHUNK_COLLECTION = "top10_tracker_chunks"
 
 
 def _document_data(snapshot: Any) -> Any:
@@ -138,7 +146,7 @@ def build_backfill(
     daily_payloads: dict[str, dict[str, Any]] = {}
     missing_ranking_dates: list[str] = []
 
-    for date_text in trading_dates:
+    for date_index, date_text in enumerate(trading_dates):
         top10_rows = rankings.get(date_text, [])
         if top10_rows:
             top10_rows = enrich_ranking_rows(top10_rows, date_text, price_frames)
@@ -154,13 +162,13 @@ def build_backfill(
         else:
             ranking_status = "partial"
 
-        open_tickers = {
+        active_tickers = {
             normalize_ticker(position.get("ticker"))
             for position in positions
-            if position.get("status") == "OPEN"
+            if position.get("status") in {"OPEN", "PENDING"}
         }
         quotes = {}
-        for ticker in open_tickers:
+        for ticker in active_tickers:
             quote = quote_for_date(price_frames.get(ticker), date_text)
             if quote is not None:
                 quotes[ticker] = quote
@@ -170,6 +178,12 @@ def build_backfill(
             top10_rows,
             quotes,
             date_text,
+            benchmark={
+                "date": date_text,
+                "previous_trading_date": (
+                    trading_dates[date_index - 1] if date_index > 0 else None
+                ),
+            },
         )
         action_counts: dict[str, int] = {}
         for snapshot in snapshots:
@@ -187,15 +201,21 @@ def build_backfill(
             missing_reason = "原始榜單價格無法與當日市場行情核對，未建立新進場"
         elif ranking_status == "partial":
             missing_reason = f"僅 {complete_rankings}/{len(top10_rows)} 筆榜單價格可與當日行情核對"
+        cumulative_performance = build_cumulative_performance_summary(positions, date_text)
         daily_payloads[date_text] = {
             "date": date_text,
             "records": snapshots,
             "ranking_status": ranking_status,
             "data_status": "ok" if ranking_status == "ok" else "partial",
             "missing_reason": missing_reason,
+            "cumulative_performance": cumulative_performance,
             "summary": {
                 "tracked_count": len(snapshots),
                 "open_count": len([position for position in positions if position.get("status") == "OPEN"]),
+                "unresolved_count": len([
+                    position for position in positions
+                    if position.get("status") == "UNRESOLVED"
+                ]),
                 "actions": action_counts,
             },
         }
@@ -213,6 +233,7 @@ def build_backfill(
         "partial_ranking_dates": partial_ranking_dates,
         "unverified_ranking_dates": unverified_ranking_dates,
         "backfill_note": "只使用既存歷史榜單與實際 OHLC；缺失榜單日未事後重算排名",
+        "cumulative_performance": daily_payloads[latest_date]["cumulative_performance"],
     }
     return tracker_payload, daily_payloads, missing_ranking_dates
 
@@ -232,6 +253,49 @@ def write_backfill(
         "data": existing,
         "created_at": firestore.SERVER_TIMESTAMP,
         "reason": "before_truthful_daily_backfill",
+    })
+
+    existing_payload = existing.get("data", existing) if isinstance(existing, dict) else {}
+    try:
+        existing_schema = int(existing_payload.get("storage_schema") or 1)
+    except (TypeError, ValueError):
+        existing_schema = 1
+    old_chunk_ids = (
+        manifest_chunk_ids(existing_payload, "position_chunk_ids")
+        if existing_schema >= STORAGE_SCHEMA_VERSION
+        else []
+    )
+    old_chunk_collection = str(
+        existing_payload.get("position_chunk_collection") or TRACKER_CHUNK_COLLECTION
+    )
+
+    positions = tracker_payload.get("positions", [])
+    if not isinstance(positions, list):
+        raise TypeError("tracker positions must be a list")
+    tracker_manifest = {
+        key: value
+        for key, value in tracker_payload.items()
+        if key != "positions"
+    }
+    tracker_version = str(tracker_manifest.get("latest_date") or backup_id)
+    position_documents = build_chunk_documents(
+        positions,
+        prefix="top10_tracker",
+        version=tracker_version,
+    )
+    tracker_manifest.update({
+        "storage_schema": STORAGE_SCHEMA_VERSION,
+        "position_chunk_collection": TRACKER_CHUNK_COLLECTION,
+        "position_chunk_ids": [document_id for document_id, _ in position_documents],
+        "record_count": len(positions),
+        "content_hash": hashlib.sha256(
+            json.dumps(
+                positions,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
     })
 
     batch = db.batch()
@@ -286,13 +350,35 @@ def write_backfill(
         writes += 1
         commit_if_needed()
 
-    batch.set(
-        tracker_ref,
-        {"data": tracker_payload, "update_time": firestore.SERVER_TIMESTAMP},
-    )
-    writes += 1
     if writes:
         batch.commit()
+
+    tracker_batch = db.batch()
+    tracker_chunks = db.collection(TRACKER_CHUNK_COLLECTION)
+    for document_id, payload in position_documents:
+        tracker_batch.set(tracker_chunks.document(document_id), payload)
+    tracker_batch.set(
+        tracker_ref,
+        {"data": tracker_manifest, "update_time": firestore.SERVER_TIMESTAMP},
+    )
+    tracker_batch.commit()
+
+    stale_chunk_ids = sorted(
+        set(old_chunk_ids) - set(tracker_manifest["position_chunk_ids"])
+    )
+    if stale_chunk_ids:
+        stale_chunks = db.collection(old_chunk_collection)
+        cleanup_batch = db.batch()
+        cleanup_writes = 0
+        for document_id in stale_chunk_ids:
+            cleanup_batch.delete(stale_chunks.document(document_id))
+            cleanup_writes += 1
+            if cleanup_writes >= 400:
+                cleanup_batch.commit()
+                cleanup_batch = db.batch()
+                cleanup_writes = 0
+        if cleanup_writes:
+            cleanup_batch.commit()
 
 
 def main() -> int:

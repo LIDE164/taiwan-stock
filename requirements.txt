@@ -8,3 +8,5 @@ pillow>=12,<13
 streamlit-autorefresh>=1.0,<2
 firebase-admin>=6.5,<8
 shioaji>=1.2,<2
+starlette>=0.47,<2
+uvicorn>=0.30,<1

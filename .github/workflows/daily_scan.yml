@@ -23,9 +23,13 @@ concurrency:
   group: taiwan-stock-daily-scan
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: 取得程式碼
         uses: actions/checkout@v4

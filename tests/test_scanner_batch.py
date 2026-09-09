@@ -8,11 +8,34 @@ import scanner
 
 
 class BatchMarketDataTests(unittest.TestCase):
+    def test_stock_frame_must_match_the_confirmed_scan_date(self):
+        frame = pd.DataFrame(
+            {"Close": [100.0, 101.0]},
+            index=pd.to_datetime(["2026-09-03", "2026-09-04"]),
+        )
+        self.assertTrue(scanner.stock_frame_matches_scan_date(frame, "2026-09-04"))
+        self.assertFalse(scanner.stock_frame_matches_scan_date(frame, "2026-09-07"))
+        self.assertFalse(scanner.stock_frame_matches_scan_date(frame.tail(1), "2026-09-04"))
+
+    def test_saturated_score_tie_prefers_validation_over_same_day_jump(self):
+        calmer = {
+            "Score": 99, "Validation_WinRate": 55, "Validation_Samples": 30,
+            "Confidence": 90, "BIAS": 2, "漲跌幅": 1,
+        }
+        chased = {
+            "Score": 99, "Validation_WinRate": 45, "Validation_Samples": 30,
+            "Confidence": 90, "BIAS": 8, "漲跌幅": 9,
+        }
+        ranked = sorted([chased, calmer], key=scanner.scan_ranking_key, reverse=True)
+        self.assertIs(ranked[0], calmer)
+
     def test_benchmark_context_uses_same_day_taiex_and_regime(self):
         dates = pd.date_range("2026-06-01", periods=60, freq="B")
         frame = pd.DataFrame({"Close": [200.0] * 58 + [202.0, 198.0]}, index=dates)
         result = scanner.build_benchmark_context(frame)
         self.assertEqual(result["symbol"], "TAIEX")
+        self.assertEqual(result["date"], dates[-1].date().isoformat())
+        self.assertEqual(result["previous_trading_date"], dates[-2].date().isoformat())
         self.assertEqual(result["daily_return_pct"], -1.98)
         self.assertEqual(result["regime"], "空頭")
         self.assertEqual(scanner.build_benchmark_context(frame.tail(1)), {})
@@ -118,6 +141,8 @@ class BatchMarketDataTests(unittest.TestCase):
             ranked = scanner.fetch_top_stocks(2)
         self.assertEqual(ranked, ["6488", "2330"])
         self.assertEqual(scanner.MARKET_SYMBOL_CACHE["6488"], "6488.TWO")
+        self.assertEqual(scanner.INDUSTRY_CACHE["6488"], "環球晶")
+        self.assertEqual(scanner.INDUSTRY_CACHE["2330"], "台積電")
 
     def test_scan_pool_keeps_exact_limit_and_core_names(self):
         ranked = [f"{1000 + index}" for index in range(10)]

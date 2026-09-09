@@ -214,7 +214,9 @@ smmap==5.0.3
 soupsieve==2.9.2
     # via beautifulsoup4
 starlette==1.6.0
-    # via streamlit
+    # via
+    #   -r requirements.txt
+    #   streamlit
 streamlit==1.58.0
     # via
     #   -r requirements.txt
@@ -236,7 +238,9 @@ tzdata==2026.3
 urllib3==2.7.0
     # via requests
 uvicorn==0.52.3
-    # via streamlit
+    # via
+    #   -r requirements.txt
+    #   streamlit
 watchdog==6.0.0
     # via streamlit
 websockets==17.0.1

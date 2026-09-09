@@ -148,6 +148,16 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertNotIn("token", get.call_args.kwargs["params"])
 
+    @patch("data_providers._fetch_official_institutional_rows")
+    @patch("data_providers._finmind_rows")
+    def test_missing_finmind_token_skips_the_redundant_finmind_request(self, finmind, official):
+        official.return_value = ([{"date": "2026-08-19", "total": 10}], "partial")
+        rows, status = fetch_institutional_rows("2330", "")
+        finmind.assert_not_called()
+        official.assert_called_once()
+        self.assertEqual(rows[0]["total"], 10)
+        self.assertEqual(status, "partial")
+
     def test_official_revenue_keeps_period_source_and_real_percentages(self):
         result = _parse_official_revenue_row({
             "資料年月": "11507",

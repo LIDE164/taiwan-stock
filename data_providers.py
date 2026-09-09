@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import concurrent.futures
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
 
 from app_security import normalize_ticker
 from market_http import http_get
-
 
 FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_REVENUE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
@@ -23,12 +22,31 @@ TPEX_INSTITUTIONAL_URL = (
     "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
 )
 logger = logging.getLogger(__name__)
+TPE = timezone(timedelta(hours=8))
 
 _CACHE_TTL_SECONDS = 6 * 60 * 60
+_CACHE_MAX_ENTRIES = 128
 _CACHE_LOCK = threading.RLock()
 _JSON_CACHE: dict[str, tuple[float, Any]] = {}
 _KEY_LOCKS: dict[str, threading.Lock] = {}
 _MARKET_INDEX: dict[str, str] = {}
+
+
+def _prune_json_cache(now: float) -> None:
+    expired = [key for key, (saved_at, _) in _JSON_CACHE.items() if now - saved_at > _CACHE_TTL_SECONDS]
+    for key in expired:
+        _JSON_CACHE.pop(key, None)
+        key_lock = _KEY_LOCKS.get(key)
+        if key_lock is None or not key_lock.locked():
+            _KEY_LOCKS.pop(key, None)
+    overflow = len(_JSON_CACHE) - _CACHE_MAX_ENTRIES
+    if overflow > 0:
+        oldest = sorted(_JSON_CACHE, key=lambda key: _JSON_CACHE[key][0])[:overflow]
+        for key in oldest:
+            _JSON_CACHE.pop(key, None)
+            key_lock = _KEY_LOCKS.get(key)
+            if key_lock is None or not key_lock.locked():
+                _KEY_LOCKS.pop(key, None)
 
 
 def clear_provider_cache() -> None:
@@ -56,7 +74,9 @@ def _cached_json(key: str, url: str, *, params: dict[str, Any] | None = None) ->
         response.raise_for_status()
         payload = response.json()
         with _CACHE_LOCK:
-            _JSON_CACHE[key] = (time.monotonic(), payload)
+            saved_at = time.monotonic()
+            _JSON_CACHE[key] = (saved_at, payload)
+            _prune_json_cache(saved_at)
         return payload
 
 
@@ -96,7 +116,7 @@ def _official_revenue_rows(market: str) -> list[dict[str, Any]]:
     url = TWSE_REVENUE_URL if market == "listed" else TPEX_REVENUE_URL
     payload = _cached_json(f"revenue:{market}", url)
     if not isinstance(payload, list):
-        raise ValueError("official revenue payload is not a list")
+        raise TypeError("official revenue payload is not a list")
     rows = [row for row in payload if isinstance(row, dict)]
     with _CACHE_LOCK:
         for row in rows:
@@ -167,7 +187,7 @@ def _finmind_rows(dataset: str, ticker: Any, start_date: str, token: str) -> tup
 
 
 def fetch_revenue_growth(ticker: Any, token: str, *, now: datetime | None = None) -> dict[str, Any]:
-    now = now or datetime.now()
+    now = now or datetime.now(TPE)
     # One official bulk request serves the entire tokenless scanner universe and
     # avoids consuming one FinMind public-quota request per stock.
     if not token:
@@ -363,8 +383,11 @@ def _fetch_official_institutional_rows(
 
 
 def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = None) -> tuple[list[dict[str, Any]], str]:
-    now = now or datetime.now()
-    finmind_status = "missing" if not token else "error"
+    now = now or datetime.now(TPE)
+    if not str(token or "").strip():
+        return _fetch_official_institutional_rows(ticker, now=now)
+
+    finmind_status = "error"
     try:
         rows, status = _finmind_rows(
             "TaiwanStockInstitutionalInvestorsBuySell",
@@ -419,4 +442,4 @@ def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = 
     official_rows, official_status = _fetch_official_institutional_rows(ticker, now=now)
     if official_rows:
         return official_rows, official_status
-    return [], finmind_status if token else official_status
+    return [], finmind_status

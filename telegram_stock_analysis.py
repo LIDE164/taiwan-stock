@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import re
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 import scanner
 from analysis_core import build_score_input
 from app_security import normalize_ticker
+from chunked_firestore import load_chunked_items
 from entry_readiness import build_entry_readiness
 from scan_state import build_scan_quality, latest_trading_date
 from scoring import get_decision_score
@@ -30,6 +31,8 @@ from top10_telegram import (
     prediction_title,
 )
 
+TPE = timezone(timedelta(hours=8))
+
 
 _DIGIT_TICKER_RE = re.compile(r"^\d{4,6}$")
 
@@ -43,7 +46,13 @@ def _scan_rows() -> tuple[list[dict[str, Any]], str]:
         return [], ""
     snapshot = scanner.db.collection("market_data").document("daily_scan").get()
     payload = snapshot.to_dict() or {} if snapshot.exists else {}
-    rows = [dict(row) for row in payload.get("data", []) if isinstance(row, Mapping)]
+    rows = load_chunked_items(
+        scanner.db,
+        payload,
+        collection_name="daily_scan_chunks",
+        ids_key="chunk_ids",
+        legacy_key="data",
+    )
     return rows, str(payload.get("scan_date") or "")
 
 
@@ -118,9 +127,15 @@ def _market_snapshot() -> dict[str, float]:
         return {}
 
 
-def analyze_stock_fresh(ticker: str, name: str = "") -> dict[str, Any]:
+def analyze_stock_fresh(
+    ticker: str,
+    name: str = "",
+    *,
+    frame: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     """Build a post-close record for one requested stock without inventing missing providers."""
-    frame = scanner.get_stock_data(ticker)
+    if frame is None:
+        frame = scanner.get_stock_data(ticker)
     if frame is None or len(frame) < 60:
         raise StockQueryError(f"{ticker} 目前無法取得足夠行情資料，請稍後再試。")
     latest = frame.iloc[-1]
@@ -218,6 +233,37 @@ def analyze_stock_fresh(ticker: str, name: str = "") -> dict[str, Any]:
     return result
 
 
+def _technical_snapshot_from_frame(frame: pd.DataFrame) -> dict[str, float]:
+    """Extract only finite technical fields from one date-consistent frame."""
+    if frame is None or frame.empty:
+        return {}
+    latest = frame.iloc[-1]
+    fields = (
+        ("5MA", "5MA", 2),
+        ("20MA", "20MA", 2),
+        ("60MA", "60MA", 2),
+        ("MACD柱", "MACD_Hist", 3),
+        ("RSI", "RSI", 1),
+        ("ADX", "ADX", 1),
+        ("BIAS", "BIAS_20", 2),
+        ("ATR", "ATR", 2),
+    )
+    snapshot: dict[str, float] = {}
+    for output_name, frame_name, decimals in fields:
+        number = _number(latest.get(frame_name))
+        if number is not None:
+            snapshot[output_name] = round(number, decimals)
+    return snapshot
+
+
+def _normalized_data_date(value: Any) -> str:
+    text = str(value or "").strip()[:10]
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
 def get_stock_analysis(text: Any) -> dict[str, Any]:
     rows, scan_date = _scan_rows()
     names = _name_map(rows)
@@ -227,21 +273,22 @@ def get_stock_analysis(text: Any) -> dict[str, Any]:
         cached["名稱"] = name or cached.get("名稱") or ticker
         cached["Data_Date"] = cached.get("Data_Date") or scan_date
         cached["Analysis_Source"] = "最新正式掃描"
-        # The ranked scan stores only the fields needed by the list. Enrich the image from
-        # authentic OHLC history; a provider failure simply leaves the optional fields blank.
+        # A scan snapshot may be enriched only from OHLC belonging to the same
+        # market date.  Mixing today's indicators into yesterday's score,
+        # fundamentals, and entry plan would create a record that never existed.
         frame = scanner.get_stock_data(ticker)
         if frame is not None and not frame.empty:
-            latest = frame.iloc[-1]
-            cached.update({
-                "5MA": round(float(latest.get("5MA", 0)), 2),
-                "20MA": round(float(latest.get("20MA", 0)), 2),
-                "60MA": round(float(latest.get("60MA", 0)), 2),
-                "MACD柱": round(float(latest.get("MACD_Hist", 0)), 3),
-                "RSI": round(float(latest.get("RSI", 0)), 1),
-                "ADX": round(float(latest.get("ADX", 0)), 1),
-                "BIAS": round(float(latest.get("BIAS_20", 0)), 2),
-                "ATR": round(float(latest.get("ATR", 0)), 2),
-            })
+            frame_date = _normalized_data_date(latest_trading_date(frame.index))
+            cached_date = _normalized_data_date(cached.get("Data_Date"))
+            if frame_date and frame_date == cached_date:
+                cached.update(_technical_snapshot_from_frame(frame))
+            elif frame_date and (not cached_date or frame_date > cached_date):
+                try:
+                    return analyze_stock_fresh(ticker, name, frame=frame)
+                except StockQueryError:
+                    # If a complete fresh analysis cannot be produced, retain the
+                    # dated scan snapshot exactly instead of partially mixing dates.
+                    pass
         return cached
     return analyze_stock_fresh(ticker, name)
 
@@ -293,11 +340,12 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
     data = dict(record)
     ticker = _clean_text(data.get("代號"))
     name = _clean_text(data.get("名稱"), ticker)
-    data_date = _clean_text(data.get("Data_Date"), date.today().isoformat())
+    data_date = _clean_text(data.get("Data_Date"), datetime.now(TPE).date().isoformat())
     score = _number(data.get("Score"))
     close = _number(data.get("收盤價"))
+    high = _number(data.get("Entry_High"))
     stop = _number(data.get("Entry_Stop"))
-    shares, _, estimated_loss = _position_size_for_max_loss(close, stop, PER_TRADE_MAX_LOSS)
+    shares, _, estimated_loss = _position_size_for_max_loss(high, stop, PER_TRADE_MAX_LOSS)
     samples_number = _number(data.get("Backtest_Samples"))
     samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
     win_rate = _number(data.get("WinRate")) if samples and samples > 0 else None
@@ -348,14 +396,13 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
     draw.rounded_rectangle((550, 352, 1038, 640), radius=22, fill="#0F172A", outline="#3F2631", width=2)
     draw.text((576, 376), "執行與資金控管", font=_font(27, True), fill="#F87171")
     low = _number(data.get("Entry_Low"))
-    high = _number(data.get("Entry_High"))
     entry_zone = f"{low:g}–{high:g}" if low is not None and high is not None else "--"
     execution = (
         ("建議買入區", entry_zone, "#F8FAFC"),
         ("停損", _display_number(stop, 2), "#4ADE80"),
         ("策略目標", _display_number(data.get("Entry_Target"), 2), "#F87171"),
         ("建議零股", f"{shares:,} 股" if shares > 0 else "無法計算", "#FBBF24"),
-        ("停損最大虧損", "--" if estimated_loss is None else f"${estimated_loss:,.0f}", "#F8FAFC"),
+        ("估計停損淨損", "--" if estimated_loss is None else f"${estimated_loss:,.0f}", "#F8FAFC"),
     )
     for index, (label, value, color) in enumerate(execution):
         y = 423 + index * 40
@@ -415,7 +462,7 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
 
     draw.line((54, 1275, IMAGE_WIDTH - 54, 1275), fill="#1E293B", width=2)
     draw.text((54, 1295), "資料缺失一律顯示 --；不以 0 或推估值冒充真實資料。", font=_font(17), fill="#94A3B8")
-    draw.text((54, 1327), "股數依每筆停損價差最多虧損 $5,000 計算；未計滑價、手續費與交易稅。", font=_font(17), fill="#FBBF24")
+    draw.text((54, 1327), "股數含雙邊手續費、交易稅與停損滑價；跳空時實損仍可能超過 $5,000。", font=_font(17), fill="#FBBF24")
     draw.text((IMAGE_WIDTH - 54, 1363), "僅供研究參考", font=_font(17, True), fill="#F87171", anchor="ra")
 
     output = io.BytesIO()

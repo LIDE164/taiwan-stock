@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
@@ -14,7 +14,10 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 from entry_readiness import build_entry_summary
-
+from execution_costs import (
+    DEFAULT_TAIWAN_STOCK_COST_MODEL,
+    calculate_max_odd_lot_position,
+)
 
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
@@ -28,6 +31,16 @@ CARD_GAP = 10
 PER_TRADE_MAX_LOSS = 5000.0
 TRACKING_PERFORMANCE_START_DATE = "2026-08-27"
 TRACKING_PERFORMANCE_FIRST_DATE = "2026-08-28"
+EXECUTABLE_RISK_MODEL_TEXT = (
+    "股數以買入區上緣估算；含雙邊手續費各 "
+    f"{DEFAULT_TAIWAN_STOCK_COST_MODEL.buy_commission_rate:.4%}（每筆最低 "
+    f"${DEFAULT_TAIWAN_STOCK_COST_MODEL.minimum_commission:g}）、賣出交易稅 "
+    f"{DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_tax_rate:.2%}、停損滑價 "
+    f"{DEFAULT_TAIWAN_STOCK_COST_MODEL.stop_slippage_rate:.2%}。"
+)
+EXECUTABLE_GAP_RISK_TEXT = (
+    "每檔模型停損淨損不超過 $5,000；跳空、流動性或實際費率差異仍可能超額。"
+)
 
 
 def _number(value: Any) -> float | None:
@@ -136,16 +149,15 @@ def _position_size_for_max_loss(
     stop_price: float | None,
     max_loss: float,
 ) -> tuple[int, float | None, float | None]:
-    """Size one odd-lot position so its price loss at the stop stays within max_loss."""
-    if entry_price is None or stop_price is None or max_loss <= 0:
+    """Compatibility wrapper around the shared all-in Taiwan-equity cost model."""
+    estimate = calculate_max_odd_lot_position(entry_price, stop_price, max_loss)
+    if estimate is None:
         return 0, None, None
-    risk_per_share = entry_price - stop_price
-    if entry_price <= 0 or stop_price <= 0 or risk_per_share <= 0:
-        return 0, None, None
-    shares = math.floor(max_loss / risk_per_share)
-    if shares <= 0:
-        return 0, risk_per_share, 0.0
-    return shares, risk_per_share, shares * risk_per_share
+    return (
+        estimate.shares,
+        estimate.effective_risk_per_share,
+        estimate.estimated_net_loss,
+    )
 
 
 def build_executable_display_rows(
@@ -173,7 +185,7 @@ def build_executable_display_rows(
             win_rate = None
         credibility, credibility_color = _credibility(samples)
         shares, risk_per_share, estimated_loss = _position_size_for_max_loss(
-            close,
+            high,
             stop,
             max_loss_per_trade,
         )
@@ -190,6 +202,7 @@ def build_executable_display_rows(
                 " / --" if change is None else f" / {change:+.1f}%"
             ),
             "change_value": change,
+            "risk_entry_price": high,
             "entry_zone_text": (
                 f"{low:g}–{high:g}"
                 if low is not None and high is not None and low > 0 and high >= low
@@ -295,7 +308,9 @@ def _tracking_action_label(row: Mapping[str, Any]) -> str:
         return "區間成交" if schema >= 2 else "收盤進場（舊）"
     return {
         "SIGNAL": "待次日觸價",
+        "WAIT_ENTRY_SESSION": "等待預定交易日",
         "ENTRY_EXPIRED": "進場訊號失效",
+        "EXECUTION_UNRESOLVED": "當日順序不明",
         "HOLD": "持有",
         "TAKE_PROFIT": "停利",
         "STOP_LOSS": "停損",
@@ -316,6 +331,7 @@ def _tracking_as_of_status(row: Mapping[str, Any]) -> str:
         "STOP_LOSS": "CLOSED_SL",
         "SIGNAL": "PENDING",
         "ENTRY_EXPIRED": "EXPIRED",
+        "EXECUTION_UNRESOLVED": "UNRESOLVED",
     }.get(str(row.get("action") or ""), "")
 
 
@@ -340,6 +356,8 @@ def build_tracking_performance_report(
     records: Sequence[Mapping[str, Any]],
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
+    *,
+    cumulative_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a date-faithful report from the supplied daily tracker records.
 
@@ -557,6 +575,14 @@ def build_tracking_performance_report(
     realized_win_rate = (
         closed_wins / len(closed_returns) * 100 if closed_returns else None
     )
+    cumulative = cumulative_summary if isinstance(cumulative_summary, Mapping) else {}
+    cumulative_strategy = cumulative.get("execution_schema_2_plus", {})
+    cumulative_legacy = cumulative.get("legacy", {})
+    cumulative_strategy = cumulative_strategy if isinstance(cumulative_strategy, Mapping) else {}
+    cumulative_legacy = cumulative_legacy if isinstance(cumulative_legacy, Mapping) else {}
+    cumulative_strategy_count = int(_number(cumulative_strategy.get("trade_count")) or 0)
+    cumulative_strategy_win_rate = _number(cumulative_strategy.get("win_rate_pct"))
+    cumulative_legacy_count = int(_number(cumulative_legacy.get("trade_count")) or 0)
     return {
         "date": str(trading_date),
         "start_date": TRACKING_PERFORMANCE_START_DATE,
@@ -572,12 +598,23 @@ def build_tracking_performance_report(
         "closed_count": len(closed_positions),
         "realized_win_rate": realized_win_rate,
         "realized_average": _mean(closed_returns),
+        "cumulative_available": bool(cumulative),
+        "cumulative_strategy_count": cumulative_strategy_count,
+        "cumulative_strategy_win_rate": cumulative_strategy_win_rate,
+        "cumulative_strategy_net_pnl": _number(
+            cumulative_strategy.get("estimated_net_pnl_total")
+        ),
+        "cumulative_legacy_count": cumulative_legacy_count,
+        "cumulative_excluded_count": int(_number(cumulative.get("excluded_count")) or 0),
         "actions": actions,
         "pending_count": sum(
             _tracking_as_of_status(row) == "PENDING" for row in candidate_records
         ),
         "expired_count": sum(
             _tracking_as_of_status(row) == "EXPIRED" for row in candidate_records
+        ),
+        "unresolved_count": sum(
+            _tracking_as_of_status(row) == "UNRESOLVED" for row in candidate_records
         ),
         "strategy_count": strategy_count,
         "legacy_count": legacy_count,
@@ -819,7 +856,7 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
     draw.text((IMAGE_WIDTH - 62, 53), f"分析日 {_clean_text(trading_date)}", font=_font(22, True), fill="#FBBF24", anchor="ra")
     draw.text(
         (IMAGE_WIDTH - 62, 91),
-        f"{len(rows)} 檔｜每檔停損風險上限 $5,000",
+        f"{len(rows)} 檔｜每檔模型停損淨損上限 $5,000",
         font=_font(19),
         fill="#94A3B8",
         anchor="ra",
@@ -869,7 +906,7 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
                 (128, "現價 / 漲跌", row["close_change_text"], current_color),
                 (275, "建議買入區間", row["entry_zone_text"], "#F8FAFC"),
                 (430, "建議零股", row["suggested_shares_text"], "#FBBF24"),
-                (555, "停損最大虧損", row["estimated_loss_text"], "#F8FAFC"),
+                (555, "估計停損淨損", row["estimated_loss_text"], "#F8FAFC"),
                 (685, "風險停損", row["stop_text"], "#4ADE80"),
                 (800, "策略目標", row["target_text"], "#F87171"),
                 (910, "技術勝率", row["win_rate_text"], "#60A5FA"),
@@ -880,8 +917,8 @@ def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: 
 
     footer_y = 1670
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 14), "建議股數 = floor($5,000 ÷（現價 − 停損價）)，每檔分別計算。", font=_font(16), fill="#94A3B8")
-    draw.text((54, footer_y + 43), "每檔停損價差損失不超過 $5,000；未計滑價、手續費與交易稅。", font=_font(17, True), fill="#FBBF24")
+    draw.text((54, footer_y + 14), EXECUTABLE_RISK_MODEL_TEXT, font=_font(15), fill="#94A3B8")
+    draw.text((54, footer_y + 43), EXECUTABLE_GAP_RISK_TEXT, font=_font(16, True), fill="#FBBF24")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -899,9 +936,15 @@ def render_tracking_performance_image(
     trading_date: str,
     *,
     page_index: int = 0,
+    cumulative_summary: Mapping[str, Any] | None = None,
 ) -> bytes:
     """Render one page of the daily equal-weight tracking performance."""
-    report = build_tracking_performance_report(records, positions, trading_date)
+    report = build_tracking_performance_report(
+        records,
+        positions,
+        trading_date,
+        cumulative_summary=cumulative_summary,
+    )
     page_count = report["page_count"]
     page_index = min(max(int(page_index), 0), page_count - 1)
     page_start = page_index * 10
@@ -949,16 +992,19 @@ def render_tracking_performance_image(
         draw.text((left + 18, 184), label, font=_font(16), fill="#64748B")
         draw.text((left + 18, 218), value, font=_font(28, True), fill=color)
 
-    realized_text = (
-        "--"
-        if report["realized_win_rate"] is None
-        else f"{report['realized_win_rate']:.1f}%"
+    headline_win_rate = (
+        report["cumulative_strategy_win_rate"]
+        if report["cumulative_available"]
+        else report["realized_win_rate"]
     )
+    realized_text = "--" if headline_win_rate is None else f"{headline_win_rate:.1f}%"
     action_text = "｜".join(
         f"{label} {report['actions'].get(action, 0)}"
         for action, label in (
             ("SIGNAL", "訊號"),
+            ("WAIT_ENTRY_SESSION", "待交易日"),
             ("ENTRY", "成交"),
+            ("EXECUTION_UNRESOLVED", "順序不明"),
             ("HOLD", "持有"),
             ("ENTRY_EXPIRED", "失效"),
             ("TAKE_PROFIT", "停利"),
@@ -975,15 +1021,25 @@ def render_tracking_performance_image(
     )
     draw.text(
         (1016, 307),
-        f"歷史結算 {report['closed_count']} 筆｜勝率 {realized_text}",
+        (
+            f"新版累積 {report['cumulative_strategy_count']} 筆｜勝率 {realized_text}"
+            if report["cumulative_available"]
+            else f"本日結算 {report['closed_count']} 筆｜勝率 {realized_text}"
+        ),
         font=_font(18, True),
-        fill="#60A5FA" if report["realized_win_rate"] is not None else "#94A3B8",
+        fill="#60A5FA" if realized_text != "--" else "#94A3B8",
         anchor="ra",
     )
     context_parts = [
         f"未有跨日損益排除 {report['excluded_count']} 檔",
         f"待成交 {report['pending_count']}／失效 {report['expired_count']}",
     ]
+    if report["unresolved_count"]:
+        context_parts.append(f"OHLC 順序不明 {report['unresolved_count']}（績效排除）")
+    if report["cumulative_available"]:
+        context_parts.append(
+            f"累積排除 {report['cumulative_excluded_count']}｜舊版另計 {report['cumulative_legacy_count']}"
+        )
     if report["largest_industry"]:
         context_parts.append(
             f"最大產業 {report['largest_industry']} "
@@ -1098,15 +1154,23 @@ def render_tracking_performance_images(
     records: Sequence[Mapping[str, Any]],
     positions: Sequence[Mapping[str, Any]],
     trading_date: str,
+    *,
+    cumulative_summary: Mapping[str, Any] | None = None,
 ) -> list[bytes]:
     """Render every tracked stock across readable ten-row Telegram pages."""
-    report = build_tracking_performance_report(records, positions, trading_date)
+    report = build_tracking_performance_report(
+        records,
+        positions,
+        trading_date,
+        cumulative_summary=cumulative_summary,
+    )
     return [
         render_tracking_performance_image(
             records,
             positions,
             trading_date,
             page_index=page_index,
+            cumulative_summary=cumulative_summary,
         )
         for page_index in range(report["page_count"])
     ]
@@ -1233,15 +1297,38 @@ def send_tracking_performance_photo(
     chat_id: Any,
     *,
     session: requests.Session | None = None,
+    cumulative_summary: Mapping[str, Any] | None = None,
+    skip_page_numbers: set[int] | None = None,
+    on_page_sent: Callable[[int, int | None, int], None] | None = None,
 ) -> int | None:
     """Send every daily tracking-performance page through Telegram."""
-    report = build_tracking_performance_report(records, positions, trading_date)
-    pages = render_tracking_performance_images(records, positions, trading_date)
+    report = build_tracking_performance_report(
+        records,
+        positions,
+        trading_date,
+        cumulative_summary=cumulative_summary,
+    )
+    pages = render_tracking_performance_images(
+        records,
+        positions,
+        trading_date,
+        cumulative_summary=cumulative_summary,
+    )
     daily_average = _percent_text(report["daily_average"])
+    skipped_pages: set[int] = set()
+    for value in skip_page_numbers or set():
+        try:
+            page_number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page_number > 0:
+            skipped_pages.add(page_number)
     message_ids: list[int | None] = []
     for page_number, png in enumerate(pages, start=1):
+        if page_number in skipped_pages:
+            continue
         page_suffix = "" if len(pages) == 1 else f"-p{page_number}-of-{len(pages)}"
-        message_ids.append(_send_photo_bytes(
+        message_id = _send_photo_bytes(
             png,
             f"tracking-performance-{trading_date}{page_suffix}.png",
             (
@@ -1252,5 +1339,8 @@ def send_tracking_performance_photo(
             bot_token,
             chat_id,
             session,
-        ))
+        )
+        message_ids.append(message_id)
+        if on_page_sent is not None:
+            on_page_sent(page_number, message_id, len(pages))
     return message_ids[0] if message_ids else None

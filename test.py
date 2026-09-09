@@ -27,6 +27,7 @@ from app_security import (
     scoped_document_name,
 )
 from charts import draw_professional_chart
+from chunked_firestore import load_chunked_items
 from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import build_entry_readiness, ensure_entry_readiness
 from market_http import call_with_backoff, http_get
@@ -536,6 +537,44 @@ def load_cloud_doc(collection_name, document_name):
         st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
         return {}
 
+
+def hydrate_manifest_items(manifest, *, collection_name, ids_key, legacy_key):
+    """Load a bounded Firestore manifest once per chunk revision in this session."""
+    if not isinstance(manifest, dict):
+        return []
+    try:
+        schema = int(manifest.get("storage_schema") or 1)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Firestore 分段版本欄位格式錯誤") from exc
+    if schema < 2:
+        legacy = manifest.get(legacy_key, [])
+        return [dict(row) for row in legacy if isinstance(row, dict)] if isinstance(legacy, list) else []
+
+    raw_chunk_ids = manifest.get(ids_key, [])
+    if not isinstance(raw_chunk_ids, list):
+        raise RuntimeError(f"Firestore 分段索引 {ids_key} 格式錯誤")
+    chunk_ids = tuple(str(item) for item in raw_chunk_ids if str(item))
+    revision = str(manifest.get("content_hash") or manifest.get("update_time") or "")
+    cache_key = f"{collection_name}:{revision}:{'|'.join(chunk_ids)}"
+    if "_chunk_payload_cache" not in st.session_state:
+        st.session_state._chunk_payload_cache = {}
+    cached = st.session_state._chunk_payload_cache.get(cache_key)
+    if isinstance(cached, list):
+        return cached
+    rows = load_chunked_items(
+        db,
+        manifest,
+        collection_name=collection_name,
+        ids_key=ids_key,
+        legacy_key=legacy_key,
+    )
+    # Only a handful of revisions are useful within one browser session.
+    if len(st.session_state._chunk_payload_cache) >= 6:
+        oldest_key = next(iter(st.session_state._chunk_payload_cache))
+        st.session_state._chunk_payload_cache.pop(oldest_key, None)
+    st.session_state._chunk_payload_cache[cache_key] = rows
+    return rows
+
 def save_cloud_data(collection_name, document_name, data):
     cache_key = f"{collection_name}:{document_name}"
     if "_cloud_doc_cache" not in st.session_state:
@@ -652,7 +691,20 @@ def hydrate_scan_results(force=False):
     )
     if should_sync:
         scan_doc = load_cloud_doc("market_data", "daily_scan")
-        data = scan_doc.get("data", [])
+        try:
+            data = hydrate_manifest_items(
+                scan_doc,
+                collection_name="daily_scan_chunks",
+                ids_key="chunk_ids",
+                legacy_key="data",
+            )
+        except Exception as exc:
+            logging.error("讀取分段掃描資料失敗: %s", exc)
+            st.session_state.cloud_last_error = f"每日掃描資料不完整，暫時保留上一版：{type(exc).__name__}"
+            # Preserve the complete previous snapshot *and its provenance*.
+            # Applying a newer manifest date to older rows would mix versions.
+            st.session_state.scan_results_synced_at = now_ts
+            return st.session_state.get("scan_results", [])
         scan_date = scan_doc.get("scan_date", "")
         expected_date = get_latest_expected_scan_date()
         st.session_state.scan_results_stale = bool(expected_date and (not scan_date or scan_date < expected_date))
@@ -2369,8 +2421,20 @@ elif st.session_state.page == "top10_tracking":
     
     st.markdown("<div style='background-color:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:15px; border-radius:10px; margin-bottom:20px;'><h4 style='color:#fbbf24; margin-top:0;'>🤖 自動結算機制</h4><p style='color:#cbd5e1; font-size:0.9rem; margin-bottom:0;'>新訊號不再用分析日收盤假設成交：只在<b>下一交易日</b>的真實 OHLC 觸及凍結進場區時成交，並沿用入榜時的策略停損與目標；未觸及即失效。舊版既有持倉仍沿用 +15%／-10%，同日雙觸及時保守先計停損。</p></div>", unsafe_allow_html=True)
     
-    tracker_data = load_cloud_data("market_data", "top10_tracker", {})
-    positions = tracker_data.get("positions", []) if isinstance(tracker_data, dict) else []
+    tracker_document = load_cloud_doc("market_data", "top10_tracker")
+    tracker_data = tracker_document.get("data", tracker_document) if isinstance(tracker_document, dict) else {}
+    try:
+        positions = hydrate_manifest_items(
+            tracker_data,
+            collection_name="top10_tracker_chunks",
+            ids_key="position_chunk_ids",
+            legacy_key="positions",
+        )
+        st.session_state._last_complete_tracker_positions = positions
+    except Exception as exc:
+        logging.error("讀取分段追蹤部位失敗: %s", exc)
+        positions = st.session_state.get("_last_complete_tracker_positions", [])
+        st.error("追蹤部位資料不完整，暫時保留上一個完整版本；系統不會用部分資料計算績效。")
     positions = [position for position in positions if isinstance(position, dict)]
 
     def entry_backtest_text(record):
@@ -2444,12 +2508,15 @@ elif st.session_state.page == "top10_tracking":
             st.warning("此交易日沒有可顯示的追蹤明細。")
         else:
             action_labels = {
-                "SIGNAL": "待次日觸價", "ENTRY": "區間成交", "ENTRY_EXPIRED": "進場訊號失效",
+                "SIGNAL": "待次日觸價", "WAIT_ENTRY_SESSION": "等待預定交易日",
+                "ENTRY": "區間成交", "ENTRY_EXPIRED": "進場訊號失效",
+                "EXECUTION_UNRESOLVED": "當日價格順序不明",
                 "HOLD": "持有", "TAKE_PROFIT": "停利", "STOP_LOSS": "停損",
                 "DATA_MISSING": "行情缺漏", "EXIT": "已出場",
             }
             status_labels = {
                 "PENDING": "等待次日觸價", "OPEN": "持有中", "EXPIRED": "進場訊號失效",
+                "UNRESOLVED": "成交後結果不明（排除績效）",
                 "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場",
             }
             display_rows = []
@@ -2497,19 +2564,26 @@ elif st.session_state.page == "top10_tracking":
                     "超額報酬%": row.get("excess_return_pct"),
                     "入榜產業": row.get("signal_industry") or "--",
                     "榜單狀態": "完整" if row.get("ranking_status", ranking_status) == "ok" else "原榜單缺失",
-                    "資料狀態": "完整" if row.get("data_status") == "ok" else "缺漏",
+                    "資料狀態": {
+                        "ok": "完整",
+                        "unresolved": "OHLC 無法判定先後",
+                    }.get(str(row.get("data_status") or ""), "缺漏"),
                 })
             display_df = pd.DataFrame(display_rows).sort_values(
                 by=["排名", "持有報酬%"], ascending=[True, False], na_position="last"
             )
             st.dataframe(display_df, hide_index=True, width="stretch")
-            missing_count = sum(1 for row in daily_records if row.get("data_status") != "ok")
+            missing_count = sum(1 for row in daily_records if row.get("data_status") == "missing")
             if missing_count:
                 st.warning(f"本日有 {missing_count} 筆行情不完整；系統保留前一追蹤價，不會用錯誤價格結算。")
+            unresolved_count = sum(1 for row in daily_records if row.get("data_status") == "unresolved")
+            if unresolved_count:
+                st.info(f"本日有 {unresolved_count} 筆無法由日 K 判定成交後門檻先後，已排除績效且不延續假設持倉。")
     
     pending_pos = [p for p in positions if p.get("status") == "PENDING"]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     expired_pos = [p for p in positions if p.get("status") == "EXPIRED"]
+    unresolved_pos = [p for p in positions if p.get("status") == "UNRESOLVED"]
     closed_pos = [p for p in positions if str(p.get("status") or "").startswith("CLOSED_")]
 
     def tracking_number_text(value, digits=1, suffix=""):
@@ -2523,6 +2597,28 @@ elif st.session_state.page == "top10_tracking":
     def tracking_shares_text(value):
         number = optional_num(value)
         return "--" if number is None or number <= 0 else f"{int(number):,}"
+
+    if unresolved_pos:
+        st.subheader("⚪ 當日成交後結果無法判定")
+        st.warning(
+            f"共 {len(unresolved_pos)} 筆：日 K 同時涵蓋進場與出場門檻，但無逐筆先後順序；"
+            "系統不延續假設持倉，並永久排除於績效統計。"
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "代號": normalize_ticker(position.get("ticker", "")),
+                    "名稱": position.get("name"),
+                    "訊號日": position.get("signal_date"),
+                    "觸價日": position.get("entry_date"),
+                    "進場價": position.get("entry_price"),
+                    "原因": "日 K 無法判定目標價在進場前或後出現",
+                }
+                for position in unresolved_pos
+            ]),
+            hide_index=True,
+            width="stretch",
+        )
 
     st.subheader("🟡 等待次一交易日觸價")
     st.caption("訊號只保留到下一個有完整 OHLC 的交易日；價格觸及凍結進場區才建立持倉，否則列為失效。")

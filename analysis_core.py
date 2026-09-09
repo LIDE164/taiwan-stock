@@ -64,6 +64,18 @@ def strict_float(value: Any) -> Optional[float]:
     return parsed if np.isfinite(parsed) else None
 
 
+def five_ma_deduction_prices(close: pd.Series) -> Tuple[Optional[float], Optional[float]]:
+    """Return the closes removed from today's and tomorrow's 5-day averages.
+
+    Today's 5MA replaces ``t-5`` with today's close, while tomorrow's 5MA will
+    replace ``t-4`` with the next close.  With the current bar at ``iloc[-1]``,
+    those reference closes are therefore ``iloc[-6]`` and ``iloc[-5]``.
+    """
+    today = strict_float(close.iloc[-6]) if len(close) >= 6 else None
+    tomorrow = strict_float(close.iloc[-5]) if len(close) >= 5 else None
+    return today, tomorrow
+
+
 def apply_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Add the indicators used by the scanner, chart, and Streamlit app."""
     df = df.copy()
@@ -147,7 +159,9 @@ def build_score_input(
     end_pos = len(df) + index + 1 if index < 0 else index + 1
     end_pos = max(0, min(len(df), end_pos))
     work_df = df.iloc[:end_pos]
-    if len(work_df) < 2:
+    # ROC20 is Close(t) / Close(t-20) - 1, which requires 21 observations.
+    # Refuse to score a shorter window instead of silently treating it as 0%.
+    if len(work_df) < 21:
         return {}
 
     required_columns = {
@@ -201,13 +215,15 @@ def build_score_input(
         box_range_pct = (box_high - box_low) / box_low * 100 if box_low > 0 else 0.0
         breakout_volume_ok = vol_ratio >= 1.2
         box_breakout = bool(box_range_pct < 12 and t_close > box_high and breakout_volume_ok and not hit_pressure)
-    roc_20 = 0.0
-    if len(work_df) >= 20:
-        base = safe_float(work_df["Close"].iloc[-20])
-        if base:
-            roc_20 = (t_close - base) / base * 100
-    ma5_up_today = bool(len(work_df) >= 6 and t_close > safe_float(work_df["Close"].iloc[-6], t_close))
-    tomorrow_turn_price = safe_float(work_df["Close"].iloc[-4], t_close) if len(work_df) >= 4 else t_close
+    base = strict_float(work_df["Close"].iloc[-21])
+    if base is None or base <= 0:
+        return {}
+    roc_20 = (t_close - base) / base * 100
+    today_deduction, tomorrow_deduction = five_ma_deduction_prices(work_df["Close"])
+    if today_deduction is None or tomorrow_deduction is None:
+        return {}
+    ma5_up_today = bool(t_close > today_deduction)
+    tomorrow_turn_price = tomorrow_deduction
 
     trend_quality = 0
     if t_close > safe_float(t.get("20MA"), t_close):
@@ -333,7 +349,7 @@ def is_strategy_signal(
     mode: str = "post",
     score_threshold: int = BACKTEST_SCORE_THRESHOLD,
 ) -> Tuple[bool, int, Dict[str, Any]]:
-    if df_slice is None or len(df_slice) < 20:
+    if df_slice is None or len(df_slice) < 21:
         return False, 0, {}
     from scoring import get_decision_score
 
@@ -396,6 +412,61 @@ def _trade_result(
     atr_val: float = 0.0,
     stop_mult: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
+    parsed_stop = strict_float(stop_price)
+    parsed_entry = strict_float(entry_price)
+    parsed_target = strict_float(target_price)
+    if parsed_stop is None or parsed_entry is None or parsed_target is None:
+        return None
+    if not (0 < parsed_stop < parsed_entry < parsed_target):
+        return None
+
+    parameter_values = {
+        "buy_fee_rate": strict_float(buy_fee_rate),
+        "sell_fee_rate": strict_float(sell_fee_rate),
+        "sell_tax_rate": strict_float(sell_tax_rate),
+        "minimum_commission": strict_float(minimum_commission),
+        "shares": strict_float(shares),
+        "exit_slippage_rate": strict_float(exit_slippage_rate),
+        "atr_val": strict_float(atr_val),
+        "stop_mult": strict_float(stop_mult),
+    }
+    if fee_rate is not None:
+        parameter_values["fee_rate"] = strict_float(fee_rate)
+    if any(value is None for value in parameter_values.values()):
+        return None
+    finite_parameters = {
+        key: float(value)
+        for key, value in parameter_values.items()
+        if value is not None
+    }
+    if (
+        finite_parameters["buy_fee_rate"] < 0
+        or finite_parameters["sell_fee_rate"] < 0
+        or finite_parameters["sell_tax_rate"] < 0
+        or finite_parameters["minimum_commission"] < 0
+        or finite_parameters["shares"] < 1
+        or not finite_parameters["shares"].is_integer()
+        or finite_parameters["exit_slippage_rate"] < 0
+        or finite_parameters["exit_slippage_rate"] >= 1
+        or finite_parameters["atr_val"] < 0
+        or finite_parameters["stop_mult"] <= 0
+        or (fee_rate is not None and finite_parameters["fee_rate"] < 0)
+    ):
+        return None
+
+    stop_price = parsed_stop
+    entry_price = parsed_entry
+    target_price = parsed_target
+    buy_fee_rate = finite_parameters["buy_fee_rate"]
+    sell_fee_rate = finite_parameters["sell_fee_rate"]
+    sell_tax_rate = finite_parameters["sell_tax_rate"]
+    minimum_commission = finite_parameters["minimum_commission"]
+    shares = int(finite_parameters["shares"])
+    exit_slippage_rate = finite_parameters["exit_slippage_rate"]
+    atr_val = finite_parameters["atr_val"]
+    stop_mult = finite_parameters["stop_mult"]
+    fee_rate = finite_parameters.get("fee_rate")
+
     exit_price = entry_price
     exit_reason = "未出場"
     holding_days = 0
@@ -458,15 +529,13 @@ def _trade_result(
     if fee_rate is not None:
         # Backward-compatible alias retained for callers that previously used one
         # symmetric commission rate. Transaction tax remains a separate sell cost.
-        buy_fee_rate = sell_fee_rate = max(0.0, float(fee_rate))
-    shares = max(1, int(shares))
-    minimum_commission = max(0.0, float(minimum_commission))
-    execution_exit_price = exit_price * (1 - max(0.0, float(exit_slippage_rate)))
+        buy_fee_rate = sell_fee_rate = fee_rate
+    execution_exit_price = exit_price * (1 - exit_slippage_rate)
     entry_notional = entry_price * shares
     exit_notional = execution_exit_price * shares
-    buy_fee = max(entry_notional * max(0.0, buy_fee_rate), minimum_commission if buy_fee_rate > 0 else 0.0)
-    sell_fee = max(exit_notional * max(0.0, sell_fee_rate), minimum_commission if sell_fee_rate > 0 else 0.0)
-    sell_tax = exit_notional * max(0.0, sell_tax_rate)
+    buy_fee = max(entry_notional * buy_fee_rate, minimum_commission if buy_fee_rate > 0 else 0.0)
+    sell_fee = max(exit_notional * sell_fee_rate, minimum_commission if sell_fee_rate > 0 else 0.0)
+    sell_tax = exit_notional * sell_tax_rate
     total_cost = buy_fee + sell_fee + sell_tax
     net_profit = exit_notional - sell_fee - sell_tax - entry_notional - buy_fee
     net_return = net_profit / (entry_notional + buy_fee) * 100
@@ -546,6 +615,63 @@ def calculate_historical_performance(
         "validation_samples": 0,
         "validation_avg_return": 0.0,
     }
+
+    scalar_parameters = {
+        "target_mult": strict_float(target_mult),
+        "stop_mult": strict_float(stop_mult),
+        "score_threshold": strict_float(score_threshold),
+        "buy_fee_rate": strict_float(buy_fee_rate),
+        "sell_fee_rate": strict_float(sell_fee_rate),
+        "sell_tax_rate": strict_float(sell_tax_rate),
+        "minimum_commission": strict_float(minimum_commission),
+        "slippage_rate": strict_float(slippage_rate),
+    }
+    integer_parameters = {
+        "lookback_days": strict_float(lookback_days),
+        "hold_days": strict_float(hold_days),
+        "min_gap_days": strict_float(min_gap_days),
+        "shares": strict_float(shares),
+    }
+    parsed_fee_rate = strict_float(fee_rate) if fee_rate is not None else None
+    if (
+        any(value is None for value in scalar_parameters.values())
+        or any(value is None or not value.is_integer() for value in integer_parameters.values())
+        or (fee_rate is not None and parsed_fee_rate is None)
+    ):
+        return empty
+
+    finite_scalars = {key: float(value) for key, value in scalar_parameters.items() if value is not None}
+    finite_integers = {key: int(value) for key, value in integer_parameters.items() if value is not None}
+    if (
+        finite_scalars["target_mult"] <= 0
+        or finite_scalars["stop_mult"] <= 0
+        or finite_scalars["buy_fee_rate"] < 0
+        or finite_scalars["sell_fee_rate"] < 0
+        or finite_scalars["sell_tax_rate"] < 0
+        or finite_scalars["minimum_commission"] < 0
+        or not 0 <= finite_scalars["slippage_rate"] < 1
+        or finite_integers["lookback_days"] < 1
+        or finite_integers["hold_days"] < 1
+        or finite_integers["min_gap_days"] < 0
+        or finite_integers["shares"] < 1
+        or (parsed_fee_rate is not None and parsed_fee_rate < 0)
+    ):
+        return empty
+
+    target_mult = finite_scalars["target_mult"]
+    stop_mult = finite_scalars["stop_mult"]
+    score_threshold = finite_scalars["score_threshold"]
+    buy_fee_rate = finite_scalars["buy_fee_rate"]
+    sell_fee_rate = finite_scalars["sell_fee_rate"]
+    sell_tax_rate = finite_scalars["sell_tax_rate"]
+    minimum_commission = finite_scalars["minimum_commission"]
+    slippage_rate = finite_scalars["slippage_rate"]
+    lookback_days = finite_integers["lookback_days"]
+    hold_days = finite_integers["hold_days"]
+    min_gap_days = finite_integers["min_gap_days"]
+    shares = finite_integers["shares"]
+    fee_rate = parsed_fee_rate
+
     if df_slice is None or len(df_slice) < 21:
         return empty
 
@@ -591,6 +717,11 @@ def calculate_historical_performance(
 
         target_price = entry_price + atr_val * target_mult
         stop_price = entry_price - atr_val * stop_mult
+        if (
+            not all(np.isfinite(value) for value in (stop_price, entry_price, target_price))
+            or not 0 < stop_price < entry_price < target_price
+        ):
+            continue
         future_df = df_slice.iloc[entry_idx : entry_idx + hold_days]
         result = _trade_result(
             future_df,

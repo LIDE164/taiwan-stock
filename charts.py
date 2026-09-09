@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-from analysis_core import build_score_input
+from analysis_core import build_score_input, five_ma_deduction_prices
 from scoring import get_decision_score
 
 def find_levels(df, bins=60):
@@ -161,22 +161,22 @@ def draw_professional_chart(df, latest_price, view_days=120, is_light_mode=False
 
     fig.add_hline(y=latest_price, line_dash="dash", line_color="#facc15", row=1, col=1, opacity=0.5)
 
-    # 5MA 扣抵價與今日上彎狀態
+    # 5MA 扣抵價與今日上彎狀態。今日 5MA 比較 t-5；明日真正
+    # 被移出五日視窗的是 t-4，亦即目前序列的 iloc[-5]。
     if len(df_view) >= 6:
-        idx = -6
-        d_date = df_view.index[idx].strftime('%Y-%m-%d')
-        d_price = df_view['Low'].iloc[idx] * 0.85 
-        
-        deduct_close = df_view['Close'].iloc[idx]
-        tomorrow_deduct = df_view['Close'].iloc[-4] if len(df_view) >= 4 else deduct_close
-        curr_close = df_view['Close'].iloc[-1]
-        trend_dir = "↗" if curr_close > deduct_close else "↘"
-        
-        fig.add_trace(go.Scatter(
-            x=[d_date], y=[d_price], mode='text',
-            text=[f"5MA{trend_dir}<br>扣抵 {tomorrow_deduct:.1f}"], textposition="bottom center", textfont=dict(size=11, color='#facc15', weight='bold'),
-            name="5MA扣抵", hoverinfo='skip'
-        ), row=1, col=1)
+        today_deduct, tomorrow_deduct = five_ma_deduction_prices(df_view['Close'])
+        if today_deduct is not None and tomorrow_deduct is not None:
+            tomorrow_idx = -5
+            d_date = df_view.index[tomorrow_idx].strftime('%Y-%m-%d')
+            d_price = df_view['Low'].iloc[tomorrow_idx] * 0.85
+            curr_close = df_view['Close'].iloc[-1]
+            trend_dir = "↗" if curr_close > today_deduct else "↘"
+
+            fig.add_trace(go.Scatter(
+                x=[d_date], y=[d_price], mode='text',
+                text=[f"5MA{trend_dir}<br>明日扣抵 {tomorrow_deduct:.1f}"], textposition="bottom center", textfont=dict(size=11, color='#facc15', weight='bold'),
+                name="5MA扣抵", hoverinfo='skip'
+            ), row=1, col=1)
 
     # ===== 訊號與 AI 標示 (智能間距防重疊) =====
     re_x, re_y, be_x, be_y = [], [], [], []

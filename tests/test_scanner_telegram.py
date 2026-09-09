@@ -173,6 +173,30 @@ class ScannerTelegramTests(unittest.TestCase):
         self.assertEqual(saved["page_count"], 1)
         self.assertEqual(saved["message_id"], 104)
 
+    def test_daily_notifications_attempt_all_artifacts_after_one_failure(self):
+        with (
+            patch.object(
+                scanner,
+                "send_daily_top10_notification",
+                side_effect=ValueError("render failed"),
+            ) as top10_sender,
+            patch.object(scanner, "send_daily_executable_notification") as executable_sender,
+            patch.object(
+                scanner,
+                "send_daily_tracking_performance_notification",
+            ) as tracking_sender,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "可執行 Top10: ValueError"):
+                scanner.send_daily_notifications(
+                    self.rows,
+                    "2026-08-27",
+                    resend=True,
+                )
+
+        top10_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
+        executable_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
+        tracking_sender.assert_called_once_with("2026-08-27", resend=True)
+
 
 if __name__ == "__main__":
     unittest.main()

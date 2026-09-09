@@ -18,6 +18,12 @@ import streamlit as st
 # 引入共用核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
 from app_security import normalize_ticker
+from chunked_firestore import (
+    STORAGE_SCHEMA_VERSION,
+    build_chunk_documents,
+    load_chunked_items,
+    manifest_chunk_ids,
+)
 from data_providers import fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import READY_STATUS, build_entry_readiness
 from market_http import call_with_backoff, http_get
@@ -32,6 +38,7 @@ from scan_state import (
 from scoring import get_decision_score
 from top10_tracker import (
     backfill_entry_backtest_snapshots,
+    build_cumulative_performance_summary,
     build_top10_history_rows,
     restore_entry_positions_from_history,
     update_positions_with_snapshots,
@@ -96,6 +103,10 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
 INDUSTRY_CACHE: dict[str, str] = {}
 MARKET_SYMBOL_CACHE: dict[str, str] = {}
+DAILY_SCAN_CHUNK_COLLECTION = "daily_scan_chunks"
+TRACKER_CHUNK_COLLECTION = "top10_tracker_chunks"
+
+
 def build_industry_cache():
     global INDUSTRY_CACHE
     logging.info("📦 正在建立全市場產業快取字典...")
@@ -171,13 +182,19 @@ def get_finmind_revenue(ticker, with_status=False, with_meta=False):
 def fetch_top_stocks(limit=500):
     limit = max(1, min(1000, int(limit)))
     all_stocks = []
-    global MARKET_SYMBOL_CACHE
+    global INDUSTRY_CACHE, MARKET_SYMBOL_CACHE
+    INDUSTRY_CACHE = {}
     MARKET_SYMBOL_CACHE = {}
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
     try:
         res = http_get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         res.raise_for_status()
-        df_twse = pd.DataFrame(res.json())
+        twse_payload = res.json()
+        for item in twse_payload:
+            code = str(item.get("Code") or "").strip()
+            if code:
+                INDUSTRY_CACHE[code] = str(item.get("Name") or code)
+        df_twse = pd.DataFrame(twse_payload)
         df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'].astype(str).str.replace(',', '', regex=False), errors='coerce')
         df_twse['Symbol'] = df_twse['Code'].astype(str) + ".TW"
         all_stocks.append(df_twse[['Code', 'TradeVolume', 'Symbol']])
@@ -186,7 +203,12 @@ def fetch_top_stocks(limit=500):
     try:
         res2 = http_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
         res2.raise_for_status()
-        df_tpex = pd.DataFrame(res2.json())
+        tpex_payload = res2.json()
+        for item in tpex_payload:
+            code = str(item.get("SecuritiesCompanyCode") or "").strip()
+            if code:
+                INDUSTRY_CACHE[code] = str(item.get("CompanyName") or code)
+        df_tpex = pd.DataFrame(tpex_payload)
         tpex_volume_column = "TradingShares" if "TradingShares" in df_tpex.columns else "TradingVolume"
         df_tpex = df_tpex.rename(columns={'SecuritiesCompanyCode': 'Code', tpex_volume_column: 'TradeVolume'})
         if 'TradeVolume' not in df_tpex.columns:
@@ -360,13 +382,65 @@ def _load_daily_scan_doc():
         return {}
     try:
         snapshot = db.collection("market_data").document("daily_scan").get()
-        return snapshot.to_dict() or {} if snapshot.exists else {}
+        payload = (snapshot.to_dict() or {}) if snapshot.exists else {}
+        if payload:
+            payload["data"] = load_chunked_items(
+                db,
+                payload,
+                collection_name=DAILY_SCAN_CHUNK_COLLECTION,
+                ids_key="chunk_ids",
+                legacy_key="data",
+            )
+        return payload
     except Exception as e:
         logging.error("讀取既有掃描資料失敗: %s", e)
         raise RuntimeError("無法讀取既有 daily_scan，已中止以避免破壞排名與連續天數") from e
 
 
-def _acquire_scan_lease(trading_date, force=False, lease_minutes=120):
+def _stage_chunk_documents(batch, collection_name, documents, old_ids=()):
+    """Stage chunk replacement in the same batch as its manifest."""
+    collection = db.collection(collection_name)
+    new_ids = []
+    for document_id, payload in documents:
+        batch.set(collection.document(document_id), payload)
+        new_ids.append(document_id)
+    for stale_id in set(old_ids) - set(new_ids):
+        batch.delete(collection.document(stale_id))
+    return new_ids
+
+
+def _records_content_hash(records):
+    encoded = json.dumps(records, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size, scan_profile, previous=None):
+    documents = build_chunk_documents(
+        scan_results,
+        prefix="daily_scan",
+        version=str(scan_date),
+    )
+    previous = previous if isinstance(previous, Mapping) else {}
+    old_ids = manifest_chunk_ids(previous, "chunk_ids") if int(previous.get("storage_schema") or 1) >= 2 else []
+    batch = db.batch()
+    chunk_ids = _stage_chunk_documents(batch, DAILY_SCAN_CHUNK_COLLECTION, documents, old_ids)
+    manifest = {
+        "storage_schema": STORAGE_SCHEMA_VERSION,
+        "chunk_collection": DAILY_SCAN_CHUNK_COLLECTION,
+        "chunk_ids": chunk_ids,
+        "record_count": len(scan_results),
+        "content_hash": _records_content_hash(scan_results),
+        "scan_date": str(scan_date),
+        "scan_limit": int(scan_limit),
+        "universe_size": int(universe_size),
+        "scan_profile": str(scan_profile),
+        "update_time": firestore.SERVER_TIMESTAMP,
+    }
+    batch.set(db.collection("market_data").document("daily_scan"), manifest)
+    batch.commit()
+
+
+def _acquire_scan_lease(trading_date, force=False, lease_minutes=45):
     """Acquire a Firestore-backed lease so scheduled jobs cannot overlap."""
     if db is None:
         return True
@@ -410,11 +484,13 @@ def _finish_scan_lease(trading_date, status, result_count=0, error=""):
     if db is None:
         return
     try:
+        safe_error = type(error).__name__ if isinstance(error, BaseException) else ""
         db.collection("system_locks").document("daily_scan").set({
             "status": status,
             "trading_date": trading_date,
             "result_count": int(result_count),
-            "error": str(error)[:500],
+            # Keep credentials, URLs, and provider payloads out of Firestore.
+            "error": safe_error,
             "finished_at": firestore.SERVER_TIMESTAMP,
         }, merge=True)
     except Exception as e:
@@ -459,6 +535,8 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
         regime = "震盪"
     return {
         "symbol": "TAIEX",
+        "date": latest_trading_date(frame.index),
+        "previous_trading_date": latest_trading_date(frame.index[:-1]),
         "close": round(close, 2),
         "previous_close": round(previous_close, 2),
         "daily_return_pct": round((close / previous_close - 1) * 100, 2),
@@ -496,6 +574,36 @@ def select_executable_top10(scan_results):
     return selected
 
 
+def scan_ranking_key(record):
+    """Resolve saturated score ties with validation evidence, not same-day chasing."""
+    def number(key, default=0.0):
+        try:
+            value = float(record.get(key, default))
+            return value if math.isfinite(value) else float(default)
+        except (TypeError, ValueError):
+            return float(default)
+
+    samples = max(0, int(number("Validation_Samples")))
+    validation_rate = number("Validation_WinRate", -1.0) if samples else -1.0
+    return (
+        number("Score"),
+        validation_rate,
+        min(samples, 60),
+        number("Confidence"),
+        -abs(number("BIAS")),
+        -max(number("漲跌幅"), 0.0),
+    )
+
+
+def stock_frame_matches_scan_date(frame, scan_date):
+    """Reject stale per-stock frames so every saved row has one market date."""
+    return bool(
+        frame is not None
+        and len(frame) >= 2
+        and latest_trading_date(frame.index) == str(scan_date)
+    )
+
+
 def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
     """Send the executable Top-10 once per distinct daily ranking."""
     if db is None:
@@ -509,8 +617,26 @@ def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
         logging.info("%s 可執行 Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
         return False
 
+    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
+    notification_ref.set({
+        "date": trading_date,
+        "status": "pending",
+        "fingerprint": fingerprint,
+        "attempt_count": attempt_count,
+        "last_error": "",
+        "attempted_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
     token, chat_id = _telegram_credentials()
-    message_id = send_top10_photo(top10, trading_date, token, chat_id)
+    try:
+        message_id = send_top10_photo(top10, trading_date, token, chat_id)
+    except Exception as exc:
+        notification_ref.set({
+            "status": "failed",
+            "attempt_count": attempt_count,
+            "last_error": type(exc).__name__,
+            "failed_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        raise
     notification_ref.set({
         "date": trading_date,
         "status": "sent",
@@ -518,6 +644,8 @@ def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
         "message_id": message_id,
         "ranking_count": len(top10),
         "ranking_type": "executable",
+        "attempt_count": attempt_count,
+        "last_error": "",
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info("✅ %s 可執行 Top10 圖片已發送至 Telegram（%d 檔，message_id=%s）。", trading_date, len(top10), message_id)
@@ -540,14 +668,34 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
         logging.info("%s 可馬上執行 Telegram 圖片已發送，略過重複通知。", trading_date)
         return False
 
+    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
+    notification_ref.set({
+        "date": trading_date,
+        "status": "pending",
+        "fingerprint": fingerprint,
+        "attempt_count": attempt_count,
+        "last_error": "",
+        "attempted_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
     token, chat_id = _telegram_credentials()
-    message_id = send_executable_photo(scan_results, trading_date, token, chat_id)
+    try:
+        message_id = send_executable_photo(scan_results, trading_date, token, chat_id)
+    except Exception as exc:
+        notification_ref.set({
+            "status": "failed",
+            "attempt_count": attempt_count,
+            "last_error": type(exc).__name__,
+            "failed_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        raise
     notification_ref.set({
         "date": trading_date,
         "status": "sent",
         "fingerprint": fingerprint,
         "message_id": message_id,
         "executable_count": len(executable_rows),
+        "attempt_count": attempt_count,
+        "last_error": "",
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info(
@@ -564,11 +712,22 @@ def _load_tracking_performance_data(trading_date):
     history_document = (history_snapshot.to_dict() or {}) if history_snapshot.exists else {}
     history_payload = history_document.get("data", history_document)
     records = history_payload.get("records", []) if isinstance(history_payload, Mapping) else []
+    cumulative_performance = (
+        history_payload.get("cumulative_performance", {})
+        if isinstance(history_payload, Mapping)
+        else {}
+    )
 
     tracker_snapshot = db.collection("market_data").document("top10_tracker").get()
     tracker_document = (tracker_snapshot.to_dict() or {}) if tracker_snapshot.exists else {}
     tracker_payload = tracker_document.get("data", tracker_document)
-    positions = tracker_payload.get("positions", []) if isinstance(tracker_payload, Mapping) else []
+    positions = load_chunked_items(
+        db,
+        tracker_payload if isinstance(tracker_payload, Mapping) else {},
+        collection_name=TRACKER_CHUNK_COLLECTION,
+        ids_key="position_chunk_ids",
+        legacy_key="positions",
+    )
     date_text = str(trading_date)
 
     def in_tracking_window(row):
@@ -578,6 +737,7 @@ def _load_tracking_performance_data(trading_date):
     return (
         [row for row in records if isinstance(row, Mapping) and in_tracking_window(row)],
         [row for row in positions if isinstance(row, Mapping) and in_tracking_window(row)],
+        cumulative_performance if isinstance(cumulative_performance, Mapping) else {},
     )
 
 
@@ -590,8 +750,13 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
     if db is None:
         raise RuntimeError("Firestore 未初始化，無法讀取每日追蹤績效")
 
-    records, positions = _load_tracking_performance_data(date_text)
-    report = build_tracking_performance_report(records, positions, date_text)
+    records, positions, cumulative_performance = _load_tracking_performance_data(date_text)
+    report = build_tracking_performance_report(
+        records,
+        positions,
+        date_text,
+        cumulative_summary=cumulative_performance,
+    )
     if report["tracked_count"] == 0:
         logging.info("%s 尚無已產生盤後損益的追蹤股票，本次不發送空白績效圖。", date_text)
         return False
@@ -609,8 +774,57 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
         logging.info("%s 每日追蹤績效圖片已發送，略過重複通知。", date_text)
         return False
 
+    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
+    same_payload = not resend and previous_data.get("fingerprint") == fingerprint
+    sent_pages = (
+        dict(previous_data.get("sent_pages") or {})
+        if same_payload and isinstance(previous_data.get("sent_pages"), Mapping)
+        else {}
+    )
+    completed_page_numbers = {
+        int(page_number)
+        for page_number in sent_pages
+        if str(page_number).isdigit() and 1 <= int(page_number) <= report["page_count"]
+    }
+    notification_ref.set({
+        "date": date_text,
+        "status": "pending",
+        "fingerprint": fingerprint,
+        "attempt_count": attempt_count,
+        "last_error": "",
+        "sent_pages": sent_pages,
+        "attempted_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
     token, chat_id = _telegram_credentials()
-    message_id = send_tracking_performance_photo(records, positions, date_text, token, chat_id)
+
+    def record_sent_page(page_number, message_id, page_count):
+        sent_pages[str(page_number)] = message_id
+        notification_ref.set({
+            "sent_pages": dict(sent_pages),
+            "page_count": int(page_count),
+            "last_sent_page": int(page_number),
+            "last_page_sent_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+
+    try:
+        message_id = send_tracking_performance_photo(
+            records,
+            positions,
+            date_text,
+            token,
+            chat_id,
+            cumulative_summary=cumulative_performance,
+            skip_page_numbers=completed_page_numbers,
+            on_page_sent=record_sent_page,
+        )
+    except Exception as exc:
+        notification_ref.set({
+            "status": "failed",
+            "attempt_count": attempt_count,
+            "last_error": type(exc).__name__,
+            "failed_at": firestore.SERVER_TIMESTAMP,
+        }, merge=True)
+        raise
     notification_ref.set({
         "date": date_text,
         "status": "sent",
@@ -620,6 +834,9 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
         "valid_count": report["valid_count"],
         "missing_count": report["missing_count"],
         "page_count": report["page_count"],
+        "sent_pages": sent_pages,
+        "attempt_count": attempt_count,
+        "last_error": "",
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info(
@@ -630,6 +847,33 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
         message_id,
     )
     return True
+
+
+def send_daily_notifications(scan_results, trading_date, *, resend=False):
+    """Attempt every daily Telegram artifact and fail only after all were tried."""
+    failures = []
+    tasks = (
+        (
+            "可執行 Top10",
+            lambda: send_daily_top10_notification(scan_results, trading_date, resend=resend),
+        ),
+        (
+            "可馬上執行",
+            lambda: send_daily_executable_notification(scan_results, trading_date, resend=resend),
+        ),
+        (
+            "每日追蹤績效",
+            lambda: send_daily_tracking_performance_notification(trading_date, resend=resend),
+        ),
+    )
+    for label, sender in tasks:
+        try:
+            sender()
+        except Exception as exc:
+            logging.exception("%s Telegram 通知失敗", label)
+            failures.append(f"{label}: {type(exc).__name__}")
+    if failures:
+        raise RuntimeError("Telegram 通知未完整送達（" + "；".join(failures) + "）")
 
 
 def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
@@ -643,10 +887,22 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
         missing_ranking_dates = []
         partial_ranking_dates = []
         unverified_ranking_dates = []
+        old_position_chunk_ids = []
         if doc.exists:
-            data_field = doc.to_dict().get("data", {})
+            document_data = doc.to_dict() or {}
+            data_field = document_data.get("data", document_data)
+            if not isinstance(data_field, Mapping):
+                raise RuntimeError("top10_tracker 文件格式錯誤：data 必須是物件")
             # Fallback for old structure if necessary
-            positions = data_field.get("positions", doc.to_dict().get("positions", []))
+            positions = load_chunked_items(
+                db,
+                data_field,
+                collection_name=TRACKER_CHUNK_COLLECTION,
+                ids_key="position_chunk_ids",
+                legacy_key="positions",
+            )
+            if int(data_field.get("storage_schema") or 1) >= STORAGE_SCHEMA_VERSION:
+                old_position_chunk_ids = manifest_chunk_ids(data_field, "position_chunk_ids")
             history_dates = data_field.get("history_dates", [])
             missing_ranking_dates = data_field.get("missing_ranking_dates", [])
             partial_ranking_dates = data_field.get("partial_ranking_dates", [])
@@ -754,9 +1010,14 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
             str(item) for item in unverified_ranking_dates if item and str(item) != date_str
         })
         has_historical_gaps = bool(remaining_missing_dates or remaining_partial_dates or remaining_unverified_dates)
+        cumulative_performance = build_cumulative_performance_summary(all_positions, date_str)
 
         tracker_payload = {
-            "positions": all_positions,
+            "storage_schema": STORAGE_SCHEMA_VERSION,
+            "position_chunk_collection": TRACKER_CHUNK_COLLECTION,
+            "position_chunk_ids": [],
+            "record_count": len(all_positions),
+            "content_hash": _records_content_hash(all_positions),
             "latest_date": date_str,
             "latest_snapshots": daily_snapshots,
             "latest_benchmark": dict(benchmark) if isinstance(benchmark, Mapping) else {},
@@ -766,6 +1027,7 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
             "partial_ranking_dates": remaining_partial_dates,
             "unverified_ranking_dates": remaining_unverified_dates,
             "backfill_note": "歷史缺漏榜單未使用事後資料重算排名" if has_historical_gaps else "",
+            "cumulative_performance": cumulative_performance,
         }
         history_payload = {
             "date": date_str,
@@ -774,15 +1036,28 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
             "ranking_status": "ok",
             "data_status": "ok",
             "missing_reason": "",
+            "cumulative_performance": cumulative_performance,
             "summary": {
                 "tracked_count": len(daily_snapshots),
                 "open_count": len([p for p in all_positions if p.get("status") == "OPEN"]),
                 "pending_count": len([p for p in all_positions if p.get("status") == "PENDING"]),
+                "unresolved_count": len([p for p in all_positions if p.get("status") == "UNRESOLVED"]),
                 "actions": action_counts,
             },
         }
         history_ref = db.collection("top10_tracking_history").document(date_str)
         batch = db.batch()
+        position_documents = build_chunk_documents(
+            all_positions,
+            prefix="top10_tracker",
+            version=date_str,
+        )
+        tracker_payload["position_chunk_ids"] = _stage_chunk_documents(
+            batch,
+            TRACKER_CHUNK_COLLECTION,
+            position_documents,
+            old_position_chunk_ids,
+        )
         batch.set(tracker_ref, {"data": tracker_payload, "update_time": firestore.SERVER_TIMESTAMP})
         batch.set(history_ref, {"data": history_payload, "update_time": firestore.SERVER_TIMESTAMP})
         batch.commit()
@@ -814,8 +1089,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
 
     scan_date_str = latest_trading_date(twii_df.index) if twii_df is not None and not twii_df.empty else ""
     if not scan_date_str or twii_close <= 0:
-        logging.error("無法確認最新實際交易日，本次不寫入掃描結果。")
-        return []
+        raise RuntimeError("無法確認最新實際交易日，本次不寫入掃描結果")
     benchmark_context = build_benchmark_context(twii_df)
 
     previous_payload = _load_daily_scan_doc()
@@ -823,17 +1097,8 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
         if previous_payload.get("scan_date") == scan_date_str:
             logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
             if send_telegram:
-                send_daily_top10_notification(
+                send_daily_notifications(
                     previous_payload.get("data", []),
-                    scan_date_str,
-                    resend=resend_telegram,
-                )
-                send_daily_executable_notification(
-                    previous_payload.get("data", []),
-                    scan_date_str,
-                    resend=resend_telegram,
-                )
-                send_daily_tracking_performance_notification(
                     scan_date_str,
                     resend=resend_telegram,
                 )
@@ -845,7 +1110,6 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
     scan_profile = "weekly_500" if universe_limit == 500 else f"daily_{universe_limit}"
     logging.info("🚀 開始執行 %s 雷達掃描（%s 檔，%s）...", scan_date_str, universe_limit, scan_profile)
     try:
-        build_industry_cache()
         ranked_tickers = fetch_top_stocks(universe_limit)
         if len(ranked_tickers) < universe_limit:
             raise RuntimeError(
@@ -858,7 +1122,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             )
         price_data = fetch_stock_data_batch(pool)
     except Exception as e:
-        _finish_scan_lease(scan_date_str, "failed", 0, str(e))
+        _finish_scan_lease(scan_date_str, "failed", 0, e)
         raise
     scan_results = []
     previous_streaks, previous_ranks, same_day_rerun = previous_scan_state(previous_payload, scan_date_str)
@@ -867,7 +1131,16 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
         df = price_data.get(stock)
         if df is None:
             df = get_stock_data(stock)
-        if df is not None:
+        if df is not None and len(df) >= 2:
+            stock_data_date = latest_trading_date(df.index)
+            if not stock_frame_matches_scan_date(df, scan_date_str):
+                logging.warning(
+                    "略過行情日期不符的股票 %s：預期 %s，取得 %s",
+                    stock,
+                    scan_date_str,
+                    stock_data_date or "無法判定",
+                )
+                return None
             t = df.iloc[-1]
             p = df.iloc[-2]
             t_close, t_open, t_high, t_low = t['Close'], t['Open'], t['High'], t['Low']
@@ -993,7 +1266,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             for res in executor.map(process_stock, pool):
                 if res: scan_results.append(res)
 
-        scan_results = sorted(scan_results, key=lambda x: (x['Score'], x['漲跌幅']), reverse=True)
+        scan_results = sorted(scan_results, key=scan_ranking_key, reverse=True)
 
         for idx, res in enumerate(scan_results):
             curr_rank = idx + 1
@@ -1016,14 +1289,14 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             logging.warning("allow_local=True：Firestore 未初始化，僅回傳本機掃描結果。")
             return scan_results
 
-        db.collection("market_data").document("daily_scan").set({
-            "data": scan_results,
-            "scan_date": scan_date_str,
-            "scan_limit": universe_limit,
-            "universe_size": len(pool),
-            "scan_profile": scan_profile,
-            "update_time": firestore.SERVER_TIMESTAMP
-        })
+        _write_daily_scan_doc(
+            scan_results,
+            scan_date=scan_date_str,
+            scan_limit=universe_limit,
+            universe_size=len(pool),
+            scan_profile=scan_profile,
+            previous=previous_payload,
+        )
 
         top10 = select_executable_top10(scan_results)
         history_data = build_top10_history_rows(top10)
@@ -1039,15 +1312,13 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
         logging.info("已記錄 %s 可執行 Top10 榜單（%d 檔）", scan_date_str, len(top10))
         update_top10_tracker(top10, scan_date_str, benchmark=benchmark_context)
     except Exception as e:
-        _finish_scan_lease(scan_date_str, "failed", len(scan_results), str(e))
+        _finish_scan_lease(scan_date_str, "failed", len(scan_results), e)
         logging.exception("全市場掃描失敗: %s", e)
         raise
 
     _finish_scan_lease(scan_date_str, "completed", len(scan_results))
     if send_telegram:
-        send_daily_top10_notification(top10, scan_date_str, resend=resend_telegram)
-        send_daily_executable_notification(scan_results, scan_date_str, resend=resend_telegram)
-        send_daily_tracking_performance_notification(scan_date_str, resend=resend_telegram)
+        send_daily_notifications(scan_results, scan_date_str, resend=resend_telegram)
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results
 

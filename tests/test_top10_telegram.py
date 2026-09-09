@@ -4,6 +4,8 @@ import unittest
 from PIL import Image
 
 from top10_telegram import (
+    EXECUTABLE_GAP_RISK_TEXT,
+    EXECUTABLE_RISK_MODEL_TEXT,
     build_executable_display_rows,
     build_tracking_performance_report,
     build_top10_display_rows,
@@ -35,6 +37,30 @@ class _Session:
 
 
 class Top10TelegramTests(unittest.TestCase):
+    def test_tracking_report_uses_persisted_schema2_cumulative_summary(self):
+        cumulative = {
+            "execution_schema_2_plus": {
+                "trade_count": 3,
+                "win_rate_pct": 66.67,
+                "estimated_net_pnl_total": 1234,
+            },
+            "legacy": {"trade_count": 2, "win_rate_pct": 50},
+            "excluded_count": 4,
+        }
+
+        report = build_tracking_performance_report(
+            [],
+            [],
+            "2026-09-09",
+            cumulative_summary=cumulative,
+        )
+
+        self.assertTrue(report["cumulative_available"])
+        self.assertEqual(report["cumulative_strategy_count"], 3)
+        self.assertEqual(report["cumulative_strategy_win_rate"], 66.67)
+        self.assertEqual(report["cumulative_legacy_count"], 2)
+        self.assertEqual(report["cumulative_excluded_count"], 4)
+
     def setUp(self):
         self.rows = [{
             "Rank": 1,
@@ -96,8 +122,13 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(rows[0]["close_value"], 1234)
         self.assertNotIn("source_rank_text", rows[0])
         self.assertNotIn("rrr_text", rows[0])
-        self.assertEqual(rows[0]["suggested_shares"], 78)
+        self.assertEqual(rows[0]["risk_entry_price"], 1235)
+        self.assertEqual(rows[0]["suggested_shares"], 68)
         self.assertLessEqual(rows[0]["estimated_loss"], 5000)
+        self.assertGreater(
+            rows[0]["estimated_loss"],
+            rows[0]["suggested_shares"] * (1235 - 1170),
+        )
         self.assertEqual(rows[0]["analysis"], "價格位於 20MA 回測區，且量比達標。")
         self.assertEqual(len(rows[0]["mini_kbars"]), 2)
 
@@ -118,9 +149,29 @@ class Top10TelegramTests(unittest.TestCase):
         ]
         rows = build_executable_display_rows(ready)
         self.assertTrue(all(row["suggested_shares"] > 0 for row in rows))
-        self.assertEqual([row["suggested_shares"] for row in rows], [500, 250])
+        self.assertEqual([row["suggested_shares"] for row in rows], [472, 236])
         self.assertTrue(all(row["estimated_loss"] <= 5000 for row in rows))
         self.assertGreater(sum(row["estimated_loss"] for row in rows), 9000)
+
+    def test_position_size_uses_entry_zone_high_not_current_price(self):
+        ready = dict(
+            self.rows[0], 收盤價=95, Entry_Status="現在可執行",
+            Entry_Low=95, Entry_High=100, Entry_Stop=90, Entry_Target=115,
+        )
+
+        row = build_executable_display_rows([ready])[0]
+
+        self.assertEqual(row["risk_entry_price"], 100)
+        self.assertEqual(row["suggested_shares"], 472)
+        self.assertLessEqual(row["estimated_loss"], 5000)
+
+    def test_image_disclosure_mentions_model_costs_and_gap_risk(self):
+        self.assertIn("手續費", EXECUTABLE_RISK_MODEL_TEXT)
+        self.assertIn("每筆最低", EXECUTABLE_RISK_MODEL_TEXT)
+        self.assertIn("交易稅", EXECUTABLE_RISK_MODEL_TEXT)
+        self.assertIn("停損滑價", EXECUTABLE_RISK_MODEL_TEXT)
+        self.assertIn("跳空", EXECUTABLE_GAP_RISK_TEXT)
+        self.assertIn("可能超額", EXECUTABLE_GAP_RISK_TEXT)
 
     def test_executable_chart_keeps_the_latest_30_real_bars(self):
         mini_k = [
@@ -339,6 +390,28 @@ class Top10TelegramTests(unittest.TestCase):
             session.calls[1][1]["files"]["photo"][0],
             "tracking-performance-2026-08-28-p2-of-2.png",
         )
+
+        resumed_session = _Session()
+        sent_callbacks = []
+        resumed_id = send_tracking_performance_photo(
+            records,
+            positions,
+            "2026-08-28",
+            "token",
+            "chat",
+            session=resumed_session,
+            skip_page_numbers={1},
+            on_page_sent=lambda page, message, total: sent_callbacks.append(
+                (page, message, total)
+            ),
+        )
+        self.assertEqual(resumed_id, 321)
+        self.assertEqual(len(resumed_session.calls), 1)
+        self.assertEqual(
+            resumed_session.calls[0][1]["files"]["photo"][0],
+            "tracking-performance-2026-08-28-p2-of-2.png",
+        )
+        self.assertEqual(sent_callbacks, [(2, 321, 2)])
 
 
 if __name__ == "__main__":

@@ -100,6 +100,36 @@ class BacktestExecutionTests(unittest.TestCase):
         )
         self.assertIsNone(result)
 
+    def test_nonfinite_trade_prices_and_parameters_are_rejected(self):
+        bars = pd.DataFrame([{"Open": 100, "High": 105, "Low": 95, "Close": 101}])
+        valid = {"target_price": 110, "stop_price": 90, "entry_price": 100}
+
+        self.assertIsNone(_trade_result(bars, **{**valid, "target_price": float("nan")}))
+        self.assertIsNone(_trade_result(bars, **valid, exit_slippage_rate=float("inf")))
+        self.assertIsNone(_trade_result(bars, **valid, shares=1.5))
+
+    def test_trade_prices_must_be_strictly_ordered_and_positive(self):
+        bars = pd.DataFrame([{"Open": 100, "High": 105, "Low": 95, "Close": 101}])
+
+        invalid_levels = (
+            {"stop_price": 0, "entry_price": 100, "target_price": 110},
+            {"stop_price": 100, "entry_price": 100, "target_price": 110},
+            {"stop_price": 90, "entry_price": 100, "target_price": 100},
+            {"stop_price": 105, "entry_price": 100, "target_price": 110},
+        )
+        for levels in invalid_levels:
+            with self.subTest(levels=levels):
+                self.assertIsNone(_trade_result(bars, **levels))
+
+    def test_nonfinite_backtest_configuration_is_rejected_before_scoring(self):
+        bars = self._flat_bars()
+        with patch("analysis_core.is_strategy_signal") as signal:
+            result = calculate_historical_performance(bars, target_mult=float("nan"))
+
+        self.assertEqual(result["closed_signals"], 0)
+        self.assertEqual(result["trades"], [])
+        signal.assert_not_called()
+
     def test_current_fundamental_snapshot_is_not_reused_in_history(self):
         bars = pd.DataFrame({"Close": range(100, 121)})
         with patch("analysis_core.is_strategy_signal", return_value=(False, 0, {})) as signal:
@@ -155,7 +185,8 @@ class BacktestExecutionTests(unittest.TestCase):
     def test_default_signal_gap_is_at_least_the_holding_window(self):
         self.assertGreaterEqual(BACKTEST_MIN_GAP_DAYS, BACKTEST_HOLD_DAYS)
         bars = self._flat_bars(50)
-        bars["ATR"] = 100.0
+        # Keep the synthetic price plan valid: 0 < stop < entry < target.
+        bars["ATR"] = 10.0
 
         with patch("analysis_core.is_strategy_signal", return_value=(True, 80, {})):
             result = calculate_historical_performance(

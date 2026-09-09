@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from collections.abc import Mapping
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -57,12 +58,37 @@ def _message_from_update(update: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return message if isinstance(message, Mapping) else None
 
 
+def _checkpoint_update(token: str, update_id: int, *, attempts: int = 3) -> None:
+    """Confirm one handled update before moving to the next one.
+
+    ``getUpdates`` with a higher offset is idempotent, so it is safe to retry.
+    Checkpointing each update prevents a later reply failure from replaying all
+    earlier replies on the next short-lived GitHub Actions poll.
+    """
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        try:
+            _telegram_api(token, "getUpdates", {
+                "offset": update_id + 1,
+                "timeout": 0,
+                "limit": 1,
+            })
+            return
+        except RuntimeError:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.25 * (2 ** attempt))
+
+
 def poll_once(token: str, allowed_chat_id: str, base_url: str = "") -> int:
     """Process currently pending messages and confirm only successfully handled updates."""
     webhook_info = _telegram_api(token, "getWebhookInfo", {})
     webhook_result = webhook_info.get("result")
     if isinstance(webhook_result, Mapping) and str(webhook_result.get("url") or "").strip():
-        _telegram_api(token, "deleteWebhook", {"drop_pending_updates": "false"})
+        # Polling and webhook delivery are mutually exclusive in Telegram.  A
+        # scheduled poll must never disable a deliberately configured webhook.
+        print("poll_skipped=webhook_active")
+        return 0
 
     response = _telegram_api(token, "getUpdates", {
         "timeout": 0,
@@ -72,7 +98,6 @@ def poll_once(token: str, allowed_chat_id: str, base_url: str = "") -> int:
     raw_updates = response.get("result")
     updates = [row for row in raw_updates if isinstance(row, Mapping)] if isinstance(raw_updates, list) else []
     updates.sort(key=lambda row: int(row.get("update_id") or -1))
-    confirmed_update_id: int | None = None
     replies = 0
 
     for update in updates:
@@ -82,12 +107,12 @@ def poll_once(token: str, allowed_chat_id: str, base_url: str = "") -> int:
             continue
         message = _message_from_update(update)
         if message is None:
-            confirmed_update_id = update_id
+            _checkpoint_update(token, update_id)
             continue
         chat = message.get("chat")
         chat_id = str(chat.get("id") or "").strip() if isinstance(chat, Mapping) else ""
         if not chat_id or not hmac.compare_digest(chat_id, allowed_chat_id):
-            confirmed_update_id = update_id
+            _checkpoint_update(token, update_id)
             continue
         message_id_raw = message.get("message_id")
         message_id = int(message_id_raw) if isinstance(message_id_raw, (int, float)) else None
@@ -109,14 +134,7 @@ def poll_once(token: str, allowed_chat_id: str, base_url: str = "") -> int:
                     analysis_url=analysis_url,
                 )
             replies += 1
-        confirmed_update_id = update_id
-
-    if confirmed_update_id is not None:
-        _telegram_api(token, "getUpdates", {
-            "offset": confirmed_update_id + 1,
-            "timeout": 0,
-            "limit": 1,
-        })
+        _checkpoint_update(token, update_id)
     return replies
 
 
