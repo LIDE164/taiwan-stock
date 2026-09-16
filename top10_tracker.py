@@ -15,6 +15,11 @@ from execution_costs import (
 
 TRACKER_EXECUTION_SCHEMA = 2
 PER_POSITION_MAX_RISK = 5000.0
+MAX_HOLDING_SESSIONS = 9
+MIN_EXECUTION_REWARD_RISK = 1.3
+MAX_BEARISH_OPENING_GAP_PCT = -0.8
+MAX_ACTIVE_POSITIONS = 10
+MAX_ACTIVE_INDUSTRY_POSITIONS = 2
 BUY_COMMISSION_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.buy_commission_rate
 SELL_COMMISSION_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_commission_rate
 SELL_TAX_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_tax_rate
@@ -259,7 +264,7 @@ def build_cumulative_performance_summary(
             and float(shares_value).is_integer()
         )
         is_complete = (
-            status in {"CLOSED_TP", "CLOSED_SL"}
+            status in {"CLOSED_TP", "CLOSED_SL", "CLOSED_TIME"}
             and entry_date is not None
             and close_date is not None
             and entry_date <= close_date <= cutoff
@@ -368,9 +373,19 @@ _SIGNAL_SNAPSHOT_FIELDS = (
     "Entry_Plan_Type", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target",
     "No_Chase_Price", "Entry_Reason", "Entry_Pattern", "Signal_Conflict",
     "RSI", "BIAS", "ATR", "Est_Vol_Ratio", "Volume_Confirmed", "Confidence",
-    "Data_Quality", "WinRate", "Backtest_Samples", "Backtest_Scope",
+    "Data_Completeness", "Model_Confidence", "Model_Confidence_Label", "Data_Quality",
+    "WinRate", "Backtest_Samples", "Backtest_Scope",
     "Validation_WinRate", "Validation_Samples", "Reasons", "Feature",
     "Market_Regime", "Market_Return",
+    "EPS", "EPS_Period", "MoM", "YoY", "Revenue_Period", "Revenue_Source",
+    "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Revenue",
+    "Financial_Gross_Profit", "Financial_Operating_Income", "Financial_Net_Income",
+    "Financial_EPS", "Financial_Gross_Margin", "Financial_Operating_Margin",
+    "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio",
+    "Financial_Risk_Level", "Financial_Risk_Flags",
+    "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status",
+    "Institutional_Source", "Institutional_Rows", "Institutional_Sell_Streak",
+    "Foreign_Net", "Trust_Net",
 )
 
 
@@ -467,6 +482,12 @@ def _snapshot(
         "planned_transaction_cost": position.get("planned_transaction_cost"),
         "planned_stop_execution_price": position.get("planned_stop_execution_price"),
         "risk_model": position.get("risk_model"),
+        "actual_reward_risk": position.get("actual_reward_risk"),
+        "minimum_reward_risk": position.get("minimum_reward_risk"),
+        "holding_session_count": position.get("holding_session_count"),
+        "max_holding_sessions": position.get("max_holding_sessions"),
+        "entry_market_regime": position.get("entry_market_regime"),
+        "entry_market_opening_gap_pct": position.get("entry_market_opening_gap_pct"),
         "status": str(position.get("status", "")),
         "action": action,
         "close_date": position.get("close_date"),
@@ -625,13 +646,19 @@ def _pending_fill_price(
     low: float,
     high: float,
 ) -> float | None:
-    """Resolve a deterministic next-session zone fill from a complete daily bar."""
+    """Resolve a deterministic next-session zone fill from a complete daily bar.
+
+    A bar opening below the saved zone is deliberately not filled.  A daily bar
+    can show a later upward touch, but that is a different momentum entry from
+    the planned pullback and would otherwise turn a weak gap into a hypothetical
+    trade after seeing the day's high.
+    """
     if bar["high"] < low or bar["low"] > high:
         return None
     if low <= bar["open"] <= high:
         return bar["open"]
     if bar["open"] < low:
-        return low
+        return None
     return high
 
 
@@ -707,6 +734,8 @@ def _new_pending_position(
         "stop_price": round(stop, 4),
         "target_price": round(target, 4),
         "max_risk_amount": PER_POSITION_MAX_RISK,
+        "minimum_reward_risk": MIN_EXECUTION_REWARD_RISK,
+        "max_holding_sessions": MAX_HOLDING_SESSIONS,
         "signal_score": _optional_number(row.get("Score")),
         "signal_rank": _rank(row) or rank,
         "signal_change_pct": _optional_number(row.get("漲跌幅")),
@@ -733,6 +762,17 @@ def _activate_pending_position(
     high = _number(position.get("planned_entry_high"))
     stop = _number(position.get("stop_price"))
     target = _number(position.get("target_price"))
+    if 0 < stop < low <= high < target and bar["open"] < low:
+        position.update({
+            "status": "EXPIRED",
+            "expire_date": trading_date,
+            "expire_reason": "次一交易日跳空低於建議進場區，取消訊號且不假設反彈觸價成交",
+            "current_price": bar["close"],
+            "entry_session_status": "gap_below_cancelled",
+            "fill_rule": "GAP_BELOW_CANCELLED",
+        })
+        position["pending_attempts"] = int(_number(position.get("pending_attempts"), 0)) + 1
+        return False, "ENTRY_EXPIRED"
     fill = _pending_fill_price(bar, low, high) if 0 < stop < low <= high < target else None
     position["pending_attempts"] = int(_number(position.get("pending_attempts"), 0)) + 1
     if fill is None:
@@ -758,10 +798,26 @@ def _activate_pending_position(
             "entry_session_status": "risk_limit_invalid",
         })
         return False, "ENTRY_EXPIRED"
+    actual_reward_risk = (target - fill) / (fill - stop)
+    if not math.isfinite(actual_reward_risk) or actual_reward_risk < MIN_EXECUTION_REWARD_RISK:
+        position.update({
+            "status": "EXPIRED",
+            "expire_date": trading_date,
+            "expire_reason": (
+                f"實際成交價報酬風險比 {actual_reward_risk:.2f} "
+                f"低於最低門檻 {MIN_EXECUTION_REWARD_RISK:.1f}"
+            ),
+            "current_price": bar["close"],
+            "entry_session_status": "reward_risk_below_minimum",
+            "candidate_entry_price": round(fill, 4),
+            "actual_reward_risk": round(actual_reward_risk, 3),
+            "minimum_reward_risk": MIN_EXECUTION_REWARD_RISK,
+        })
+        return False, "ENTRY_EXPIRED"
     shares = risk_estimate.shares
     fill_rule = (
         "OPEN_IN_ZONE" if low <= bar["open"] <= high
-        else ("GAP_BELOW_TOUCH" if bar["open"] < low else "PULLBACK_TOUCH")
+        else "PULLBACK_TOUCH"
     )
     position.update({
         "status": "OPEN",
@@ -776,6 +832,11 @@ def _activate_pending_position(
         "planned_transaction_cost": round(risk_estimate.transaction_cost, 2),
         "planned_stop_execution_price": round(risk_estimate.stop_execution_price, 4),
         "risk_model": "commission_tax_stop_slippage",
+        "actual_reward_risk": round(actual_reward_risk, 3),
+        "minimum_reward_risk": MIN_EXECUTION_REWARD_RISK,
+        "holding_session_count": 1,
+        "max_holding_sessions": MAX_HOLDING_SESSIONS,
+        "holding_session_count_basis": "complete_daily_ohlc",
         "entry_notional": round(fill * shares, 2),
         "highest_price": round(fill, 4),
         "lowest_price": round(fill, 4),
@@ -828,31 +889,6 @@ def _activate_pending_position(
             "entry_bar_exit_check": "pullback_crossed_stop_after_fill",
             "entry_bar_extremes_included": False,
             "last_bar_excursion_status": "pullback_stop_after_fill",
-        })
-    elif fill_rule == "GAP_BELOW_TOUCH" and bar["low"] > stop:
-        # With the whole bar above the stop after opening below the zone, the
-        # upward path through the fill is safe to resolve.  Its high occurs
-        # after that crossing; the low is not attributed to the position.
-        hit_target_after_fill = bar["high"] >= target
-        action = "TAKE_PROFIT" if hit_target_after_fill else "ENTRY"
-        mark = target if hit_target_after_fill else bar["close"]
-        position.update({
-            "status": "CLOSED_TP" if hit_target_after_fill else "OPEN",
-            "close_date": trading_date if hit_target_after_fill else None,
-            "close_price": round(target, 4) if hit_target_after_fill else None,
-            "current_price": round(mark, 4),
-            "highest_price": round(target if hit_target_after_fill else bar["high"], 4),
-            "lowest_price": round(
-                fill if hit_target_after_fill else min(fill, bar["close"]),
-                4,
-            ),
-            "entry_bar_resolution": "resolved",
-            "entry_bar_exit_check": "gap_below_upward_path_resolved",
-            "entry_bar_extremes_included": False,
-            "last_bar_excursion_status": (
-                "gap_below_target_after_fill" if hit_target_after_fill
-                else "gap_below_held_after_fill"
-            ),
         })
     elif fill_rule == "PULLBACK_TOUCH" and bar["high"] < target:
         # No barrier can have been touched: the low follows the first downward
@@ -970,6 +1006,14 @@ def update_positions_with_snapshots(
             benchmark_previous = _iso_date(
                 benchmark_context.get("previous_trading_date")
             )
+            benchmark_opening_gap = _optional_number(
+                benchmark_context.get("opening_gap_pct")
+            )
+            raw_signal_snapshot = position.get("signal_snapshot")
+            signal_snapshot: Mapping[str, Any] = (
+                raw_signal_snapshot if isinstance(raw_signal_snapshot, Mapping) else {}
+            )
+            signal_market_regime = str(signal_snapshot.get("Market_Regime") or "")
             is_confirmed_next_session = (
                 current_date is not None
                 and signal_session is not None
@@ -1070,6 +1114,48 @@ def update_positions_with_snapshots(
                     take_profit_pct=take_profit_pct,
                     stop_loss_pct=stop_loss_pct,
                 )
+            elif signal_market_regime == "空頭":
+                position.update({
+                    "status": "EXPIRED",
+                    "expire_date": trading_date,
+                    "expire_reason": "訊號日大盤仍在空頭結構，取消新增多單",
+                    "entry_session_status": "market_regime_veto",
+                    "entry_market_regime": signal_market_regime,
+                })
+                snapshot = make_snapshot(
+                    position,
+                    trading_date,
+                    top_row,
+                    bar,
+                    action="ENTRY_EXPIRED",
+                    data_status="ok",
+                    take_profit_pct=take_profit_pct,
+                    stop_loss_pct=stop_loss_pct,
+                )
+            elif (
+                benchmark_date == current_date
+                and benchmark_opening_gap is not None
+                and benchmark_opening_gap <= MAX_BEARISH_OPENING_GAP_PCT
+            ):
+                position.update({
+                    "status": "EXPIRED",
+                    "expire_date": trading_date,
+                    "expire_reason": (
+                        f"大盤開盤跳空 {benchmark_opening_gap:.2f}% 低於風險門檻，取消進場"
+                    ),
+                    "entry_session_status": "market_open_gap_veto",
+                    "entry_market_opening_gap_pct": round(benchmark_opening_gap, 2),
+                })
+                snapshot = make_snapshot(
+                    position,
+                    trading_date,
+                    top_row,
+                    bar,
+                    action="ENTRY_EXPIRED",
+                    data_status="ok",
+                    take_profit_pct=take_profit_pct,
+                    stop_loss_pct=stop_loss_pct,
+                )
             else:
                 filled, entry_action = _activate_pending_position(position, bar, trading_date)
                 snapshot = make_snapshot(
@@ -1137,6 +1223,28 @@ def update_positions_with_snapshots(
         close_price, close_status, action, observed_high, observed_low, resolution = (
             _resolve_exit_from_open(bar, target, stop)
         )
+        if _schema_version(position) >= TRACKER_EXECUTION_SCHEMA:
+            raw_holding_count = _optional_number(position.get("holding_session_count"))
+            if raw_holding_count is None or raw_holding_count < 1:
+                # Older schema-2 positions did not persist the count.  Start a
+                # transparent lower bound instead of fabricating past sessions.
+                holding_count = 1
+                position["holding_session_count_basis"] = "post_upgrade_lower_bound"
+            else:
+                holding_count = int(raw_holding_count) + 1
+            max_holding = int(
+                _number(position.get("max_holding_sessions"), MAX_HOLDING_SESSIONS)
+            )
+            if max_holding < 1:
+                max_holding = MAX_HOLDING_SESSIONS
+            position["holding_session_count"] = holding_count
+            position["max_holding_sessions"] = max_holding
+            if close_status is None and holding_count >= max_holding:
+                close_price = bar["close"]
+                close_status = "CLOSED_TIME"
+                action = "TIME_EXIT"
+                resolution = "max_holding_close"
+                position["close_reason"] = "MAX_HOLDING_SESSIONS"
         position["highest_price"] = max(
             _number(position.get("highest_price"), entry), observed_high
         )
@@ -1180,6 +1288,16 @@ def update_positions_with_snapshots(
         )
         or str(position.get("close_date") or "") == trading_date
     }
+    active_positions = [
+        position for position in updated
+        if str(position.get("status") or "") in {"OPEN", "PENDING", "UNRESOLVED"}
+    ]
+    active_count = len(active_positions)
+    active_industries: dict[str, int] = {}
+    for position in active_positions:
+        industry = str(position.get("signal_industry") or "").strip()
+        if industry and industry != "一般產業":
+            active_industries[industry] = active_industries.get(industry, 0) + 1
     for rank, row in enumerate(top10_results, start=1):
         ticker = str(row.get("代號", ""))
         if not ticker or ticker in blocked_today:
@@ -1190,6 +1308,24 @@ def update_positions_with_snapshots(
         bar = _quote(row)
         if bar is None:
             continue
+        industry = str(new_position.get("signal_industry") or "").strip()
+        portfolio_limit_reason = ""
+        if active_count >= MAX_ACTIVE_POSITIONS:
+            portfolio_limit_reason = f"未成交部位與持有部位已達 {MAX_ACTIVE_POSITIONS} 檔上限"
+        elif (
+            industry and industry != "一般產業"
+            and active_industries.get(industry, 0) >= MAX_ACTIVE_INDUSTRY_POSITIONS
+        ):
+            portfolio_limit_reason = (
+                f"{industry} 產業未成交與持有部位已達 {MAX_ACTIVE_INDUSTRY_POSITIONS} 檔上限"
+            )
+        if portfolio_limit_reason:
+            new_position.update({
+                "status": "EXPIRED",
+                "expire_date": trading_date,
+                "expire_reason": portfolio_limit_reason,
+                "entry_session_status": "portfolio_limit_veto",
+            })
         ranked_row = dict(row)
         ranked_row.setdefault("Rank", rank)
         snapshot = make_snapshot(
@@ -1197,7 +1333,7 @@ def update_positions_with_snapshots(
             trading_date,
             ranked_row,
             bar,
-            action="SIGNAL",
+            action="ENTRY_EXPIRED" if portfolio_limit_reason else "SIGNAL",
             take_profit_pct=take_profit_pct,
             stop_loss_pct=stop_loss_pct,
         )
@@ -1206,6 +1342,10 @@ def update_positions_with_snapshots(
         updated.append(new_position)
         snapshots.append(snapshot)
         blocked_today.add(ticker)
+        if not portfolio_limit_reason:
+            active_count += 1
+            if industry and industry != "一般產業":
+                active_industries[industry] = active_industries.get(industry, 0) + 1
     return updated, snapshots
 
 

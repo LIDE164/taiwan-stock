@@ -25,6 +25,26 @@ class BacktestExecutionTests(unittest.TestCase):
             index=pd.date_range("2026-01-01", periods=count, freq="B"),
         )
 
+    @staticmethod
+    def _executable_signal(history):
+        latest = history.iloc[-1]
+        return {
+            "收盤價": float(latest["Close"]),
+            "最高價": float(latest["High"]),
+            "最低價": float(latest["Low"]),
+            "20MA": 99.9,
+            "ATR": 1.0,
+            "BB_UP": 110.0,
+            "RSI": 55.0,
+            "BIAS": 1.0,
+            "漲跌幅": 0.0,
+            "Entry_Pattern": "一般觀察型",
+            "Signal_Conflict": "低",
+            "Est_Vol_Ratio": 1.2,
+            "Volume_Confirmed": True,
+            "Confidence": 100,
+        }
+
     def test_trailing_stop_raised_by_high_applies_from_next_bar(self):
         bars = pd.DataFrame([
             {"Open": 100, "High": 110, "Low": 99, "Close": 108},
@@ -141,7 +161,7 @@ class BacktestExecutionTests(unittest.TestCase):
         bars = self._flat_bars()
 
         def signal_only_near_tail(history, _fund, **_kwargs):
-            return len(history) == 23, 80, {}
+            return len(history) == 23, 80, self._executable_signal(history)
 
         with patch("analysis_core.is_strategy_signal", side_effect=signal_only_near_tail):
             result = calculate_historical_performance(
@@ -160,11 +180,11 @@ class BacktestExecutionTests(unittest.TestCase):
 
     def test_incomplete_tail_window_with_triggered_exit_is_retained(self):
         bars = self._flat_bars()
-        bars.iloc[23, bars.columns.get_loc("High")] = 102.0
-        bars.iloc[23, bars.columns.get_loc("Close")] = 101.5
+        bars.iloc[23, bars.columns.get_loc("High")] = 103.0
+        bars.iloc[23, bars.columns.get_loc("Close")] = 102.5
 
         def signal_only_near_tail(history, _fund, **_kwargs):
-            return len(history) == 23, 80, {}
+            return len(history) == 23, 80, self._executable_signal(history)
 
         with patch("analysis_core.is_strategy_signal", side_effect=signal_only_near_tail):
             result = calculate_historical_performance(
@@ -185,10 +205,11 @@ class BacktestExecutionTests(unittest.TestCase):
     def test_default_signal_gap_is_at_least_the_holding_window(self):
         self.assertGreaterEqual(BACKTEST_MIN_GAP_DAYS, BACKTEST_HOLD_DAYS)
         bars = self._flat_bars(50)
-        # Keep the synthetic price plan valid: 0 < stop < entry < target.
-        bars["ATR"] = 10.0
 
-        with patch("analysis_core.is_strategy_signal", return_value=(True, 80, {})):
+        def always_signal(history, _fund, **_kwargs):
+            return True, 80, self._executable_signal(history)
+
+        with patch("analysis_core.is_strategy_signal", side_effect=always_signal):
             result = calculate_historical_performance(
                 bars,
                 lookback_days=len(bars),

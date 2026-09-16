@@ -79,6 +79,16 @@ class ScannerTelegramTests(unittest.TestCase):
         self.assertEqual([row["Rank"] for row in selected], [1, 2])
         self.assertEqual([row["Overall_Rank"] for row in selected], [5, 9])
 
+    def test_executable_top10_caps_each_known_industry_at_two_names(self):
+        rows = [
+            dict(self.rows[0], Rank=1, 代號="1111", 產業="半導體"),
+            dict(self.rows[0], Rank=2, 代號="2222", 產業="半導體"),
+            dict(self.rows[0], Rank=3, 代號="3333", 產業="半導體"),
+            dict(self.rows[0], Rank=4, 代號="4444", 產業="電子零組件"),
+        ]
+        selected = scanner.select_executable_top10(rows)
+        self.assertEqual([row["代號"] for row in selected], ["1111", "2222", "4444"])
+
     def test_same_ranking_is_sent_only_once(self):
         with (
             patch.object(scanner, "db", self.db),

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from scan_state import (
     build_daily_scan_status,
+    build_model_confidence,
     build_scan_quality,
     latest_trading_date,
     next_streak,
@@ -99,6 +100,47 @@ class ScanStateTests(unittest.TestCase):
         })
         self.assertEqual(quality["revenue"], "missing")
         self.assertLess(confidence, 100)
+
+    def test_model_confidence_requires_backtest_and_validation_evidence(self):
+        confidence, label = build_model_confidence(None, None, None, None)
+        self.assertIsNone(confidence)
+        self.assertEqual(label, "回測資料不足")
+
+        confidence, label = build_model_confidence(52.0, 40, None, 0)
+        self.assertIsNone(confidence)
+        self.assertEqual(label, "驗證資料不足")
+
+    def test_model_confidence_uses_samples_and_validation_agreement(self):
+        low, low_label = build_model_confidence(55.0, 10, 55.0, 3)
+        medium, medium_label = build_model_confidence(55.0, 30, 55.0, 9)
+        high, high_label = build_model_confidence(55.0, 60, 55.0, 18)
+
+        self.assertLess(low, medium)
+        self.assertLess(medium, high)
+        self.assertEqual(low_label, "低可信")
+        self.assertEqual(medium_label, "中等可信")
+        self.assertEqual(high_label, "高可信")
+
+    def test_model_confidence_penalizes_validation_disagreement(self):
+        aligned, _ = build_model_confidence(55.0, 60, 55.0, 18)
+        divergent, label = build_model_confidence(55.0, 60, 25.0, 18)
+
+        self.assertLess(divergent, aligned)
+        self.assertEqual(label, "中等可信")
+
+    def test_zero_win_rate_is_not_treated_as_missing_when_samples_exist(self):
+        confidence, label = build_model_confidence(0, 60, 0, 18)
+        self.assertEqual(confidence, 100.0)
+        self.assertEqual(label, "高可信")
+
+    def test_model_confidence_rejects_non_finite_or_fractional_samples(self):
+        confidence, label = build_model_confidence(float("nan"), 30, 50, 9)
+        self.assertIsNone(confidence)
+        self.assertEqual(label, "回測資料不足")
+
+        confidence, label = build_model_confidence(50, 30.5, 50, 9)
+        self.assertIsNone(confidence)
+        self.assertEqual(label, "回測資料不足")
 
     def test_prefilter_keeps_every_candidate_that_can_reach_45(self):
         self.assertTrue(should_complete_candidate(36))

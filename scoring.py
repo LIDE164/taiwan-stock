@@ -82,6 +82,102 @@ def _num(value, default=0.0):
         return default
 
 
+def _optional_num(value):
+    """Return a finite number, or None when a data point was not reported."""
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        parsed = float(str(value).replace(",", ""))
+        return parsed if math.isfinite(parsed) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value):
+    """Parse an optional flag without treating a missing/string value as truthy."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "是", "有"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "否", "無"}:
+        return False
+    return None
+
+
+def _first_present(mapping, keys):
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def _institutional_risk_inputs(data, inst_data=None):
+    """Read optional institutional-risk facts without manufacturing zeroes.
+
+    Callers may provide precomputed aggregate fields, or pass recent daily rows.
+    Daily rows are expected newest first. A foreign/trust aggregate is inferred
+    only when every inspected row reports both components.
+    """
+    rows = inst_data
+    if rows is None and isinstance(data, dict):
+        rows = data.get("Institutional_Rows")
+    rows = [row for row in (rows or []) if isinstance(row, dict)][:3]
+
+    sell_streak = _optional_num(_first_present(data, (
+        "Institutional_Sell_Streak",
+        "Institutional_Consecutive_Sell_Days",
+        "Whale_Sell_Streak",
+    )))
+    foreign_net = _optional_num(_first_present(data, ("Foreign_Net", "Foreign_Net_3D")))
+    trust_net = _optional_num(_first_present(data, ("Trust_Net", "Trust_Net_3D")))
+    divergence = _optional_bool(_first_present(data, (
+        "Institutional_Flow_Divergence",
+        "Foreign_Trust_Divergence",
+    )))
+
+    if sell_streak is None and rows:
+        known_streak = 0
+        first_total_known = False
+        for row in rows:
+            total = _optional_num(_first_present(row, ("單日合計(張)", "total")))
+            if total is None:
+                break
+            first_total_known = True
+            if total >= 0:
+                break
+            known_streak += 1
+        if first_total_known:
+            sell_streak = float(known_streak)
+
+    if rows and (foreign_net is None or trust_net is None):
+        foreign_values = []
+        trust_values = []
+        components_complete = True
+        for row in rows:
+            foreign = _optional_num(_first_present(row, ("外資(張)", "foreign")))
+            trust = _optional_num(_first_present(row, ("投信(張)", "trust")))
+            if foreign is None or trust is None:
+                components_complete = False
+                break
+            foreign_values.append(foreign)
+            trust_values.append(trust)
+        if components_complete and foreign_values:
+            if foreign_net is None:
+                foreign_net = sum(foreign_values)
+            if trust_net is None:
+                trust_net = sum(trust_values)
+
+    if divergence is None and foreign_net is not None and trust_net is not None:
+        divergence = foreign_net * trust_net < 0
+
+    return sell_streak, foreign_net, trust_net, divergence
+
+
 def _has_required_score_data(data):
     if not isinstance(data, dict):
         return False
@@ -105,7 +201,7 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         return 0, "⚪ 資料不足", reasons, "資料不足"
 
     sc = 0.0
-    correlated = {
+    correlated: dict[str, list[float]] = {
         "trend": [],
         "reversal": [],
         "breakout": [],
@@ -145,21 +241,16 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     j_value = _num(data.get("J值"), 50)
     rsi = _num(data.get("RSI"), 50)
     momentum_score = _num(data.get("Momentum_Score"), 50)
-    whale_net = _num(data.get("Whale_Net"), 0)
-    if "Whale_Net" not in data and inst_data:
-        whale_net = sum(
-            _num(row.get("單日合計(張)", row.get("total", 0)))
-            for row in list(inst_data)[:3]
-            if isinstance(row, dict)
-        )
     confidence = _num(data.get("Confidence"), 100)
     tomorrow_turn_price = _num(data.get("明日5MA扣抵價"), 0)
     ma5_up = bool(data.get("5MA已上彎", data.get("5日線即將上彎", False)))
     signal_conflict = str(data.get("Signal_Conflict", "低"))
     entry_pattern = str(data.get("Entry_Pattern", ""))
     vix = _num(fund_data.get("VIX"), 0)
-    mom = _num(data.get("MoM"))
-    yoy = _num(data.get("YoY"))
+    # Prefer the provider payload so a missing fundamental value does not turn
+    # into the zero produced by technical-input normalization.
+    mom = _optional_num(fund_data.get("MoM")) if "MoM" in fund_data else _optional_num(data.get("MoM"))
+    yoy = _optional_num(fund_data.get("YoY")) if "YoY" in fund_data else _optional_num(data.get("YoY"))
 
     if data.get("訊號", False):
         if is_trending:
@@ -177,10 +268,20 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif roc_20 < -5:
         add(-2, f"🩸 近月跌幅 {roc_20:.2f}% 表現弱勢，避免接刀", "trend")
 
-    if mom > 0 and yoy > 0:
+    if mom is not None and yoy is not None and mom > 0 and yoy > 0:
         add(3, f"🔥 月營收雙增 (MoM: {mom:.2f}%, YoY: {yoy:.2f}%)")
-    elif yoy > 15:
-        add(2, f"✅ 月營收年增達 {yoy:.2f}%，營運動能強")
+    elif mom is not None and yoy is not None and mom < 0 and yoy < 0:
+        add(-3, f"⚠️ 月營收雙減 (MoM: {mom:.2f}%, YoY: {yoy:.2f}%)")
+    else:
+        if yoy is not None:
+            if yoy > 15:
+                add(2, f"✅ 月營收年增達 {yoy:.2f}%，營運動能強")
+            elif yoy < -15:
+                add(-2, f"⚠️ 月營收年減達 {abs(yoy):.2f}%，營運動能轉弱")
+            elif yoy < 0:
+                add(-1, f"⚠️ 月營收年減 {abs(yoy):.2f}%，基本面動能偏弱")
+        if mom is not None and mom < 0:
+            add(-1, f"⚠️ 月營收月減 {abs(mom):.2f}%，留意短期動能降溫")
 
     # 🛡️ 大盤環境過濾器 (Market Regime Filter)
     twii_close = _num(fund_data.get("TWII_Close"), 0.0)
@@ -194,14 +295,36 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
         else:
             add(2, f"🛡️ 大盤強多 (加權指數 {twii_close:.1f} 站上月線 {twii_ma20:.1f} 與季線 {twii_ma60:.1f}，適合積極操作)")
 
-    eps_f = _num(fund_data.get("EPS"), 0.0)
-    if eps_f > 0:
+    eps_f = _optional_num(fund_data.get("EPS"))
+    if eps_f is not None and eps_f > 0:
         add(2, "✅ EPS 為正，具獲利支撐")
-    elif eps_f < 0:
+    elif eps_f is not None and eps_f < 0:
         if strong_trend:
-            add(0, "⚠️ 基本面虧損，但技術面極強，可能為轉機股")
+            add(-2, "⚠️ EPS 為負；即使技術趨勢強，仍保留虧損風險")
         else:
-            add(-1, "⚠️ 基本面虧損")
+            add(-2, "⚠️ EPS 為負，缺乏獲利支撐")
+
+    financial_risk = str(
+        fund_data.get("Financial_Risk_Level")
+        or data.get("Financial_Risk_Level")
+        or ""
+    ).strip().lower()
+    operating_margin = _optional_num(
+        fund_data.get("Financial_Operating_Margin")
+        if "Financial_Operating_Margin" in fund_data
+        else data.get("Financial_Operating_Margin")
+    )
+    net_margin = _optional_num(
+        fund_data.get("Financial_Net_Margin")
+        if "Financial_Net_Margin" in fund_data
+        else data.get("Financial_Net_Margin")
+    )
+    if financial_risk == "high":
+        add(-4, "⚠️ 最新季度財報品質屬高風險，不以技術強勢掩蓋")
+    elif financial_risk == "medium":
+        add(-2, "⚠️ 最新季度財報品質偏弱，需保守評估")
+    elif financial_risk == "low" and operating_margin is not None and net_margin is not None:
+        add(1, "✅ 最新季度獲利與償債品質未觸發風險警示")
 
     is_breakout = data.get("Box_Breakout", False) or data.get("紅吞", False)
     
@@ -250,19 +373,46 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     elif momentum_score <= 35:
         add(-2, f"⚠️ 趨勢品質偏弱 ({momentum_score:.0f}/100)", "trend")
 
-    whale_vol_ratio = 0
-    if volume_5d > 0:
+    whale_net = _optional_num(data.get("Whale_Net"))
+    whale_days = _optional_num(data.get("Whale_Net_Days"))
+    if whale_net is None and inst_data:
+        reported_totals = [
+            _optional_num(_first_present(row, ("單日合計(張)", "total")))
+            for row in list(inst_data)[:3]
+            if isinstance(row, dict)
+        ]
+        reported_totals = [value for value in reported_totals if value is not None]
+        if reported_totals:
+            whale_net = sum(reported_totals)
+            whale_days = float(len(reported_totals))
+    if whale_net is not None and (whale_days is None or whale_days <= 0):
+        whale_days = 3.0
+
+    whale_vol_ratio = None
+    if whale_net is not None and volume_5d > 0 and whale_days:
         # Institutional flow is stored in lots (張); Yahoo volume is shares (股).
-        whale_vol_ratio = ((whale_net * 1000) / (volume_5d * 3)) * 100
-        
-    if whale_vol_ratio > 5 or whale_net > 3000:
-        add(2, f"✅ 法人積極買超 (佔均量 {whale_vol_ratio:.1f}% 或 >3千張)")
-    elif whale_vol_ratio < -5 or whale_net < -3000:
-        add(-2, f"⚠️ 法人大量賣超 (佔均量 {whale_vol_ratio:.1f}% 或 <-3千張)")
-    elif whale_net > 500:
+        whale_vol_ratio = ((whale_net * 1000) / (volume_5d * whale_days)) * 100
+    whale_ratio_text = f"{whale_vol_ratio:.1f}%" if whale_vol_ratio is not None else "未提供"
+
+    if whale_net is not None and ((whale_vol_ratio is not None and whale_vol_ratio > 5) or whale_net > 3000):
+        add(2, f"✅ 法人積極買超 (佔均量 {whale_ratio_text} 或 >3千張)")
+    elif whale_net is not None and ((whale_vol_ratio is not None and whale_vol_ratio < -5) or whale_net < -3000):
+        add(-2, f"⚠️ 法人大量賣超 (佔均量 {whale_ratio_text} 或 <-3千張)")
+    elif whale_net is not None and whale_net > 500:
         add(1, "✅ 法人微幅買超")
-    elif whale_net < -500:
+    elif whale_net is not None and whale_net < -500:
         add(-1, "⚠️ 法人微幅賣超")
+
+    sell_streak, foreign_net, trust_net, flow_divergence = _institutional_risk_inputs(data, inst_data)
+    if sell_streak is not None and sell_streak >= 3:
+        add(-2, f"⚠️ 法人連續賣超 {int(sell_streak)} 日，籌碼尚未止穩")
+    elif sell_streak is not None and sell_streak >= 2:
+        add(-1, f"⚠️ 法人連續賣超 {int(sell_streak)} 日，留意籌碼轉弱")
+    if flow_divergence is True:
+        if foreign_net is not None and trust_net is not None:
+            add(-1, f"⚠️ 外資與投信方向分歧 (外資 {foreign_net:,.0f} 張／投信 {trust_net:,.0f} 張)")
+        else:
+            add(-1, "⚠️ 外資與投信方向分歧，籌碼共識不足")
 
     if j_value >= 80:
         if not strong_trend:
@@ -286,9 +436,9 @@ def get_decision_score(data, fund_data, inst_data=None, mode="post", with_reason
     if vix >= 25:
         add(-2, f"⚠️ VIX {vix:.1f} 偏高，系統性風險升溫")
     if confidence < 60:
-        add(-2, f"⚠️ 資料信心偏低 ({confidence:.0f}%)，分數僅供保守參考")
+        add(-2, f"⚠️ 資料完整度偏低 ({confidence:.0f}%)，分數僅供保守參考")
     elif confidence < 80:
-        add(-1, f"⚠️ 資料信心中等 ({confidence:.0f}%)，需留意缺失資料")
+        add(-1, f"⚠️ 資料完整度中等 ({confidence:.0f}%)，需留意缺失資料")
     if signal_conflict == "高":
         add(-3, "⚠️ 多空訊號衝突高，不適合列為主清單")
     if entry_pattern in ["過熱追高型", "假突破風險型"]:

@@ -14,15 +14,18 @@ BACKTEST_HOLD_DAYS = 9
 # starts on the following trading day, so the next accepted entry must not begin
 # before the configured holding window has finished.
 BACKTEST_MIN_GAP_DAYS = BACKTEST_HOLD_DAYS
-BACKTEST_SCORE_THRESHOLD = 60
+BACKTEST_SCORE_THRESHOLD = 65
+BACKTEST_MIN_EFFECTIVE_REWARD_RISK = 1.30
 DEFAULT_BUY_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_TAX_RATE = 0.003
 DEFAULT_MIN_COMMISSION = 20.0
 DEFAULT_TRADE_SHARES = 1000
 BACKTEST_SCOPE = (
-    "純技術面逐步前推（隔日進場、樣本不重疊、排除未完成交易、含交易成本；"
-    "不含歷史營收、EPS 與法人籌碼）"
+    "純技術面可執行策略逐步前推（65 分、訊號日須位於可執行區、"
+    "次一交易日觸價成交、拒絕向下跳空後回觸、成交後實際報酬風險比至少 1.30、"
+    "最多持有 9 個交易日、樣本不重疊、排除未完成交易、含交易成本；"
+    "不含當時點財報、月營收與法人籌碼）"
 )
 
 # 產業英中文對照 (單一來源，由 scanner.py 和 test.py 共用)
@@ -303,6 +306,8 @@ def build_score_input(
         "ROC_20": roc_20,
         "訊號": t_close > safe_float(t.get("20MA"), t_close),
         "收盤價": t_close,
+        "最高價": t_high,
+        "最低價": t_low,
         "BB_DN": safe_float(t.get("BB_DN"), t_close),
         "BB_UP": safe_float(t.get("BB_UP"), t_close),
         "BIAS": safe_float(t.get("BIAS_20", t.get("BIAS", 0))),
@@ -323,6 +328,7 @@ def build_score_input(
         "5日線即將上彎": ma5_up_today,
         "J值": safe_float(t.get("J"), 50),
         "RSI": safe_float(t.get("RSI"), 50),
+        "ATR": safe_float(t.get("ATR")),
         "Momentum_Score": momentum_score,
         "Est_Vol_Ratio": round(vol_ratio, 2),
         "Volume_Confirmed": True,
@@ -574,6 +580,62 @@ def _trade_outcome(
     return None if result is None else bool(result["win"])
 
 
+def _next_session_plan_fill(
+    row: pd.Series,
+    entry_low: float,
+    entry_high: float,
+) -> Tuple[Optional[float], str]:
+    """Resolve an executable-zone fill without inventing an intraday path.
+
+    A session opening below the whole plan is rejected.  Treating a later rebound
+    into the zone as a fresh long entry systematically buys failed support and was
+    one of the observed loss paths in production.
+    """
+    open_price = strict_float(row.get("Open"))
+    high = strict_float(row.get("High"))
+    low = strict_float(row.get("Low"))
+    close = strict_float(row.get("Close"))
+    if (
+        open_price is None or high is None or low is None or close is None
+        or min(open_price, high, low, close, entry_low, entry_high) <= 0
+        or entry_high < entry_low
+        or high < max(open_price, close)
+        or low > min(open_price, close)
+    ):
+        return None, "invalid_bar"
+    if open_price < entry_low:
+        return None, "gap_below_zone"
+    if high < entry_low or low > entry_high:
+        return None, "zone_not_touched"
+    if entry_low <= open_price <= entry_high:
+        return open_price, "OPEN_IN_ZONE"
+    if open_price > entry_high and low <= entry_high:
+        return entry_high, "PULLBACK_TOUCH"
+    return None, "zone_not_touched"
+
+
+def _bars_observable_after_fill(
+    future_df: pd.DataFrame,
+    fill_price: float,
+    fill_rule: str,
+) -> pd.DataFrame:
+    """Remove pre-fill highs from a pullback entry's first daily bar."""
+    adjusted = future_df.copy()
+    if adjusted.empty or fill_rule != "PULLBACK_TOUCH":
+        return adjusted
+    first_index = adjusted.index[0]
+    close = strict_float(adjusted.at[first_index, "Close"])
+    low = strict_float(adjusted.at[first_index, "Low"])
+    if close is None or low is None:
+        return adjusted.iloc[0:0]
+    adjusted.at[first_index, "Open"] = fill_price
+    # The original high may have happened before the downward zone crossing.
+    # The fill and closing print are the only post-fill upper observations known.
+    adjusted.at[first_index, "High"] = max(fill_price, close)
+    adjusted.at[first_index, "Low"] = min(low, fill_price, close)
+    return adjusted
+
+
 def calculate_historical_performance(
     df_slice: pd.DataFrame,
     target_mult: float = 1.5,
@@ -614,6 +676,10 @@ def calculate_historical_performance(
         "validation_win_rate": 0.0,
         "validation_samples": 0,
         "validation_avg_return": 0.0,
+        "validation_raw_win_rate": 0.0,
+        "validation_wilson_low": 0.0,
+        "validation_wilson_high": 0.0,
+        "validation_sample_confidence": "無樣本",
     }
 
     scalar_parameters = {
@@ -645,6 +711,7 @@ def calculate_historical_performance(
     if (
         finite_scalars["target_mult"] <= 0
         or finite_scalars["stop_mult"] <= 0
+        or not finite_scalars["score_threshold"].is_integer()
         or finite_scalars["buy_fee_rate"] < 0
         or finite_scalars["sell_fee_rate"] < 0
         or finite_scalars["sell_tax_rate"] < 0
@@ -660,7 +727,7 @@ def calculate_historical_performance(
 
     target_mult = finite_scalars["target_mult"]
     stop_mult = finite_scalars["stop_mult"]
-    score_threshold = finite_scalars["score_threshold"]
+    parsed_score_threshold = int(finite_scalars["score_threshold"])
     buy_fee_rate = finite_scalars["buy_fee_rate"]
     sell_fee_rate = finite_scalars["sell_fee_rate"]
     sell_tax_rate = finite_scalars["sell_tax_rate"]
@@ -695,7 +762,11 @@ def calculate_historical_performance(
             continue
 
         temp_df = df_slice.iloc[: actual_idx + 1]
-        signal, score, signal_data = is_strategy_signal(temp_df, {}, score_threshold=score_threshold)
+        signal, score, signal_data = is_strategy_signal(
+            temp_df,
+            {},
+            score_threshold=parsed_score_threshold,
+        )
         if not signal:
             continue
 
@@ -705,24 +776,51 @@ def calculate_historical_performance(
             continue
 
         signal_row = temp_df.iloc[-1]
+        signal_data = dict(signal_data or {})
+        signal_data["Score"] = score
+        try:
+            from entry_readiness import READY_STATUS, build_entry_readiness
+
+            entry_plan = build_entry_readiness(
+                signal_data,
+                stop_atr_mult=stop_mult,
+                reward_risk=target_mult / stop_mult,
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if entry_plan.get("Entry_Status") != READY_STATUS:
+            continue
+
         entry_idx = actual_idx + 1
         entry_row = df_slice.iloc[entry_idx]
-        raw_entry_price = strict_float(entry_row.get("Open"))
+        entry_low = strict_float(entry_plan.get("Entry_Low"))
+        entry_high = strict_float(entry_plan.get("Entry_High"))
+        target_price = strict_float(entry_plan.get("Entry_Target"))
+        stop_price = strict_float(entry_plan.get("Entry_Stop"))
+        if any(value is None for value in (entry_low, entry_high, target_price, stop_price)):
+            continue
+        if entry_low is None or entry_high is None or target_price is None or stop_price is None:
+            continue
+        raw_entry_price, fill_rule = _next_session_plan_fill(entry_row, entry_low, entry_high)
         if raw_entry_price is None:
             continue
         entry_price = raw_entry_price * (1 + slippage_rate)
         atr_val = safe_float(signal_row.get("ATR"), 0.0)
         if entry_price <= 0 or atr_val <= 0:
             continue
-
-        target_price = entry_price + atr_val * target_mult
-        stop_price = entry_price - atr_val * stop_mult
         if (
             not all(np.isfinite(value) for value in (stop_price, entry_price, target_price))
             or not 0 < stop_price < entry_price < target_price
         ):
             continue
-        future_df = df_slice.iloc[entry_idx : entry_idx + hold_days]
+        effective_reward_risk = (target_price - entry_price) / (entry_price - stop_price)
+        if effective_reward_risk < BACKTEST_MIN_EFFECTIVE_REWARD_RISK:
+            continue
+        future_df = _bars_observable_after_fill(
+            df_slice.iloc[entry_idx : entry_idx + hold_days],
+            raw_entry_price,
+            fill_rule,
+        )
         result = _trade_result(
             future_df,
             target_price,
@@ -752,6 +850,10 @@ def calculate_historical_performance(
         result["signal_date"] = df_slice.index[actual_idx]
         result["entry_date"] = df_slice.index[entry_idx]
         result["score"] = score
+        result["fill_rule"] = fill_rule
+        result["planned_entry_low"] = round(entry_low, 2)
+        result["planned_entry_high"] = round(entry_high, 2)
+        result["effective_reward_risk"] = round(effective_reward_risk, 2)
         trades.append(result)
         buy_dates.append(df_slice.index[entry_idx])
 
@@ -798,6 +900,10 @@ def calculate_historical_performance(
         "validation_win_rate": validation_stats["adjusted_win_rate"],
         "validation_samples": validation_count,
         "validation_avg_return": round(float(np.mean(validation_returns)), 2),
+        "validation_raw_win_rate": validation_stats["raw_win_rate"],
+        "validation_wilson_low": validation_stats["wilson_low"],
+        "validation_wilson_high": validation_stats["wilson_high"],
+        "validation_sample_confidence": validation_stats["sample_confidence"],
     }
 
 

@@ -16,7 +16,7 @@ from analysis_core import build_score_input
 from app_security import normalize_ticker
 from chunked_firestore import load_chunked_items
 from entry_readiness import build_entry_readiness
-from scan_state import build_scan_quality, latest_trading_date
+from scan_state import build_model_confidence, build_scan_quality, latest_trading_date
 from scoring import get_decision_score
 from telegram_links import HELP_TEXT, extract_stock_query
 from top10_telegram import (
@@ -112,16 +112,25 @@ def resolve_stock_query(
     raise StockQueryError(f"找不到「{query}」，請輸入完整股票名稱或代號。")
 
 
-def _market_snapshot() -> dict[str, float]:
+def _market_snapshot() -> dict[str, Any]:
     try:
         frame = scanner.yf.Ticker("^TWII").history(period="4mo").dropna(subset=["Close"])
         if len(frame) < 60:
             return {}
         close = pd.to_numeric(frame["Close"], errors="coerce")
+        previous_close = float(close.iloc[-2])
+        latest_close = float(close.iloc[-1])
+        ma20 = float(close.rolling(20).mean().iloc[-1])
+        ma60 = float(close.rolling(60).mean().iloc[-1])
+        regime = "多頭" if latest_close >= ma20 and latest_close >= ma60 else (
+            "空頭" if latest_close < ma20 and latest_close < ma60 else "震盪"
+        )
         return {
-            "TWII_Close": float(close.iloc[-1]),
-            "TWII_MA20": float(close.rolling(20).mean().iloc[-1]),
-            "TWII_MA60": float(close.rolling(60).mean().iloc[-1]),
+            "TWII_Close": latest_close,
+            "TWII_MA20": ma20,
+            "TWII_MA60": ma60,
+            "Market_Return": round((latest_close / previous_close - 1) * 100, 2),
+            "Market_Regime": regime,
         }
     except Exception:
         return {}
@@ -143,13 +152,18 @@ def analyze_stock_fresh(
     close = float(latest["Close"])
     fundamental = scanner.get_fundamental_and_industry_data(ticker, close)
     revenue = scanner.get_finmind_revenue(ticker, with_meta=True)
+    financial = scanner.fetch_financial_quality(ticker)
     institutional, institutional_status = scanner.get_institutional_trading(ticker, with_status=True)
+    market = _market_snapshot()
     fund = {
         "EPS": fundamental.get("EPS"),
         "EPS_Period": fundamental.get("EPS_Period", "missing"),
         "MoM": revenue.get("mom"),
         "YoY": revenue.get("yoy"),
-        **_market_snapshot(),
+        "Financial_Risk_Level": financial.get("risk_level"),
+        "Financial_Operating_Margin": financial.get("operating_margin"),
+        "Financial_Net_Margin": financial.get("net_margin"),
+        **market,
     }
     data = build_score_input(frame, fund)
     if not data:
@@ -164,19 +178,48 @@ def analyze_stock_fresh(
         "price": "ok",
         "fundamental": fundamental.get("_status", "missing"),
         "revenue": revenue.get("status", "missing"),
+        "financial": financial.get("status", "unknown"),
         "institutional": institutional_status,
         "market": "ok" if fund.get("TWII_Close") else "missing",
     }, institutional_days=len(institutional))
+    institutional_risk = scanner.build_institutional_risk_snapshot(institutional)
     data.update({
         "Whale_Net": whale_net,
         "Data_Quality": quality,
         "Confidence": confidence,
+        "Data_Completeness": confidence,
         "最高價": float(latest["High"]),
         "最低價": float(latest["Low"]),
         "ATR": float(latest.get("ATR", 0)),
+        "EPS": fundamental.get("EPS"),
+        "MoM": revenue.get("mom"),
+        "YoY": revenue.get("yoy"),
+        "Market_Regime": market.get("Market_Regime"),
+        "Market_Return": market.get("Market_Return"),
+        "Financial_Risk_Level": financial.get("risk_level"),
+        "Financial_Operating_Income": financial.get("operating_income"),
+        "Financial_Net_Income": financial.get("net_income"),
+        **institutional_risk,
     })
-    score, label, reasons, feature = get_decision_score(data, fund, mode="post", with_reason=True)
+    score, label, reasons, feature = get_decision_score(
+        data, fund, inst_data=institutional, mode="post", with_reason=True
+    )
     backtest = scanner.calc_winrate(frame)
+    model_confidence, model_confidence_label = build_model_confidence(
+        backtest.get("win_rate"),
+        backtest.get("closed_signals"),
+        backtest.get("validation_win_rate"),
+        backtest.get("validation_samples"),
+    )
+    data.update({
+        "Score": score,
+        "WinRate": backtest.get("win_rate"),
+        "Backtest_Samples": backtest.get("closed_signals"),
+        "Validation_WinRate": backtest.get("validation_win_rate"),
+        "Validation_Samples": backtest.get("validation_samples"),
+        "Model_Confidence": model_confidence,
+        "Model_Confidence_Label": model_confidence_label,
+    })
     trading_date = latest_trading_date(frame.index)
     result = {
         "代號": ticker,
@@ -202,6 +245,10 @@ def analyze_stock_fresh(
         "WinRate": backtest.get("win_rate"),
         "Backtest_Samples": backtest.get("closed_signals"),
         "Backtest_Scope": backtest.get("backtest_scope"),
+        "Validation_WinRate": backtest.get("validation_win_rate"),
+        "Validation_Samples": backtest.get("validation_samples"),
+        "Model_Confidence": model_confidence,
+        "Model_Confidence_Label": model_confidence_label,
         "Whale_Net": whale_net,
         "Whale_Net_Days": institutional_days,
         "Institutional_Status": institutional_status,
@@ -213,13 +260,30 @@ def analyze_stock_fresh(
             "total": row.get("單日合計(張)"),
             "source": row.get("_source", ""),
         } for row in institutional[:5]],
+        **institutional_risk,
         "EPS": fundamental.get("EPS"),
         "EPS_Period": fundamental.get("EPS_Period", "missing"),
         "MoM": revenue.get("mom"),
         "YoY": revenue.get("yoy"),
         "Revenue_Period": revenue.get("period", ""),
         "Revenue_Status": revenue.get("status", "missing"),
+        "Financial_Period": financial.get("period", ""),
+        "Financial_Source": financial.get("source", ""),
+        "Financial_Status": financial.get("status", "unknown"),
+        "Financial_Revenue": financial.get("revenue"),
+        "Financial_Gross_Profit": financial.get("gross_profit"),
+        "Financial_Operating_Income": financial.get("operating_income"),
+        "Financial_Net_Income": financial.get("net_income"),
+        "Financial_EPS": financial.get("eps"),
+        "Financial_Gross_Margin": financial.get("gross_margin"),
+        "Financial_Operating_Margin": financial.get("operating_margin"),
+        "Financial_Net_Margin": financial.get("net_margin"),
+        "Financial_Debt_Ratio": financial.get("debt_ratio"),
+        "Financial_Current_Ratio": financial.get("current_ratio"),
+        "Financial_Risk_Level": financial.get("risk_level", "unknown"),
+        "Financial_Risk_Flags": financial.get("risk_flags", []),
         "Confidence": confidence,
+        "Data_Completeness": confidence,
         "Data_Quality": quality,
         "Feature": feature,
         "Reasons": reasons,
@@ -228,6 +292,8 @@ def analyze_stock_fresh(
         "Est_Vol_Ratio": data.get("Est_Vol_Ratio"),
         "Volume_Confirmed": bool(data.get("Volume_Confirmed")),
         "Tomorrow_Plan": data.get("Tomorrow_Plan", {}),
+        "Market_Regime": market.get("Market_Regime"),
+        "Market_Return": market.get("Market_Return"),
     }
     result.update(build_entry_readiness(result))
     return result
@@ -369,7 +435,7 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
         (250, "漲跌", f"{_display_number(data.get('漲跌幅'), 1, signed=True)}%", "#F87171"),
         (430, "評級", _clean_text(data.get("評級"), "--").replace("🟢", "").replace("🟡", "").replace("⚪", "").strip(), "#4ADE80"),
         (670, "型態", _clean_text(data.get("Entry_Pattern"), "--"), "#A5B4FC"),
-        (880, "信心", f"{_display_number(data.get('Confidence'), 0)}%", "#60A5FA"),
+        (880, "完整度", f"{_display_number(data.get('Data_Completeness', data.get('Confidence')), 0)}%", "#60A5FA"),
     )
     for x, label, value, color in summary:
         draw.text((x, 286), label, font=_font(15), fill="#64748B")
@@ -419,7 +485,7 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
         ("月增 MoM", "--" if mom is None else f"{mom:+.2f}%"),
         ("年增 YoY", "--" if yoy is None else f"{yoy:+.2f}%"),
         ("營收月份", _clean_text(data.get("Revenue_Period"), "--")),
-        ("產業", _clean_text(data.get("產業"), "--")),
+        ("季度財報", f"{_clean_text(data.get('Financial_Period'), '--')}｜{_clean_text(data.get('Financial_Risk_Level'), 'unknown')}"),
     )
     for index, (label, value) in enumerate(fundamentals):
         y = 738 + index * 37
@@ -433,10 +499,10 @@ def render_stock_analysis_image(record: Mapping[str, Any]) -> bytes:
     chip = "--" if whale is None else f"{whale:+,.0f} 張 / {int(whale_days or 0)}日"
     stats = (
         ("三大法人合計", chip),
-        ("籌碼資料", _clean_text(data.get("Institutional_Status"), "missing")),
+        ("財報品質", _clean_text(data.get("Financial_Risk_Level"), "unknown")),
         ("技術勝率", "--" if win_rate is None else f"{win_rate:.1f}%"),
         ("回測樣本", "--" if samples is None else f"{samples}｜{_credibility(samples)}"),
-        ("訊號衝突", _clean_text(data.get("Signal_Conflict"), "--")),
+        ("模型可信度", _clean_text(data.get("Model_Confidence_Label"), "資料不足")),
     )
     for index, (label, value) in enumerate(stats):
         y = 738 + index * 37

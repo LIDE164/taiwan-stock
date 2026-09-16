@@ -28,7 +28,12 @@ from app_security import (
 )
 from charts import draw_professional_chart
 from chunked_firestore import load_chunked_items
-from data_providers import clear_provider_cache, fetch_institutional_rows, fetch_revenue_growth
+from data_providers import (
+    clear_provider_cache,
+    fetch_financial_quality,
+    fetch_institutional_rows,
+    fetch_revenue_growth,
+)
 from entry_readiness import build_entry_readiness, ensure_entry_readiness
 from market_http import call_with_backoff, http_get
 from intraday_ranking import (
@@ -39,7 +44,12 @@ from intraday_ranking import (
     support_data_from_postclose_record,
 )
 from intraday_quotes import fetch_yahoo_live_history_bundle, merge_intraday_quote_into_history
-from scan_state import build_daily_scan_status, build_scan_quality, latest_trading_date
+from scan_state import (
+    build_daily_scan_status,
+    build_model_confidence,
+    build_scan_quality,
+    latest_trading_date,
+)
 from scoring import decision_label, get_decision_score
 from strategy_advice import build_strategy_text
 try:
@@ -105,7 +115,7 @@ except Exception as ui_import_error:
 
     def render_stock_hero(data, target, name, strategy_text):
         st.markdown(f"## {target} {name}")
-        st.caption(f"{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料信心 {data.get('Confidence', 0)}%")
+        st.caption(f"{data.get('產業', '一般產業')}｜{data.get('Score_Mode', '盤後正式分數')}｜資料完整度 {data.get('Data_Completeness', data.get('Confidence', 0))}%")
         st.metric("現價", data.get("收盤價", "--"), f"{data.get('漲跌幅', 0):+.2f}%")
         st.info(f"建議策略：{strategy_text}")
 
@@ -346,6 +356,7 @@ def build_data_quality(
     institutional_days=0,
     fundamental_status="unknown",
     revenue_status="unknown",
+    financial_status="unknown",
     macro_status=None,
     txf_status="ok",
 ):
@@ -356,6 +367,7 @@ def build_data_quality(
         "fundamental": fundamental_status,
         "institutional": "ok" if institutional_days else "missing",
         "revenue": revenue_status,
+        "financial": financial_status,
         "macro": "ok" if macro_status and all(v == "ok" for v in macro_status.values()) else "partial",
         "txf": txf_status,
     }, institutional_days=institutional_days)
@@ -1034,6 +1046,13 @@ def get_finmind_chip_and_revenue_payload(ticker):
         "source": payload.get("source", ""),
         "status": {"revenue": payload["status"]},
     }
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_financial_quality_payload(ticker):
+    return fetch_financial_quality(ticker)
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def get_twii_quote():
     tz_tpe = timezone(timedelta(hours=8))
@@ -1199,6 +1218,25 @@ def get_analysis_support_data(ticker, current_price, cached_doc=None):
     fund["Revenue_Period"] = revenue.get("period", "")
     fund["Revenue_Source"] = revenue.get("source", "")
     fund["_data_status"] = revenue["status"]
+    financial = get_financial_quality_payload(ticker)
+    fund.update({
+        "Financial_Period": financial.get("period", ""),
+        "Financial_Source": financial.get("source", ""),
+        "Financial_Status": financial.get("status", "unknown"),
+        "Financial_Revenue": financial.get("revenue"),
+        "Financial_Gross_Profit": financial.get("gross_profit"),
+        "Financial_Operating_Income": financial.get("operating_income"),
+        "Financial_Net_Income": financial.get("net_income"),
+        "Financial_EPS": financial.get("eps"),
+        "Financial_Gross_Margin": financial.get("gross_margin"),
+        "Financial_Operating_Margin": financial.get("operating_margin"),
+        "Financial_Net_Margin": financial.get("net_margin"),
+        "Financial_Debt_Ratio": financial.get("debt_ratio"),
+        "Financial_Current_Ratio": financial.get("current_ratio"),
+        "Financial_Risk_Level": financial.get("risk_level", "unknown"),
+        "Financial_Risk_Flags": financial.get("risk_flags", []),
+    })
+    fund["_data_status"]["financial"] = financial.get("status", "unknown")
     inst_data, inst_status = get_institutional_trading(ticker, with_status=True)
     if not inst_data:
         saved_rows = institutional_rows_from_record(cached_doc)
@@ -1449,12 +1487,26 @@ def analyze_today(
     if historical_date and twii_df is not None:
         cutoff = pd.Timestamp(historical_date)
         twii_df = twii_df[pd.to_datetime(twii_df.index).tz_localize(None) <= cutoff]
+    market_regime = ""
+    market_return = None
     if twii_df is not None and len(twii_df) >= 60:
         ma20_twii = twii_df['Close'].rolling(20).mean()
         ma60_twii = twii_df['Close'].rolling(60).mean()
         fund['TWII_Close'] = float(twii_df['Close'].iloc[-1])
         fund['TWII_MA20'] = float(ma20_twii.iloc[-1])
         fund['TWII_MA60'] = float(ma60_twii.iloc[-1])
+        previous_twii_close = float(twii_df['Close'].iloc[-2])
+        market_return = (
+            (fund['TWII_Close'] / previous_twii_close - 1) * 100
+            if previous_twii_close > 0 else None
+        )
+        market_regime = (
+            "多頭"
+            if fund['TWII_Close'] >= fund['TWII_MA20'] and fund['TWII_Close'] >= fund['TWII_MA60']
+            else "空頭"
+            if fund['TWII_Close'] < fund['TWII_MA20'] and fund['TWII_Close'] < fund['TWII_MA60']
+            else "震盪"
+        )
         
     t_open, t_close, t_high, t_low = float(t['Open']), float(t['Close']), float(t['High']), float(t['Low'])
     p_open, p_close = float(p['Open']), float(p['Close'])
@@ -1561,6 +1613,7 @@ def analyze_today(
         institutional_days=inst_days,
         fundamental_status=fund.get("_status", "unknown"),
         revenue_status=source_status.get("revenue", "unknown"),
+        financial_status=source_status.get("financial", "unknown"),
         macro_status=macro.get("status", {}),
         txf_status=macro.get("status", {}).get("TX=F", "missing")
     )
@@ -1579,7 +1632,7 @@ def analyze_today(
         "BIAS": round(t.get('BIAS_20', 0), 2), "MACD柱": round(t.get('MACD_Hist', 0), 3), "前日MACD柱": round(p.get('MACD_Hist', 0), 3),
         "K": round(t.get('K', 50), 2), "D": round(t.get('D', 50), 2), "J值": round(t.get('J', 50), 2),
         "ADX": round(t.get('ADX', 0), 1), "RSI": round(t.get('RSI', 50), 1),
-        "ROC_20": round((t_close - float(df['Close'].iloc[-20])) / float(df['Close'].iloc[-20]) * 100 if len(df)>=20 else 0, 2), 
+        "ROC_20": round((t_close - float(df['Close'].iloc[-21])) / float(df['Close'].iloc[-21]) * 100 if len(df)>=21 else 0, 2),
         "MoM": fund.get('MoM'), "YoY": fund.get('YoY'),
         "Revenue_Status": source_status.get("revenue", "unknown"),
         "Revenue_Period": fund.get("Revenue_Period", ""),
@@ -1594,12 +1647,32 @@ def analyze_today(
         "5MA已上彎": ma5_up_today, "明日5MA扣抵價": round(tomorrow_turn_price, 2),
         "5日線即將上彎": ma5_up_today,
         "Whale_Net": whale_net_buy, "Whale_Net_Days": whale_net_days,
+        "Institutional_Sell_Streak": next((index for index, row in enumerate((inst_data or [])[:3]) if safe_num(row.get('單日合計(張)'), 0) >= 0), min(3, len(inst_data or []))) if inst_data else None,
+        "Foreign_Net": f_net if inst_data else None,
+        "Trust_Net": t_net if inst_data else None,
         "Theme_Name": theme_name, "Theme_Icon": theme_icon,
         "Price_Dev": price_dev, "Price_Dev_Source": price_dev_source, "Ohlc_Avg_Dev": None,
         "VWAP_Dev": price_dev if has_real_vwap else None,
         "Est_Vol_Ratio": est_vol_ratio, "Volume_Confirmed": volume_confirmed,
         "Flow": flow, "Intraday_Score": intraday_score, "Momentum_Score": momentum_score,
-        "Institutional_Days": inst_days, "Data_Quality": data_quality, "Confidence": confidence,
+        "Institutional_Days": inst_days, "Data_Quality": data_quality,
+        "Confidence": confidence, "Data_Completeness": confidence,
+        "Market_Regime": market_regime, "Market_Return": round(market_return, 2) if market_return is not None else None,
+        "Financial_Period": fund.get("Financial_Period", ""),
+        "Financial_Source": fund.get("Financial_Source", ""),
+        "Financial_Status": fund.get("Financial_Status", "unknown"),
+        "Financial_Revenue": fund.get("Financial_Revenue"),
+        "Financial_Gross_Profit": fund.get("Financial_Gross_Profit"),
+        "Financial_Operating_Income": fund.get("Financial_Operating_Income"),
+        "Financial_Net_Income": fund.get("Financial_Net_Income"),
+        "Financial_EPS": fund.get("Financial_EPS"),
+        "Financial_Gross_Margin": fund.get("Financial_Gross_Margin"),
+        "Financial_Operating_Margin": fund.get("Financial_Operating_Margin"),
+        "Financial_Net_Margin": fund.get("Financial_Net_Margin"),
+        "Financial_Debt_Ratio": fund.get("Financial_Debt_Ratio"),
+        "Financial_Current_Ratio": fund.get("Financial_Current_Ratio"),
+        "Financial_Risk_Level": fund.get("Financial_Risk_Level", "unknown"),
+        "Financial_Risk_Flags": fund.get("Financial_Risk_Flags", []),
         "Signal_Conflict": signal_conflict, "Conflict_Score": round(conflict_score, 2), "Entry_Pattern": entry_pattern,
         "ATR": round(float(t['ATR']), 2),
         "ATR_Target": round(t_close + (float(t['ATR']) * 1.5), 1),
@@ -1625,7 +1698,25 @@ def analyze_today(
     data['評級'] = label
     data['Reasons'] = rs
     data['Feature'] = feature
-    data['WinRate'] = cached_doc.get('WinRate', 0.0) if cached_doc else 0.0
+    default_backtest = calculate_historical_performance(
+        df,
+        1.5,
+        1.0,
+        lookback_days=BACKTEST_LOOKBACK_DAYS,
+    )
+    data['WinRate'] = default_backtest.get('win_rate')
+    data['Backtest_Samples'] = default_backtest.get('closed_signals')
+    data['Backtest_Scope'] = default_backtest.get('backtest_scope')
+    data['Validation_WinRate'] = default_backtest.get('validation_win_rate')
+    data['Validation_Samples'] = default_backtest.get('validation_samples')
+    model_confidence, model_confidence_label = build_model_confidence(
+        data.get('WinRate'),
+        data.get('Backtest_Samples'),
+        data.get('Validation_WinRate'),
+        data.get('Validation_Samples'),
+    )
+    data['Model_Confidence'] = model_confidence
+    data['Model_Confidence_Label'] = model_confidence_label
     data['Score_Mode'] = score_mode_label
     data['Score_Mode_Raw'] = score_mode
     data.update(build_entry_readiness(data, intraday=effective_intraday, baseline_plan=cached_doc))
@@ -1636,7 +1727,7 @@ def calculate_historical_winrate_interactive(
     df_slice, 
     target_mult, 
     stop_mult, 
-    score_threshold=60, 
+    score_threshold=65,
     enable_trailing=False, 
     filter_low_conf=False, 
     filter_high_conflict=False
@@ -1670,7 +1761,7 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
     tech_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     tech_html += f"<h4 style='color: #60a5fa; margin-top: 0; font-size: 1.2rem;'>💯 技術面</h4>"
     quality = data.get("Data_Quality", {}) if isinstance(data.get("Data_Quality", {}), dict) else {}
-    confidence = safe_num(data.get("Confidence"), 0)
+    confidence = safe_num(data.get("Data_Completeness", data.get("Confidence")), 0)
     missing_quality = [
         key for key, value in quality.items()
         if value not in ("ok", "realtime", "confirmed")
@@ -1678,7 +1769,7 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
     ]
     quality_text = "資料完整" if not missing_quality else "需留意：" + "、".join(str(key) for key in missing_quality)
     tech_html += f"<div style='display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; font-size:0.82rem;'>"
-    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>信心 {confidence}%</span>"
+    tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>資料完整度 {confidence}%</span>"
     tech_html += f"<span style='border:1px solid {b_col}; border-radius:6px; padding:4px 8px; color:{t_text_c}; background-color:{sum_bg};'>{escape_html(quality_text)}</span>"
     tech_html += f"</div>"
     
@@ -1831,6 +1922,39 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
             f"YoY <span style='color:{yoy_c}; font-weight:bold;'>{yoy_text}</span>。"
             f" <span style='color:#94a3b8; font-size:0.82rem;'>({escape_html(revenue_meta)})</span>"
         )
+    financial_period = str(data.get("Financial_Period") or f_data.get("Financial_Period") or "")
+    financial_source = str(data.get("Financial_Source") or f_data.get("Financial_Source") or "")
+    financial_status = str(data.get("Financial_Status") or f_data.get("Financial_Status") or "unknown")
+    financial_risk = str(data.get("Financial_Risk_Level") or f_data.get("Financial_Risk_Level") or "unknown")
+    operating_margin = safe_num(
+        data.get("Financial_Operating_Margin", f_data.get("Financial_Operating_Margin")), None
+    )
+    net_margin = safe_num(
+        data.get("Financial_Net_Margin", f_data.get("Financial_Net_Margin")), None
+    )
+    debt_ratio = safe_num(
+        data.get("Financial_Debt_Ratio", f_data.get("Financial_Debt_Ratio")), None
+    )
+    current_ratio = safe_num(
+        data.get("Financial_Current_Ratio", f_data.get("Financial_Current_Ratio")), None
+    )
+    if financial_status in {"ok", "partial"} and financial_period:
+        risk_label = {"high": "高風險", "medium": "需留意", "low": "未觸發警示"}.get(
+            financial_risk, "風險未定"
+        )
+        margin_text = (
+            f"營益率 {'--' if operating_margin is None else f'{operating_margin:.2f}%'}、"
+            f"淨利率 {'--' if net_margin is None else f'{net_margin:.2f}%'}、"
+            f"負債比 {'--' if debt_ratio is None else f'{debt_ratio:.2f}%'}、"
+            f"流動比 {'--' if current_ratio is None else f'{current_ratio:.2f}%'}"
+        )
+        fund_bullets.append(
+            f"⚪ <b>最新季度財報品質</b>：{escape_html(financial_period)}｜{escape_html(risk_label)}｜"
+            f"{escape_html(margin_text)}。"
+            f" <span style='color:#94a3b8; font-size:0.82rem;'>({escape_html(financial_source)}；僅為目前最新快照)</span>"
+        )
+    else:
+        fund_bullets.append("⚪ <b>最新季度財報品質</b>：官方目前快照資料不足，不以 0 代替。")
     eps_period = f_data.get("EPS_Period", "missing")
     eps_label = "近四季 EPS（TTM）" if eps_period == "ttm" else "EPS（資料源口徑）"
     fund_bullets.append(
@@ -1857,6 +1981,8 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
         else:
             fund_res = f"規則型估值參考：{valuation}（程式區間 {pe_low}-{pe_high} 倍，非市場共識）｜成長：{growth}｜獲利：{profit}。"
     except Exception: fund_res = "⚪ 基礎財報數據不足，暫以技術與籌碼面為主。"
+    if financial_risk == "high":
+        fund_res = "⚠️ 最新季度財報已觸發高風險，系統不列為可執行。" + fund_res
 
     fund_html = f"<div style='border: 1px solid {b_col}; border-radius: 8px; padding: 15px; margin-bottom: 15px; background-color: {card_bg};'>"
     fund_html += f"<h4 style='color: #c084fc; margin-top: 0; font-size: 1.2rem;'>📑 基本面分析</h4><ul style='font-size: 0.95rem; line-height: 1.6; color: {t_text_c}; list-style-type: none; padding-left: 0;'>"
@@ -2137,7 +2263,7 @@ if st.session_state.page == "home":
             selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         with col_f2:
             st.caption("排序")
-            sort_mode = st.radio("排序：", ["量化分數", "技術面勝率", "資料信心"], horizontal=True, label_visibility="collapsed")
+            sort_mode = st.radio("排序：", ["量化分數", "技術面勝率", "資料完整度"], horizontal=True, label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
         industry_count = len(df_results)
@@ -2185,7 +2311,7 @@ if st.session_state.page == "home":
             sort_map = {
                 "量化分數": ["Score", "漲跌幅"],
                 "技術面勝率": ["WinRate", "Score", "漲跌幅"],
-                "資料信心": ["Confidence", "Score", "漲跌幅"],
+                "資料完整度": ["Confidence", "Score", "漲跌幅"],
             }
             df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(10)
             
@@ -2269,7 +2395,7 @@ if st.session_state.page == "home":
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
                 if not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "現在可執行":
-                    st.info("目前沒有同時進入觀察區間、量比達標且資料信心足夠的股票；可切換「等待確認／拉回」查看候選。")
+                    st.info("目前沒有同時進入觀察區間、量比達標且資料完整度足夠的股票；可切換「等待確認／拉回」查看候選。")
                 elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待確認／拉回":
                     st.info("目前沒有等待量能、觸發或拉回的候選；可切換「全部候選」查看待新掃描資料。")
                 else:
@@ -2902,10 +3028,24 @@ elif st.session_state.page == "analysis":
                     "YoY": source.get("YoY"),
                     "Revenue_Period": source.get("Revenue_Period", ""),
                     "Revenue_Source": source.get("Revenue_Source", ""),
+                    "Financial_Period": source.get("Financial_Period", ""),
+                    "Financial_Source": source.get("Financial_Source", ""),
+                    "Financial_Status": source.get("Financial_Status", "historical_unavailable"),
+                    "Financial_Operating_Income": source.get("Financial_Operating_Income"),
+                    "Financial_Net_Income": source.get("Financial_Net_Income"),
+                    "Financial_Operating_Margin": source.get("Financial_Operating_Margin"),
+                    "Financial_Net_Margin": source.get("Financial_Net_Margin"),
+                    "Financial_Debt_Ratio": source.get("Financial_Debt_Ratio"),
+                    "Financial_Current_Ratio": source.get("Financial_Current_Ratio"),
+                    "Financial_Risk_Level": source.get("Financial_Risk_Level", "unknown"),
+                    "Financial_Risk_Flags": source.get("Financial_Risk_Flags", []),
                     "_institutional_status": "historical_unavailable",
                     "Institutional_Source": "",
                     "_status": "ok" if eps_value not in (None, "", "無", "0") else "missing",
-                    "_data_status": {"revenue": "ok" if revenue_available else "missing"},
+                    "_data_status": {
+                        "revenue": "ok" if revenue_available else "missing",
+                        "financial": source.get("Financial_Status", "historical_unavailable"),
+                    },
                 }
                 inst_data = []
             else:
@@ -2941,7 +3081,7 @@ elif st.session_state.page == "analysis":
             and cached_score_date == analysis_price_date
         )
         if use_cached_list_score:
-            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence"]:
+            for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Model_Confidence", "Model_Confidence_Label", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Sell_Streak", "Foreign_Net", "Trust_Net", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Data_Completeness", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Operating_Income", "Financial_Net_Income", "Financial_Operating_Margin", "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio", "Financial_Risk_Level", "Financial_Risk_Flags"]:
                 if k in cached_doc:
                     data[k] = cached_doc[k]
             if "Score_Mode" not in data:
@@ -2994,7 +3134,7 @@ elif st.session_state.page == "analysis":
         with col_bt2:
             atr_stop_mult = st.slider("停損 ATR 倍數", min_value=0.5, max_value=3.0, value=1.0, step=0.1, key="bt_stop_mult")
         with col_bt3:
-            score_thresh = st.slider("開倉分數門檻", min_value=40, max_value=80, value=60, step=5, key="bt_score_thresh")
+            score_thresh = st.slider("開倉分數門檻", min_value=40, max_value=80, value=65, step=5, key="bt_score_thresh")
             
         dynamic_rrr = round(atr_target_mult / atr_stop_mult, 2) if atr_stop_mult > 0 else 0.0
 
@@ -3003,7 +3143,7 @@ elif st.session_state.page == "analysis":
         with col_opt1:
             enable_trailing = st.checkbox("啟用移動止損 (Trailing Stop)", value=False, key="bt_enable_trailing")
         with col_opt2:
-            filter_low_conf = st.checkbox("過濾低信心度 (< 60%)", value=False, key="bt_filter_low_conf")
+            filter_low_conf = st.checkbox("過濾低資料完整度 (< 60%)", value=False, key="bt_filter_low_conf")
         with col_opt3:
             filter_high_conflict = st.checkbox("過濾高多空衝突", value=False, key="bt_filter_high_conflict")
 
@@ -3024,7 +3164,7 @@ elif st.session_state.page == "analysis":
         is_default_backtest = (
             atr_target_mult == 1.5 and 
             atr_stop_mult == 1.0 and 
-            score_thresh == 60 and 
+            score_thresh == 65 and
             not enable_trailing and 
             not filter_low_conf and 
             not filter_high_conflict
@@ -3039,7 +3179,7 @@ elif st.session_state.page == "analysis":
             data['Backtest_Samples'] = closed_signals
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
-                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Score_Source", "收盤價", "開盤價", "最高價", "最低價", "漲跌", "漲跌幅", "Est_Vol_Ratio", "Volume_Confirmed", "Entry_Status", "Entry_Status_Group", "Entry_Ready", "Entry_Reason", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target", "No_Chase_Price", "Intraday_Quote_Source", "Intraday_Quote_Time", "Intraday_Quote_Freshness", "Intraday_Quote_Status"]:
+                    for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Model_Confidence", "Model_Confidence_Label", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Sell_Streak", "Foreign_Net", "Trust_Net", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Data_Completeness", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Operating_Income", "Financial_Net_Income", "Financial_Operating_Margin", "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio", "Financial_Risk_Level", "Financial_Risk_Flags", "Score_Source", "收盤價", "開盤價", "最高價", "最低價", "漲跌", "漲跌幅", "Est_Vol_Ratio", "Volume_Confirmed", "Entry_Status", "Entry_Status_Group", "Entry_Ready", "Entry_Reason", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target", "No_Chase_Price", "Intraday_Quote_Source", "Intraday_Quote_Time", "Intraday_Quote_Freshness", "Intraday_Quote_Status"]:
                         if k in data:
                             row[k] = data[k]
                     break
@@ -3057,14 +3197,14 @@ elif st.session_state.page == "analysis":
         st.caption(f"回測口徑：{BACKTEST_SCOPE}。成本假設含買賣手續費各 0.1425%、賣出證交稅 0.3%、每筆最低手續費 20 元及雙向滑價各 0.05%。反覆依同一段資料調參會使近期驗證失去樣本外意義。")
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
         v_t = escape_html(str(data['評級']).replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', ''))
-        confidence = safe_num(data.get("Confidence"), 0)
+        confidence = safe_num(data.get("Data_Completeness", data.get("Confidence")), 0)
         analysis_sections = generate_comprehensive_analysis_sections(
             data, inst_data, sc, f_data, is_light_mode
         )
         st.markdown(f"""
         <div style="border: 2px solid {v_c}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: #0b1120;">
             <h3 style="text-align: center; color: {v_c}; margin-top: 0; font-size: 1.8rem; margin-bottom: 8px;">100 分規則型量化決策：{v_t} ({sc}分)</h3>
-            <div style="text-align:center; color:#94a3b8; font-weight:700; margin-bottom:16px;">資料信心：{confidence}%｜口徑：{escape_html(data.get('Score_Mode', '盤後正式分數'))}</div>
+            <div style="text-align:center; color:#94a3b8; font-weight:700; margin-bottom:16px;">資料完整度：{confidence}%｜模型可信度：{escape_html(data.get('Model_Confidence_Label', '資料不足'))}｜口徑：{escape_html(data.get('Score_Mode', '盤後正式分數'))}</div>
             <div style="background-color: rgba(30,41,59,0.5); padding: 15px; border-radius: 8px; border-left: 5px solid {v_c}; margin-bottom:20px;">
                 <p style="font-size: 1.05rem; color: #f8fafc; margin: 0; line-height: 1.6;">
                     ✅ <b>自訂策略執行規劃</b><br>合理停利目標：<b style='color:#ef4444;'>{data['ATR_Target']}</b> 元<br>嚴格停損防守：<b style='color:#22c55e;'>{data['ATR_Stop']}</b> 元

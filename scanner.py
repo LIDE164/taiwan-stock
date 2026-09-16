@@ -24,10 +24,11 @@ from chunked_firestore import (
     load_chunked_items,
     manifest_chunk_ids,
 )
-from data_providers import fetch_institutional_rows, fetch_revenue_growth
+from data_providers import fetch_financial_quality, fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import READY_STATUS, build_entry_readiness
 from market_http import call_with_backoff, http_get
 from scan_state import (
+    build_model_confidence,
     build_scan_quality,
     latest_trading_date,
     next_streak,
@@ -53,6 +54,8 @@ from top10_telegram import (
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+MAX_EXECUTABLES_PER_INDUSTRY = 2
 
 def get_secret(name, default=""):
     try:
@@ -335,6 +338,38 @@ def get_institutional_trading(ticker, with_status=False):
     } for row in rows]
     return (compact, status) if with_status else compact
 
+
+def build_institutional_risk_snapshot(rows):
+    """Summarize reported recent flows without replacing missing values with zero."""
+    recent = [row for row in (rows or []) if isinstance(row, Mapping)][:3]
+
+    def reported_number(row, key):
+        value = row.get(key)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    sell_streak = 0
+    for row in recent:
+        total = reported_number(row, "單日合計(張)")
+        if total is None or total >= 0:
+            break
+        sell_streak += 1
+
+    foreign_values = [reported_number(row, "外資(張)") for row in recent]
+    trust_values = [reported_number(row, "投信(張)") for row in recent]
+    foreign_net = sum(foreign_values) if recent and all(value is not None for value in foreign_values) else None
+    trust_net = sum(trust_values) if recent and all(value is not None for value in trust_values) else None
+    return {
+        "Institutional_Sell_Streak": sell_streak if recent else None,
+        "Foreign_Net": round(float(foreign_net), 2) if foreign_net is not None else None,
+        "Trust_Net": round(float(trust_net), 2) if trust_net is not None else None,
+    }
+
 # ⭐ 補上歷史勝率簡易精算器
 def calc_winrate(df_slice):
     return calculate_historical_performance(df_slice, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS)
@@ -521,11 +556,12 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
     try:
         close = float(frame["Close"].iloc[-1])
         previous_close = float(frame["Close"].iloc[-2])
+        open_price = float(frame["Open"].iloc[-1]) if "Open" in frame.columns else close
         ma20 = float(frame["MA20"].iloc[-1]) if "MA20" in frame.columns else float(frame["Close"].tail(20).mean())
         ma60 = float(frame["MA60"].iloc[-1]) if "MA60" in frame.columns else float(frame["Close"].tail(60).mean())
     except (TypeError, ValueError, IndexError):
         return {}
-    if not all(math.isfinite(value) and value > 0 for value in (close, previous_close, ma20, ma60)):
+    if not all(math.isfinite(value) and value > 0 for value in (close, previous_close, open_price, ma20, ma60)):
         return {}
     if close >= ma20 and close >= ma60:
         regime = "多頭"
@@ -539,6 +575,8 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
         "previous_trading_date": latest_trading_date(frame.index[:-1]),
         "close": round(close, 2),
         "previous_close": round(previous_close, 2),
+        "open": round(open_price, 2),
+        "opening_gap_pct": round((open_price / previous_close - 1) * 100, 2),
         "daily_return_pct": round((close / previous_close - 1) * 100, 2),
         "ma20": round(ma20, 2),
         "ma60": round(ma60, 2),
@@ -556,14 +594,20 @@ def _top10_notification_fingerprint(top10_results, trading_date):
 
 
 def select_executable_top10(scan_results):
-    """Select up to ten executable names and rank them within the actionable list."""
-    selected = []
+    """Select up to ten executable names with a bounded industry concentration."""
+    selected: list[dict[str, Any]] = []
+    industry_counts: dict[str, int] = {}
     for record in scan_results:
         if not isinstance(record, Mapping):
             continue
         if str(record.get("Entry_Status") or "").strip() != READY_STATUS:
             continue
         row = dict(record)
+        industry = str(row.get("產業") or "").strip()
+        if industry and industry != "一般產業":
+            if industry_counts.get(industry, 0) >= MAX_EXECUTABLES_PER_INDUSTRY:
+                continue
+            industry_counts[industry] = industry_counts.get(industry, 0) + 1
         original_rank = row.get("Overall_Rank", row.get("Rank"))
         if original_rank is not None:
             row["Overall_Rank"] = original_rank
@@ -589,6 +633,7 @@ def scan_ranking_key(record):
         number("Score"),
         validation_rate,
         min(samples, 60),
+        number("Model_Confidence", -1.0),
         number("Confidence"),
         -abs(number("BIAS")),
         -max(number("漲跌幅"), 0.0),
@@ -1155,6 +1200,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                 return None
             revenue = get_finmind_revenue(stock, with_meta=True)
             mom, yoy, revenue_status = revenue["mom"], revenue["yoy"], revenue["status"]
+            financial = fetch_financial_quality(stock)
             fund = {
                 "EPS": f_data.get('EPS'),
                 "EPS_Period": f_data.get('EPS_Period', 'missing'),
@@ -1163,14 +1209,28 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                 "TWII_Close": twii_close,
                 "TWII_MA20": twii_ma20,
                 "TWII_MA60": twii_ma60,
+                "Financial_Risk_Level": financial.get("risk_level"),
+                "Financial_Operating_Margin": financial.get("operating_margin"),
+                "Financial_Net_Margin": financial.get("net_margin"),
             }
             data = build_score_input(df, fund)
             data["Market_Regime"] = benchmark_context.get("regime")
             data["Market_Return"] = benchmark_context.get("daily_return_pct")
+            data.update({
+                "EPS": fund.get("EPS"),
+                "EPS_Period": fund.get("EPS_Period"),
+                "MoM": fund.get("MoM"),
+                "YoY": fund.get("YoY"),
+                "Financial_Risk_Level": financial.get("risk_level"),
+                "Financial_Risk_Flags": financial.get("risk_flags", []),
+                "Financial_Operating_Income": financial.get("operating_income"),
+                "Financial_Net_Income": financial.get("net_income"),
+            })
             initial_quality, initial_confidence = build_scan_quality({
                 "price": "ok",
                 "fundamental": f_data.get("_status", "unknown"),
                 "revenue": revenue_status,
+                "financial": financial.get("status", "unknown"),
                 "institutional": "pending",
                 "market": "ok",
             })
@@ -1179,28 +1239,41 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             initial_score, _, _, _ = get_decision_score(data, fund, mode="post", with_reason=False)
 
             has_buy_pattern = data.get("Advanced_Pattern_Signal") == "Buy"
-            # 法人最高 +6 分，pending→完整的信心修正最高再 +3 分。
+            # 初篩只節省外部查詢；正式排序仍使用完整籌碼與資料品質。
             if should_complete_candidate(initial_score, data.get("Advanced_Pattern_Signal", "")):
                 inst, inst_status = get_institutional_trading(stock, with_status=True)
                 whale_days = min(3, len(inst))
                 whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:whale_days]]) if inst else None
+                institutional_risk = build_institutional_risk_snapshot(inst)
                 quality, confidence = build_scan_quality({
                     "price": "ok",
                     "fundamental": f_data.get("_status", "unknown"),
                     "revenue": revenue_status,
+                    "financial": financial.get("status", "unknown"),
                     "institutional": inst_status,
                     "market": "ok",
                 }, institutional_days=len(inst))
                 data["Whale_Net"] = whale_net
+                data["Whale_Net_Days"] = whale_days
+                data.update(institutional_risk)
                 data["Data_Quality"] = quality
                 data["Confidence"] = confidence
-                sc, label, rs, feature = get_decision_score(data, fund, mode="post", with_reason=True)
+                data["Data_Completeness"] = confidence
+                sc, label, rs, feature = get_decision_score(
+                    data, fund, inst_data=inst, mode="post", with_reason=True
+                )
                 if sc <= 0:
                     return None
                 if sc < 45 and not has_buy_pattern:
                     return None
 
                 backtest = calc_winrate(df)
+                model_confidence, model_confidence_label = build_model_confidence(
+                    backtest.get("win_rate"),
+                    backtest.get("closed_signals"),
+                    backtest.get("validation_win_rate"),
+                    backtest.get("validation_samples"),
+                )
                 change_pct = round((t_close - p_close) / p_close * 100, 2)
                 data.update({
                     "Score": sc,
@@ -1208,6 +1281,12 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "最低價": float(t_low),
                     "ATR": float(t.get("ATR", 0)),
                     "漲跌幅": change_pct,
+                    "WinRate": backtest.get("win_rate"),
+                    "Backtest_Samples": backtest.get("closed_signals"),
+                    "Validation_WinRate": backtest.get("validation_win_rate"),
+                    "Validation_Samples": backtest.get("validation_samples"),
+                    "Model_Confidence": model_confidence,
+                    "Model_Confidence_Label": model_confidence_label,
                 })
                 entry_plan = build_entry_readiness(data)
                 result = {
@@ -1222,17 +1301,40 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Backtest_Scope": backtest["backtest_scope"],
                     "Validation_WinRate": backtest["validation_win_rate"],
                     "Validation_Samples": backtest["validation_samples"],
+                    "Validation_Raw_WinRate": backtest.get("validation_raw_win_rate"),
+                    "Validation_Wilson_Low": backtest.get("validation_wilson_low"),
+                    "Validation_Wilson_High": backtest.get("validation_wilson_high"),
+                    "Validation_Sample_Confidence": backtest.get("validation_sample_confidence"),
+                    "Model_Confidence": model_confidence,
+                    "Model_Confidence_Label": model_confidence_label,
                     "EPS": fund['EPS'], "EPS_Period": fund['EPS_Period'],
                     "MoM": fund['MoM'], "YoY": fund['YoY'],
                     "Revenue_Period": revenue.get("period", ""),
                     "Revenue_Source": revenue.get("source", ""),
+                    "Financial_Period": financial.get("period", ""),
+                    "Financial_Source": financial.get("source", ""),
+                    "Financial_Status": financial.get("status", "unknown"),
+                    "Financial_Revenue": financial.get("revenue"),
+                    "Financial_Gross_Profit": financial.get("gross_profit"),
+                    "Financial_Operating_Income": financial.get("operating_income"),
+                    "Financial_Net_Income": financial.get("net_income"),
+                    "Financial_EPS": financial.get("eps"),
+                    "Financial_Gross_Margin": financial.get("gross_margin"),
+                    "Financial_Operating_Margin": financial.get("operating_margin"),
+                    "Financial_Net_Margin": financial.get("net_margin"),
+                    "Financial_Debt_Ratio": financial.get("debt_ratio"),
+                    "Financial_Current_Ratio": financial.get("current_ratio"),
+                    "Financial_Risk_Level": financial.get("risk_level", "unknown"),
+                    "Financial_Risk_Flags": financial.get("risk_flags", []),
                     "Advanced_Pattern": data.get("Advanced_Pattern", ""),
                     "Advanced_Pattern_Signal": data.get("Advanced_Pattern_Signal", ""),
-                    "Confidence": confidence, "Data_Quality": quality, "Institutional_Days": len(inst),
+                    "Confidence": confidence, "Data_Completeness": confidence,
+                    "Data_Quality": quality, "Institutional_Days": len(inst),
                     "Market_Regime": benchmark_context.get("regime"),
                     "Market_Return": benchmark_context.get("daily_return_pct"),
                     "Institutional_Status": inst_status,
                     "Institutional_Source": inst[0].get("_source", "") if inst else "",
+                    **institutional_risk,
                     "Institutional_Rows": [{
                         "date": row.get("_date", ""),
                         "foreign": row.get("外資(張)"),

@@ -14,6 +14,11 @@ from typing import Any
 
 ENTRY_SCHEMA_VERSION = 2
 MIN_EXECUTION_SCORE = 65
+MIN_EFFECTIVE_REWARD_RISK = 1.30
+MIN_BACKTEST_SAMPLES = 15
+MIN_VALIDATION_SAMPLES = 5
+MIN_BACKTEST_WIN_RATE = 40.0
+MIN_VALIDATION_WIN_RATE = 40.0
 READY_STATUS = "現在可執行"
 WAIT_VOLUME_STATUS = "等待量能確認"
 WAIT_PULLBACK_STATUS = "等待拉回"
@@ -119,6 +124,7 @@ def _result(
     stop: float | None = None,
     target: float | None = None,
     no_chase: float | None = None,
+    rrr: float = 1.5,
 ) -> dict[str, Any]:
     has_levels = all(value is not None for value in (low, high, stop, target))
     return {
@@ -131,7 +137,7 @@ def _result(
         "Entry_High": high if has_levels else None,
         "Entry_Stop": stop if has_levels else None,
         "Entry_Target": target if has_levels else None,
-        "Entry_RRR": 1.5 if has_levels else None,
+        "Entry_RRR": round(rrr, 2) if has_levels else None,
         "No_Chase_Price": no_chase,
         "Entry_Reason": reason,
     }
@@ -161,16 +167,26 @@ def _legacy_result(record: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def _levels(low: float, high: float, atr: float, no_chase: float) -> tuple[float, float, float, float] | None:
+def _levels(
+    low: float,
+    high: float,
+    atr: float,
+    no_chase: float,
+    *,
+    stop_atr_mult: float = 1.0,
+    reward_risk: float = 1.5,
+) -> tuple[float, float, float, float] | None:
     low = _tick_price(low, "floor")
     high = _tick_price(min(high, no_chase), "ceil")
     if high < low:
         return None
     midpoint = (low + high) / 2
-    stop = _tick_price(low - atr, "floor")
+    if stop_atr_mult <= 0 or reward_risk <= 0:
+        return None
+    stop = _tick_price(low - atr * stop_atr_mult, "floor")
     if stop <= 0 or midpoint <= stop:
         return None
-    target = _tick_price(midpoint + (midpoint - stop) * 1.5, "ceil")
+    target = _tick_price(midpoint + (midpoint - stop) * reward_risk, "ceil")
     return low, high, stop, target
 
 
@@ -205,11 +221,77 @@ def _volume_wait_reason(record: Mapping[str, Any]) -> str:
     return ""
 
 
+def _execution_risk_reason(record: Mapping[str, Any]) -> str:
+    """Return a hard execution veto using only facts available at decision time."""
+    market_regime = str(record.get("Market_Regime") or "").strip()
+    market_return = _number(record.get("Market_Return"))
+    if market_regime == "空頭":
+        return "大盤仍在空頭結構，暫停新增多單。"
+    if market_return is not None and market_return <= -1.0:
+        return f"大盤當日下跌 {abs(market_return):.1f}%，系統性賣壓偏高。"
+    if market_regime == "震盪" and market_return is not None and market_return <= -0.5:
+        return f"大盤震盪且當日下跌 {abs(market_return):.1f}%，等待市場止穩。"
+
+    risk_level = str(record.get("Financial_Risk_Level") or "").strip().lower()
+    operating_income = _number(record.get("Financial_Operating_Income"))
+    net_income = _number(record.get("Financial_Net_Income"))
+    eps = _number(record.get("EPS"))
+    mom = _number(record.get("MoM"))
+    yoy = _number(record.get("YoY"))
+    if risk_level == "high":
+        return "最新季度財報屬高風險，暫不列為可執行。"
+    if operating_income is not None and net_income is not None and operating_income < 0 and net_income < 0:
+        return "最新季度營業與本期損益皆為負，先等待獲利改善。"
+    if eps is not None and eps < 0 and mom is not None and yoy is not None and mom < 0 and yoy < 0:
+        return "EPS 為負且月營收雙減，基本面風險尚未改善。"
+
+    sell_streak = _number(record.get("Institutional_Sell_Streak"))
+    whale_net = _number(record.get("Whale_Net"))
+    foreign_net = _number(record.get("Foreign_Net"))
+    trust_net = _number(record.get("Trust_Net"))
+    if sell_streak is not None and sell_streak >= 3 and whale_net is not None and whale_net < 0:
+        return f"法人已連續賣超 {int(sell_streak)} 日，籌碼尚未止穩。"
+    if (
+        whale_net is not None and whale_net < 0
+        and foreign_net is not None and foreign_net < 0
+        and trust_net is not None and trust_net < 0
+    ):
+        return "外資與投信近三日同步賣超，暫不逆勢進場。"
+
+    backtest_fields = (
+        "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples"
+    )
+    if any(key in record for key in backtest_fields):
+        backtest_rate = _number(record.get("WinRate"))
+        backtest_samples = _number(record.get("Backtest_Samples"))
+        validation_rate = _number(record.get("Validation_WinRate"))
+        validation_samples = _number(record.get("Validation_Samples"))
+        if backtest_samples is None or backtest_samples < MIN_BACKTEST_SAMPLES:
+            return f"策略回測樣本未達 {MIN_BACKTEST_SAMPLES} 筆，僅列觀察。"
+        if validation_samples is None or validation_samples < MIN_VALIDATION_SAMPLES:
+            return f"近期驗證樣本未達 {MIN_VALIDATION_SAMPLES} 筆，僅列觀察。"
+        if backtest_rate is None or backtest_rate < MIN_BACKTEST_WIN_RATE:
+            return f"策略回測勝率未達 {MIN_BACKTEST_WIN_RATE:.0f}%，暫不執行。"
+        if validation_rate is None or validation_rate < MIN_VALIDATION_WIN_RATE:
+            return f"近期驗證勝率未達 {MIN_VALIDATION_WIN_RATE:.0f}%，暫不執行。"
+    return ""
+
+
+def _reward_risk_at_price(price: float, stop: float, target: float) -> float | None:
+    risk = price - stop
+    reward = target - price
+    if risk <= 0 or reward <= 0:
+        return None
+    return reward / risk
+
+
 def build_entry_readiness(
     record: Mapping[str, Any],
     *,
     intraday: bool = False,
     baseline_plan: Mapping[str, Any] | None = None,
+    stop_atr_mult: float = 1.0,
+    reward_risk: float = 1.5,
 ) -> dict[str, Any]:
     """Build an honest entry plan from current technical values.
 
@@ -228,9 +310,12 @@ def build_entry_readiness(
     if close is None or close <= 0:
         return _legacy_result(record)
 
-    confidence = _number(record.get("Confidence"))
+    confidence = _number(record.get("Data_Completeness"))
+    if confidence is None:
+        confidence = _number(record.get("Confidence"))
     conflict = str(record.get("Signal_Conflict") or "")
     overheated, overheat_reason = _is_overheated(record, close)
+    execution_risk_reason = _execution_risk_reason(record)
 
     if intraday and baseline_plan:
         low = _number(baseline_plan.get("Entry_Low"))
@@ -239,8 +324,19 @@ def build_entry_readiness(
         target = _number(baseline_plan.get("Entry_Target"))
         no_chase = _number(baseline_plan.get("No_Chase_Price"))
         plan_type = str(baseline_plan.get("Entry_Plan_Type") or "盤後計畫")
-        if all(value is not None for value in (low, high, stop, target)):
-            kwargs = dict(plan_type=plan_type, low=low, high=high, stop=stop, target=target, no_chase=no_chase)
+        if low is not None and high is not None and stop is not None and target is not None:
+            baseline_rrr = _number(baseline_plan.get("Entry_RRR")) or reward_risk
+            kwargs: dict[str, Any] = dict(
+                plan_type=plan_type,
+                low=low,
+                high=high,
+                stop=stop,
+                target=target,
+                no_chase=no_chase,
+                rrr=baseline_rrr,
+            )
+            if execution_risk_reason:
+                return _result(WAIT_TRIGGER_STATUS, "wait", execution_risk_reason, **kwargs)
             if no_chase is not None and close > no_chase:
                 return _result(WAIT_PULLBACK_STATUS, "wait", f"現價 {close:.2f} 已超過禁止追高價。", **kwargs)
             if overheated:
@@ -252,7 +348,15 @@ def build_entry_readiness(
                 if volume_wait_reason:
                     return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
                 if confidence is not None and confidence < 70:
-                    return _result(WAIT_TRIGGER_STATUS, "wait", f"資料信心僅 {confidence:.0f}%，暫不執行。", **kwargs)
+                    return _result(WAIT_TRIGGER_STATUS, "wait", f"資料完整度僅 {confidence:.0f}%，暫不執行。", **kwargs)
+                actual_rrr = _reward_risk_at_price(close, stop, target)
+                if actual_rrr is None or actual_rrr < MIN_EFFECTIVE_REWARD_RISK:
+                    return _result(
+                        WAIT_PULLBACK_STATUS,
+                        "wait",
+                        f"現價風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
+                        **kwargs,
+                    )
                 return _result(READY_STATUS, "ready", build_entry_summary(record), **kwargs)
             if close < low:
                 return _result(WAIT_TRIGGER_STATUS, "wait", f"現價尚未進入 {low:g}–{high:g} 觀察區間。", **kwargs)
@@ -268,41 +372,89 @@ def build_entry_readiness(
     pattern = str(record.get("Entry_Pattern") or "一般觀察型")
     if overheated:
         plan_type = "pullback"
-        level_values = _levels(ma20, ma20 + atr * 0.5, atr, no_chase)
+        level_values = _levels(
+            ma20,
+            ma20 + atr * 0.5,
+            atr,
+            no_chase,
+            stop_atr_mult=stop_atr_mult,
+            reward_risk=reward_risk,
+        )
         if level_values:
             return _result(WAIT_PULLBACK_STATUS, "wait", overheat_reason, plan_type=plan_type, no_chase=no_chase,
-                           low=level_values[0], high=level_values[1], stop=level_values[2], target=level_values[3])
+                           low=level_values[0], high=level_values[1], stop=level_values[2], target=level_values[3],
+                           rrr=reward_risk)
         return _result(WAIT_PULLBACK_STATUS, "wait", overheat_reason, no_chase=no_chase)
 
     if pattern in _BREAKOUT_PATTERNS:
         plan_type = "breakout"
-        level_values = _levels(high_price, high_price + atr * 0.5, atr, no_chase)
+        level_values = _levels(
+            high_price,
+            high_price + atr * 0.5,
+            atr,
+            no_chase,
+            stop_atr_mult=stop_atr_mult,
+            reward_risk=reward_risk,
+        )
         if not level_values:
-            pullback = _levels(ma20, ma20 + atr * 0.5, atr, no_chase)
+            pullback = _levels(
+                ma20,
+                ma20 + atr * 0.5,
+                atr,
+                no_chase,
+                stop_atr_mult=stop_atr_mult,
+                reward_risk=reward_risk,
+            )
             if pullback:
                 return _result(WAIT_PULLBACK_STATUS, "wait", "突破觸發價已超過禁止追高價，改等回測。",
-                               plan_type="pullback", no_chase=no_chase, low=pullback[0], high=pullback[1], stop=pullback[2], target=pullback[3])
+                               plan_type="pullback", no_chase=no_chase, low=pullback[0], high=pullback[1],
+                               stop=pullback[2], target=pullback[3], rrr=reward_risk)
             return _result(WAIT_PULLBACK_STATUS, "wait", "突破觸發價已超過禁止追高價。", no_chase=no_chase)
         return _result(WAIT_TRIGGER_STATUS, "wait", "突破今日高點且量能延續後，才進入可執行區間。",
-                       plan_type=plan_type, no_chase=no_chase, low=level_values[0], high=level_values[1], stop=level_values[2], target=level_values[3])
+                       plan_type=plan_type, no_chase=no_chase, low=level_values[0], high=level_values[1],
+                       stop=level_values[2], target=level_values[3], rrr=reward_risk)
 
-    level_values = _levels(ma20, ma20 + atr * 0.5, atr, no_chase)
+    level_values = _levels(
+        ma20,
+        ma20 + atr * 0.5,
+        atr,
+        no_chase,
+        stop_atr_mult=stop_atr_mult,
+        reward_risk=reward_risk,
+    )
     if not level_values:
         return _result(WAIT_PULLBACK_STATUS, "wait", "目前無法建立風險報酬合理的區間。", no_chase=no_chase)
-    kwargs = dict(plan_type="pullback", no_chase=no_chase, low=level_values[0], high=level_values[1],
-                  stop=level_values[2], target=level_values[3])
+    level_kwargs: dict[str, Any] = dict(
+        plan_type="pullback",
+        no_chase=no_chase,
+        low=level_values[0],
+        high=level_values[1],
+        stop=level_values[2],
+        target=level_values[3],
+        rrr=reward_risk,
+    )
+    if execution_risk_reason:
+        return _result(WAIT_TRIGGER_STATUS, "wait", execution_risk_reason, **level_kwargs)
     if conflict == "高":
-        return _result(WAIT_TRIGGER_STATUS, "wait", "多空訊號衝突偏高，等待重新確認。", **kwargs)
+        return _result(WAIT_TRIGGER_STATUS, "wait", "多空訊號衝突偏高，等待重新確認。", **level_kwargs)
     if level_values[0] <= close <= level_values[1]:
         volume_wait_reason = _volume_wait_reason(record)
         if volume_wait_reason:
-            return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **kwargs)
+            return _result(WAIT_VOLUME_STATUS, "wait", volume_wait_reason, **level_kwargs)
         if confidence is not None and confidence < 70:
-            return _result(WAIT_TRIGGER_STATUS, "wait", f"價格已進區間，但資料信心僅 {confidence:.0f}%。", **kwargs)
-        return _result(READY_STATUS, "ready", build_entry_summary(record), **kwargs)
+            return _result(WAIT_TRIGGER_STATUS, "wait", f"價格已進區間，但資料完整度僅 {confidence:.0f}%。", **level_kwargs)
+        actual_rrr = _reward_risk_at_price(close, level_values[2], level_values[3])
+        if actual_rrr is None or actual_rrr < MIN_EFFECTIVE_REWARD_RISK:
+            return _result(
+                WAIT_PULLBACK_STATUS,
+                "wait",
+                f"現價風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
+                **level_kwargs,
+            )
+        return _result(READY_STATUS, "ready", build_entry_summary(record), **level_kwargs)
     if close > level_values[1]:
-        return _result(WAIT_PULLBACK_STATUS, "wait", "價格仍高於 20MA 回測區，不追價。", **kwargs)
-    return _result(WAIT_TRIGGER_STATUS, "wait", "價格尚未站回 20MA 觀察區。", **kwargs)
+        return _result(WAIT_PULLBACK_STATUS, "wait", "價格仍高於 20MA 回測區，不追價。", **level_kwargs)
+    return _result(WAIT_TRIGGER_STATUS, "wait", "價格尚未站回 20MA 觀察區。", **level_kwargs)
 
 
 def ensure_entry_readiness(record: Mapping[str, Any]) -> dict[str, Any]:

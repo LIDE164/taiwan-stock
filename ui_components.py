@@ -288,7 +288,7 @@ def render_daily_scan_status_card(status):
 
 def render_stock_hero(data, target, name, strategy_text):
     score = data.get("Score")
-    confidence = data.get("Confidence")
+    confidence = data.get("Data_Completeness", data.get("Confidence"))
     change = data.get("漲跌幅")
     p_color = change_color(change)
     rating = str(data.get("評級", "觀察")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
@@ -314,7 +314,7 @@ def render_stock_hero(data, target, name, strategy_text):
   <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
     <div>
       <div style="font-size:1.8rem; font-weight:950; color:#E2E8F0;">{target_text} {name_text}</div>
-      <div class="terminal-sub">{industry_text}｜{score_mode_text}｜資料信心 {confidence_text}</div>
+      <div class="terminal-sub">{industry_text}｜{score_mode_text}｜資料完整度 {confidence_text}</div>
     </div>
     <div style="text-align:right;">
       <div style="font-size:1.9rem; font-weight:950; color:{p_color};">{data.get('收盤價', '--')} <span style="font-size:1rem;">{change_text}</span></div>
@@ -402,6 +402,12 @@ def generate_cards_html(
         sim_mark = " 🛒" if ticker_code in simulated_set else ""
         sample_count = record.get("Backtest_Samples", record.get("closed_signals", record.get("ClosedSignals", "--")))
         cred_text, cred_color = credibility_label(sample_count)
+        model_confidence = optional_number(record.get("Model_Confidence"))
+        model_label = str(record.get("Model_Confidence_Label") or "").strip()
+        if model_label:
+            cred_text = model_label
+            if model_confidence is not None:
+                cred_color = "#4ADE80" if model_confidence >= 75 else ("#60A5FA" if model_confidence >= 55 else "#FACC15")
         main_signal = escape_html(record.get("Feature") or "資料不足")
         rrr = optional_number(record.get("Entry_RRR", record.get("RRR")))
         entry_status = str(record.get("Entry_Status") or "").strip()

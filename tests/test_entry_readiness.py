@@ -61,6 +61,39 @@ class EntryReadinessTests(unittest.TestCase):
         self.assertEqual(result["Entry_Status_Group"], "wait")
         self.assertIn("0.96", result["Entry_Reason"])
 
+    def test_execution_requires_minimum_backtest_and_validation_evidence(self):
+        result = build_entry_readiness(self._base(
+            WinRate=55,
+            Backtest_Samples=12,
+            Validation_WinRate=50,
+            Validation_Samples=5,
+        ))
+        self.assertEqual(result["Entry_Status"], WAIT_TRIGGER_STATUS)
+        self.assertIn("15", result["Entry_Reason"])
+
+    def test_bearish_market_financial_loss_and_chip_selloff_each_veto_entry(self):
+        cases = (
+            (self._base(Market_Regime="空頭"), "大盤"),
+            (self._base(
+                Financial_Operating_Income=-10,
+                Financial_Net_Income=-8,
+            ), "損益"),
+            (self._base(
+                Institutional_Sell_Streak=3,
+                Whale_Net=-800,
+            ), "連續賣超"),
+        )
+        for record, expected in cases:
+            with self.subTest(expected=expected):
+                result = build_entry_readiness(record)
+                self.assertEqual(result["Entry_Status"], WAIT_TRIGGER_STATUS)
+                self.assertIn(expected, result["Entry_Reason"])
+
+    def test_ready_price_must_keep_effective_reward_risk_above_minimum(self):
+        result = build_entry_readiness(self._base(收盤價=102))
+        self.assertEqual(result["Entry_Status"], WAIT_PULLBACK_STATUS)
+        self.assertIn("風險報酬比", result["Entry_Reason"])
+
     def test_general_observation_score_cannot_be_execution_ready(self):
         result = build_entry_readiness(self._base(Score=64))
         self.assertEqual(result["Entry_Status"], "條件不足")

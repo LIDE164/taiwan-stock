@@ -98,6 +98,11 @@ class BatchMarketDataTests(unittest.TestCase):
                 "get_finmind_revenue",
                 return_value={"mom": 1.0, "yoy": 2.0, "status": "ok", "period": "2026-08", "source": "test"},
             ),
+            patch.object(
+                scanner,
+                "fetch_financial_quality",
+                return_value={"status": "ok", "risk_level": "low", "risk_flags": []},
+            ),
             patch.object(scanner, "build_score_input", return_value=score_input),
             patch.object(scanner, "build_scan_quality", return_value=({}, 100)),
             patch.object(scanner, "get_decision_score", return_value=(90, "強勢候選", [], "test")),

@@ -80,6 +80,18 @@ def _credibility(sample_count: int | None) -> tuple[str, str]:
     return "統計較穩定", "#4ADE80"
 
 
+def _record_credibility(record: Mapping[str, Any], sample_count: int | None) -> tuple[str, str]:
+    """Prefer calibrated model reliability and fall back to sample-only labels."""
+    label = str(record.get("Model_Confidence_Label") or "").strip()
+    value = _number(record.get("Model_Confidence"))
+    if not label:
+        return _credibility(sample_count)
+    if value is None:
+        return label, "#94A3B8"
+    color = "#4ADE80" if value >= 75 else ("#60A5FA" if value >= 55 else "#FACC15")
+    return label, color
+
+
 def _normalize_mini_kbars(value: Any, limit: int = 30) -> list[dict[str, float]]:
     """Keep only complete, internally consistent OHLC bars; never synthesize candles."""
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
@@ -92,7 +104,11 @@ def _normalize_mini_kbars(value: Any, limit: int = 30) -> list[dict[str, float]]
         high_price = _number(item.get("high"))
         low_price = _number(item.get("low"))
         close_price = _number(item.get("close"))
-        if any(number is None or number <= 0 for number in (open_price, high_price, low_price, close_price)):
+        if (
+            open_price is None or high_price is None
+            or low_price is None or close_price is None
+            or min(open_price, high_price, low_price, close_price) <= 0
+        ):
             continue
         if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
             continue
@@ -121,7 +137,7 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
         win_rate = _number(record.get("WinRate"))
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
-        credibility, credibility_color = _credibility(samples)
+        credibility, credibility_color = _record_credibility(record, samples)
         rating = _clean_text(record.get("評級"), "觀察")
         for marker in ("🟢", "🟡", "⚪", "🔴"):
             rating = rating.replace(marker, "").strip()
@@ -183,7 +199,7 @@ def build_executable_display_rows(
         win_rate = _number(record.get("WinRate"))
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
-        credibility, credibility_color = _credibility(samples)
+        credibility, credibility_color = _record_credibility(record, samples)
         shares, risk_per_share, estimated_loss = _position_size_for_max_loss(
             high,
             stop,

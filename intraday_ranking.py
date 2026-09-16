@@ -59,6 +59,9 @@ def support_data_from_postclose_record(
     revenue_status = str(baseline.get("Revenue_Status") or "").lower()
     if revenue_status not in {"ok", "partial", "missing", "error"}:
         revenue_status = "ok" if revenue_source and (mom is not None or yoy is not None) else "missing"
+    financial_status = str(baseline.get("Financial_Status") or "").lower()
+    if financial_status not in {"ok", "partial", "missing", "empty", "error"}:
+        financial_status = "missing"
 
     institutional_days = int(_number(baseline.get("Institutional_Days")) or 0)
     institutional_status = str(baseline.get("Institutional_Status") or "").lower()
@@ -81,7 +84,22 @@ def support_data_from_postclose_record(
         "YoY": yoy,
         "Revenue_Period": str(baseline.get("Revenue_Period") or ""),
         "Revenue_Source": revenue_source,
-        "_data_status": {"revenue": revenue_status},
+        "Financial_Period": str(baseline.get("Financial_Period") or ""),
+        "Financial_Source": str(baseline.get("Financial_Source") or ""),
+        "Financial_Status": financial_status,
+        "Financial_Revenue": baseline.get("Financial_Revenue"),
+        "Financial_Gross_Profit": baseline.get("Financial_Gross_Profit"),
+        "Financial_Operating_Income": baseline.get("Financial_Operating_Income"),
+        "Financial_Net_Income": baseline.get("Financial_Net_Income"),
+        "Financial_EPS": baseline.get("Financial_EPS"),
+        "Financial_Gross_Margin": baseline.get("Financial_Gross_Margin"),
+        "Financial_Operating_Margin": baseline.get("Financial_Operating_Margin"),
+        "Financial_Net_Margin": baseline.get("Financial_Net_Margin"),
+        "Financial_Debt_Ratio": baseline.get("Financial_Debt_Ratio"),
+        "Financial_Current_Ratio": baseline.get("Financial_Current_Ratio"),
+        "Financial_Risk_Level": str(baseline.get("Financial_Risk_Level") or "unknown"),
+        "Financial_Risk_Flags": baseline.get("Financial_Risk_Flags", []),
+        "_data_status": {"revenue": revenue_status, "financial": financial_status},
         "_institutional_status": institutional_status,
         "Institutional_Source": str(baseline.get("Institutional_Source") or ""),
     }
@@ -125,7 +143,7 @@ def institutional_rows_from_record(
         foreign = _number(row.get("foreign", row.get("外資(張)")))
         trust = _number(row.get("trust", row.get("投信(張)")))
         dealer = _number(row.get("dealer", row.get("自營商(張)")))
-        if any(value is None for value in (foreign, trust, dealer)):
+        if foreign is None or trust is None or dealer is None:
             continue
         total = _number(row.get("total", row.get("單日合計(張)")))
         if total is None:

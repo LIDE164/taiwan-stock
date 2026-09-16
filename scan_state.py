@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
@@ -198,7 +199,12 @@ def build_scan_quality(
     *,
     institutional_days: int = 0,
 ) -> tuple[dict[str, str], int]:
-    """Build a persisted quality map and a conservative confidence score."""
+    """Build a persisted quality map and a conservative data-completeness score.
+
+    The returned integer is retained as the legacy ``Confidence`` value for
+    callers that have not migrated yet.  It describes source completeness, not
+    confidence in the model or its estimated win rate.
+    """
     quality = {str(key): str(value or "unknown").lower() for key, value in statuses.items()}
     quality["institutional"] = f"{institutional_days}d" if institutional_days > 0 else quality.get("institutional", "missing")
 
@@ -209,5 +215,71 @@ def build_scan_quality(
         if status in GOOD_STATUSES:
             continue
         penalty_units += 0.5 if status in PARTIAL_STATUSES else 1.0
-    confidence = max(20, round(100 - penalty_units * 12))
-    return quality, confidence
+    data_completeness = max(20, round(100 - penalty_units * 12))
+    return quality, data_completeness
+
+
+def _confidence_rate(value: Any) -> float | None:
+    """Parse a finite percentage without turning a missing value into zero."""
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or not 0 <= parsed <= 100:
+        return None
+    return parsed
+
+
+def _confidence_samples(value: Any) -> int | None:
+    """Parse a non-negative whole-number sample count without truncation."""
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0 or not parsed.is_integer():
+        return None
+    return int(parsed)
+
+
+def build_model_confidence(
+    backtest_win_rate: Any,
+    backtest_samples: Any,
+    validation_win_rate: Any = None,
+    validation_samples: Any = None,
+) -> tuple[float | None, str]:
+    """Estimate how dependable a backtest rate is, separately from data quality.
+
+    The score combines effective sample strength with agreement between the
+    full backtest and its validation slice.  It intentionally requires both
+    sets: reporting a plausible percentage when validation is absent would
+    make source completeness look like predictive confidence.
+
+    This is an evidence-quality indicator, not a predicted return.  A stable
+    low win rate can therefore have high confidence just as a stable high win
+    rate can.
+    """
+    backtest_rate = _confidence_rate(backtest_win_rate)
+    total_samples = _confidence_samples(backtest_samples)
+    if backtest_rate is None or total_samples in (None, 0):
+        return None, "回測資料不足"
+
+    validation_rate = _confidence_rate(validation_win_rate)
+    holdout_samples = _confidence_samples(validation_samples)
+    if validation_rate is None or holdout_samples in (None, 0):
+        return None, "驗證資料不足"
+
+    # Current validation is approximately the latest 30% of the backtest.  The
+    # smaller side determines the effective evidence so a tiny validation
+    # slice cannot inherit the apparent certainty of a much larger backtest.
+    effective_samples = min(total_samples, holdout_samples / 0.30)
+    sample_strength = min(1.0, effective_samples / 60.0)
+    agreement = max(0.0, 1.0 - abs(backtest_rate - validation_rate) / 30.0)
+    confidence = round((sample_strength * 0.70 + agreement * 0.30) * 100, 1)
+
+    if confidence >= 75:
+        label = "高可信"
+    elif confidence >= 55:
+        label = "中等可信"
+    else:
+        label = "低可信"
+    return confidence, label

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
+from requests import RequestException
 
 from app_security import normalize_ticker
 from market_http import http_get
@@ -17,6 +18,10 @@ from market_http import http_get
 FINMIND_DATA_URL = "https://api.finmindtrade.com/api/v4/data"
 TWSE_REVENUE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
 TPEX_REVENUE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O"
+TWSE_INCOME_STATEMENT_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ci"
+TWSE_BALANCE_SHEET_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap07_L_ci"
+TPEX_INCOME_STATEMENT_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_ci"
+TPEX_BALANCE_SHEET_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap07_O_ci"
 TWSE_INSTITUTIONAL_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
 TPEX_INSTITUTIONAL_URL = (
     "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
@@ -107,6 +112,228 @@ def _roc_date(value: datetime) -> str:
     return f"{value.year - 1911:03d}/{value.month:02d}/{value.day:02d}"
 
 
+def _first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+def _financial_period(row: dict[str, Any]) -> str:
+    year_value = _first_value(row, "年度", "Year", "year")
+    quarter_value = _first_value(row, "季別", "Season", "season", "Quarter", "quarter")
+    year_digits = "".join(character for character in str(year_value or "") if character.isdigit())
+    quarter_digits = "".join(character for character in str(quarter_value or "") if character.isdigit())
+    if not year_digits or not quarter_digits:
+        return ""
+    try:
+        year = int(year_digits)
+        quarter = int(quarter_digits)
+    except ValueError:
+        return ""
+    if year < 1911:
+        year += 1911
+    if year < 1900 or quarter not in range(1, 5):
+        return ""
+    return f"{year:04d}-Q{quarter}"
+
+
+def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return round(numerator / denominator * 100, 2)
+
+
+def _financial_risk(
+    gross_margin: float | None,
+    operating_margin: float | None,
+    net_margin: float | None,
+    debt_ratio: float | None,
+    current_ratio: float | None,
+) -> tuple[str, list[str]]:
+    flags: list[str] = []
+    severe = False
+    warning = False
+    if gross_margin is not None and gross_margin < 0:
+        flags.append("negative_gross_margin")
+        severe = True
+    if operating_margin is not None and operating_margin < 0:
+        flags.append("negative_operating_margin")
+        severe = True
+    if net_margin is not None and net_margin < 0:
+        flags.append("negative_net_margin")
+        severe = True
+    if debt_ratio is not None:
+        if debt_ratio > 70:
+            flags.append("high_debt_ratio")
+            severe = True
+        elif debt_ratio > 60:
+            flags.append("elevated_debt_ratio")
+            warning = True
+    if current_ratio is not None:
+        if current_ratio < 100:
+            flags.append("low_current_ratio")
+            severe = True
+        elif current_ratio < 150:
+            flags.append("moderate_current_ratio")
+            warning = True
+    observed = (gross_margin, operating_margin, net_margin, debt_ratio, current_ratio)
+    if not any(value is not None for value in observed):
+        return "unknown", flags
+    if severe:
+        return "high", flags
+    if warning:
+        return "medium", flags
+    return "low", flags
+
+
+def _empty_financial_quality(status: str) -> dict[str, Any]:
+    return {
+        "period": "",
+        "source": "official open data (current snapshot)",
+        "status": status,
+        "revenue": None,
+        "gross_profit": None,
+        "operating_income": None,
+        "net_income": None,
+        "eps": None,
+        "gross_margin": None,
+        "operating_margin": None,
+        "net_margin": None,
+        "debt_ratio": None,
+        "current_ratio": None,
+        "risk_level": "unknown",
+        "risk_flags": [],
+    }
+
+
+def _financial_rows(market: str, statement: str) -> list[dict[str, Any]]:
+    urls = {
+        ("listed", "income"): TWSE_INCOME_STATEMENT_URL,
+        ("listed", "balance"): TWSE_BALANCE_SHEET_URL,
+        ("otc", "income"): TPEX_INCOME_STATEMENT_URL,
+        ("otc", "balance"): TPEX_BALANCE_SHEET_URL,
+    }
+    payload = _cached_json(f"financial-quality:{market}:{statement}", urls[(market, statement)])
+    if not isinstance(payload, list):
+        raise TypeError("official financial statement payload is not a list")
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _financial_ticker(row: dict[str, Any]) -> str:
+    return normalize_ticker(
+        _first_value(row, "公司代號", "SecuritiesCompanyCode", "證券代號", "CompanyCode")
+    )
+
+
+def _parse_financial_quality_rows(
+    income_row: dict[str, Any] | None,
+    balance_row: dict[str, Any] | None,
+    *,
+    period: str,
+    source: str,
+) -> dict[str, Any]:
+    income_row = income_row or {}
+    balance_row = balance_row or {}
+    revenue = _number(_first_value(income_row, "營業收入", "收入合計", "營業收益"))
+    gross_profit = _number(
+        _first_value(income_row, "營業毛利（毛損）淨額", "營業毛利（毛損）", "營業毛利(毛損)淨額", "營業毛利(毛損)")
+    )
+    operating_income = _number(_first_value(income_row, "營業利益（損失）", "營業利益(損失)"))
+    net_income = _number(_first_value(income_row, "本期淨利（淨損）", "本期淨利(淨損)", "本期稅後淨利（淨損）"))
+    eps = _number(_first_value(income_row, "基本每股盈餘（元）", "基本每股盈餘(元)", "基本每股盈餘"))
+    current_assets = _number(_first_value(balance_row, "流動資產"))
+    total_assets = _number(_first_value(balance_row, "資產總計", "資產合計"))
+    current_liabilities = _number(_first_value(balance_row, "流動負債"))
+    total_liabilities = _number(_first_value(balance_row, "負債總計", "負債合計"))
+
+    gross_margin = _ratio(gross_profit, revenue)
+    operating_margin = _ratio(operating_income, revenue)
+    net_margin = _ratio(net_income, revenue)
+    debt_ratio = _ratio(total_liabilities, total_assets)
+    current_ratio = _ratio(current_assets, current_liabilities)
+    risk_level, risk_flags = _financial_risk(
+        gross_margin, operating_margin, net_margin, debt_ratio, current_ratio
+    )
+    required_values = (
+        revenue, gross_profit, operating_income, net_income, eps,
+        gross_margin, operating_margin, net_margin, debt_ratio, current_ratio,
+    )
+    return {
+        "period": period,
+        "source": source,
+        "status": "ok" if all(value is not None for value in required_values) else "partial",
+        "revenue": revenue,
+        "gross_profit": gross_profit,
+        "operating_income": operating_income,
+        "net_income": net_income,
+        "eps": eps,
+        "gross_margin": gross_margin,
+        "operating_margin": operating_margin,
+        "net_margin": net_margin,
+        "debt_ratio": debt_ratio,
+        "current_ratio": current_ratio,
+        "risk_level": risk_level,
+        "risk_flags": risk_flags,
+    }
+
+
+def fetch_financial_quality(ticker: Any) -> dict[str, Any]:
+    """Return the latest official current-snapshot financial quality metrics.
+
+    These OpenAPI resources expose the currently published quarter, not a
+    historical point-in-time series. Missing statement values remain ``None``.
+    """
+    code = normalize_ticker(ticker)
+    if not code:
+        return _empty_financial_quality("empty")
+    successful_request = False
+    partial_match: tuple[dict[str, Any] | None, dict[str, Any] | None, str, str] | None = None
+    for market, source in (("listed", "TWSE OpenAPI (current snapshot)"), ("otc", "TPEx OpenAPI (current snapshot)")):
+        income_rows: list[dict[str, Any]] = []
+        balance_rows: list[dict[str, Any]] = []
+        try:
+            income_rows = _financial_rows(market, "income")
+            successful_request = True
+        except (RequestException, TypeError, ValueError) as exc:
+            logger.warning("%s income statement request failed (%s)", market, type(exc).__name__)
+        try:
+            balance_rows = _financial_rows(market, "balance")
+            successful_request = True
+        except (RequestException, TypeError, ValueError) as exc:
+            logger.warning("%s balance sheet request failed (%s)", market, type(exc).__name__)
+
+        income_by_period = {
+            _financial_period(row): row
+            for row in income_rows
+            if _financial_ticker(row) == code and _financial_period(row)
+        }
+        balance_by_period = {
+            _financial_period(row): row
+            for row in balance_rows
+            if _financial_ticker(row) == code and _financial_period(row)
+        }
+        common_periods = income_by_period.keys() & balance_by_period.keys()
+        if common_periods:
+            latest_period = max(common_periods)
+            return _parse_financial_quality_rows(
+                income_by_period[latest_period], balance_by_period[latest_period],
+                period=latest_period, source=source,
+            )
+        available_periods = income_by_period.keys() | balance_by_period.keys()
+        if available_periods:
+            latest_period = max(available_periods)
+            partial_match = (
+                income_by_period.get(latest_period), balance_by_period.get(latest_period), latest_period, source,
+            )
+
+    if partial_match:
+        income_row, balance_row, period, source = partial_match
+        return _parse_financial_quality_rows(income_row, balance_row, period=period, source=source)
+    return _empty_financial_quality("empty" if successful_request else "error")
+
+
 def _shares_to_lots(value: Any) -> int:
     shares = _number(value)
     return int(round(shares / 1000)) if shares is not None else 0
@@ -194,7 +421,7 @@ def fetch_revenue_growth(ticker: Any, token: str, *, now: datetime | None = None
         official_result = _fetch_official_revenue_growth(ticker)
         if official_result["status"] in ("ok", "partial"):
             return official_result
-    finmind_result = {
+    finmind_result: dict[str, Any] = {
         "mom": None,
         "yoy": None,
         "period": "",
