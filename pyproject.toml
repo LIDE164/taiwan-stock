@@ -12,9 +12,23 @@ check_untyped_defs = true
 
 [tool.coverage.run]
 branch = true
-source = ["analysis_core", "app_security", "data_providers", "market_http", "scan_state", "scoring", "top10_tracker"]
+source = [
+    "analysis_core",
+    "app_security",
+    "data_providers",
+    "entry_readiness",
+    "execution_costs",
+    "intraday_ranking",
+    "market_http",
+    "scan_state",
+    "scanner",
+    "scoring",
+    "strategy_advice",
+    "top10_telegram",
+    "top10_tracker",
+]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-fail_under = 45
+fail_under = 65

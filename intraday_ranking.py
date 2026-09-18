@@ -17,6 +17,11 @@ def _number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def _lot_value(value: float) -> int | float:
+    rounded = round(value, 3)
+    return int(rounded) if rounded.is_integer() else rounded
+
+
 def original_ranking_targets(
     records: Sequence[Mapping[str, Any]],
     limit: int | None = None,
@@ -154,10 +159,10 @@ def institutional_rows_from_record(
         display_date = date_text[-5:].replace("-", "/") if "-" in date_text else date_text
         restored.append({
             "日期": display_date,
-            "外資(張)": int(foreign),
-            "投信(張)": int(trust),
-            "自營商(張)": int(dealer),
-            "單日合計(張)": int(total),
+            "外資(張)": _lot_value(foreign),
+            "投信(張)": _lot_value(trust),
+            "自營商(張)": _lot_value(dealer),
+            "單日合計(張)": _lot_value(total),
             "_source": str(row.get("source", row.get("_source", fallback_source)) or fallback_source),
         })
     return restored

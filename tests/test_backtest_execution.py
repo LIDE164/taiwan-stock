@@ -6,6 +6,7 @@ import pandas as pd
 from analysis_core import (
     BACKTEST_HOLD_DAYS,
     BACKTEST_MIN_GAP_DAYS,
+    _bars_observable_after_fill,
     _trade_result,
     calculate_historical_performance,
 )
@@ -95,6 +96,112 @@ class BacktestExecutionTests(unittest.TestCase):
         )
         self.assertFalse(result["win"])
         self.assertGreater(result["transaction_cost"], 500)
+
+    def test_exit_slippage_applies_to_stop_but_not_target(self):
+        target_bar = pd.DataFrame([
+            {"Open": 100, "High": 111, "Low": 99, "Close": 108}
+        ])
+        stopped_bar = pd.DataFrame([
+            {"Open": 100, "High": 101, "Low": 89, "Close": 92}
+        ])
+        kwargs = {
+            "target_price": 110,
+            "stop_price": 90,
+            "entry_price": 100,
+            "fee_rate": 0,
+            "sell_tax_rate": 0,
+            "minimum_commission": 0,
+            "exit_slippage_rate": 0.01,
+        }
+
+        target = _trade_result(target_bar, **kwargs)
+        stopped = _trade_result(stopped_bar, **kwargs)
+
+        self.assertEqual(target["execution_exit_price"], 110)
+        self.assertEqual(stopped["execution_exit_price"], 89.1)
+
+    def test_pullback_target_order_ambiguity_is_explicitly_excluded(self):
+        ambiguous = pd.DataFrame([
+            {"Open": 110, "High": 113, "Low": 100, "Close": 105}
+        ])
+        stopped = ambiguous.copy()
+        stopped.loc[stopped.index[0], "Low"] = 94
+        close_confirmed = ambiguous.copy()
+        close_confirmed.loc[close_confirmed.index[0], "Close"] = 112
+
+        self.assertIsNone(_bars_observable_after_fill(
+            ambiguous,
+            102,
+            "PULLBACK_TOUCH",
+            target_price=112,
+            stop_price=95,
+        ))
+        self.assertIsNotNone(_bars_observable_after_fill(
+            stopped,
+            102,
+            "PULLBACK_TOUCH",
+            target_price=112,
+            stop_price=95,
+        ))
+        observable = _bars_observable_after_fill(
+            close_confirmed,
+            102,
+            "PULLBACK_TOUCH",
+            target_price=112,
+            stop_price=95,
+        )
+        self.assertIsNotNone(observable)
+        result = _trade_result(
+            observable,
+            target_price=112,
+            stop_price=95,
+            entry_price=102,
+            fee_rate=0,
+            sell_tax_rate=0,
+            minimum_commission=0,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["exit_reason"], "停利")
+        self.assertTrue(result["win"])
+
+    def test_performance_counts_ambiguous_pullback_as_excluded_not_trade(self):
+        bars = self._flat_bars(30)
+        bars.iloc[21] = {
+            "Open": 110,
+            "High": 113,
+            "Low": 100,
+            "Close": 105,
+            "ATR": 1,
+        }
+
+        def one_signal(history, _fund, **_kwargs):
+            return len(history) == 21, 80, self._executable_signal(history)
+
+        plan = {
+            "Entry_Status": "現在可執行",
+            "Entry_Low": 100,
+            "Entry_High": 102,
+            "Entry_Stop": 95,
+            "Entry_Target": 112,
+        }
+        with (
+            patch("analysis_core.is_strategy_signal", side_effect=one_signal),
+            patch("entry_readiness.build_entry_readiness", return_value=plan),
+        ):
+            result = calculate_historical_performance(
+                bars,
+                lookback_days=len(bars),
+                hold_days=3,
+                min_gap_days=1,
+                fee_rate=0,
+                sell_tax_rate=0,
+                minimum_commission=0,
+                slippage_rate=0,
+            )
+
+        self.assertEqual(result["closed_signals"], 0)
+        self.assertEqual(result["execution_unresolved"], 1)
+        self.assertEqual(result["trades"], [])
 
     def test_missing_open_does_not_create_a_synthetic_exit_price(self):
         bars = pd.DataFrame([{"Open": None, "High": 101, "Low": 99, "Close": 100}])
@@ -227,6 +334,64 @@ class BacktestExecutionTests(unittest.TestCase):
                 for earlier, later in zip(entry_positions, entry_positions[1:])
             )
         )
+
+    def test_default_backtest_risk_sizes_each_trade_to_five_thousand(self):
+        bars = self._flat_bars(40)
+
+        def always_signal(history, _fund, **_kwargs):
+            return True, 80, self._executable_signal(history)
+
+        with patch("analysis_core.is_strategy_signal", side_effect=always_signal):
+            result = calculate_historical_performance(
+                bars,
+                lookback_days=len(bars),
+                hold_days=3,
+                min_gap_days=3,
+                target_mult=3.0,
+            )
+
+        self.assertTrue(result["trades"])
+        self.assertTrue(all(trade["shares"] != 1000 for trade in result["trades"]))
+        self.assertTrue(
+            all(trade["planned_net_risk"] <= 5000 for trade in result["trades"])
+        )
+
+    def test_training_and_validation_metrics_are_disjoint(self):
+        bars = self._flat_bars(30)
+
+        def four_signals(history, _fund, **_kwargs):
+            return (
+                len(history) in {21, 23, 25, 27},
+                80,
+                self._executable_signal(history),
+            )
+
+        simulated = [
+            {"win": True, "return_pct": 2.0, "exit_reason": "停利"},
+            {"win": True, "return_pct": 2.0, "exit_reason": "停利"},
+            {"win": False, "return_pct": -1.0, "exit_reason": "停損"},
+            {"win": False, "return_pct": -1.0, "exit_reason": "停損"},
+        ]
+        with (
+            patch("analysis_core.is_strategy_signal", side_effect=four_signals),
+            patch("analysis_core._trade_result", side_effect=simulated),
+        ):
+            result = calculate_historical_performance(
+                bars,
+                lookback_days=len(bars),
+                hold_days=1,
+                min_gap_days=1,
+                fee_rate=0,
+                sell_tax_rate=0,
+                minimum_commission=0,
+                slippage_rate=0,
+            )
+
+        self.assertEqual(result["overall_samples"], 4)
+        self.assertEqual(result["closed_signals"], 2)
+        self.assertEqual(result["validation_samples"], 2)
+        self.assertEqual(result["training_raw_win_rate"], 100.0)
+        self.assertEqual(result["validation_raw_win_rate"], 0.0)
 
 
 if __name__ == "__main__":

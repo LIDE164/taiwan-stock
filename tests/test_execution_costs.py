@@ -3,6 +3,7 @@ import unittest
 from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
     calculate_max_odd_lot_position,
+    estimate_risk_sized_net_reward_risk,
     estimate_stop_loss,
 )
 
@@ -32,6 +33,13 @@ class ExecutionCostTests(unittest.TestCase):
         self.assertEqual(DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_commission_rate, 0.001425)
         self.assertEqual(DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_tax_rate, 0.003)
         self.assertGreater(DEFAULT_TAIWAN_STOCK_COST_MODEL.stop_slippage_rate, 0)
+
+    def test_risk_sized_reward_risk_is_net_of_all_costs(self):
+        net_ratio = estimate_risk_sized_net_reward_risk(100, 90, 115)
+        self.assertIsNotNone(net_ratio)
+        self.assertGreater(net_ratio, 0)
+        self.assertLess(net_ratio, 1.5)
+        self.assertIsNone(estimate_risk_sized_net_reward_risk(100, 90, 0))
 
 
 if __name__ == "__main__":

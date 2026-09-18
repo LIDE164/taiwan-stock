@@ -1,7 +1,8 @@
-import unittest
-from unittest.mock import Mock, patch
 import ssl
-from datetime import datetime
+import unittest
+from datetime import UTC, datetime
+from unittest.mock import Mock, patch
+
 import pandas as pd
 
 from app_security import (
@@ -13,10 +14,11 @@ from app_security import (
     scoped_document_name,
 )
 from data_providers import (
+    _finmind_rows,
+    _normalize_finmind_institutional_rows,
     _parse_official_revenue_row,
     _parse_tpex_institutional_payload,
     _parse_twse_institutional_payload,
-    _finmind_rows,
     clear_provider_cache,
     fetch_institutional_rows,
     fetch_revenue_growth,
@@ -118,9 +120,12 @@ class ProviderTests(unittest.TestCase):
         rows = [{"date": f"2025-{month:02d}-01", "revenue": 100} for month in range(1, 13)]
         rows += [{"date": "2026-01-01", "revenue": 120}, {"date": "2026-02-01", "revenue": 132}]
         get.return_value = self._response({"msg": "success", "data": rows})
-        result = fetch_revenue_growth("2330", "token")
+        result = fetch_revenue_growth(
+            "2330", "token", now=datetime(2026, 3, 5, 12, tzinfo=UTC)
+        )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["mom"], 10.0)
+        self.assertEqual(result["freshness"], "fresh")
 
     @patch("data_providers.http_get")
     def test_missing_revenue_is_not_represented_as_zero_growth(self, get):
@@ -135,10 +140,16 @@ class ProviderTests(unittest.TestCase):
         get.return_value = self._response({"msg": "success", "data": [
             {"date": "2026-08-14", "name": "Foreign_Investor", "buy": 5000, "sell": 1000},
             {"date": "2026-08-14", "name": "Investment_Trust", "buy": 3000, "sell": 1000},
+            {"date": "2026-08-14", "name": "Dealer_self", "buy": 1000, "sell": 1000},
+            {"date": "2026-08-14", "name": "Dealer_Hedging", "buy": 0, "sell": 0},
         ]})
-        rows, status = fetch_institutional_rows("2330", "token")
-        self.assertEqual(status, "ok")
+        rows, status = fetch_institutional_rows(
+            "2330", "token", now=datetime(2026, 8, 14, 21, tzinfo=UTC)
+        )
+        self.assertEqual(status, "partial")
         self.assertEqual(rows[0]["total"], 6)
+        self.assertFalse(rows[0]["is_stale"])
+        self.assertEqual(rows[0]["latest_date"], "2026-08-14")
 
     @patch("data_providers.http_get")
     def test_finmind_public_query_does_not_require_token(self, get):
@@ -167,24 +178,32 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(result["mom"], 12.35)
         self.assertEqual(result["yoy"], -4.57)
         self.assertEqual(result["period"], "2026-07")
+        self.assertEqual(result["as_of_period"], "2026-07")
+        self.assertEqual(result["period_type"], "calendar_month")
+        self.assertEqual(result["freshness"], "unknown")
         self.assertEqual(result["source"], "TWSE OpenAPI")
 
     def test_twse_and_tpex_chip_rows_use_reported_share_fields(self):
-        row_date = datetime(2026, 8, 19)
+        row_date = datetime(2026, 8, 19, tzinfo=UTC)
         twse = _parse_twse_institutional_payload({
             "stat": "OK",
             "fields": [
                 "證券代號", "外陸資買賣超股數(不含外資自營商)", "外資自營商買賣超股數",
-                "投信買賣超股數", "自營商買賣超股數",
+                "投信買賣超股數", "自營商買賣超股數", "三大法人買賣超股數",
             ],
-            "data": [["2330", "5,000", "1,000", "-2,000", "3,000"]],
+            "data": [["2330", "5,000", "1,000", "-2,000", "3,000", "6,000"]],
         }, "2330", row_date)
-        self.assertEqual(twse["foreign"], 6)
-        self.assertEqual(twse["total"], 7)
+        self.assertEqual(twse["foreign"], 5)
+        self.assertEqual(twse["foreign_ex_dealer"], 5)
+        self.assertEqual(twse["foreign_dealer"], 1)
+        self.assertEqual(twse["foreign_semantics"], "excludes_foreign_dealer")
+        self.assertEqual(twse["total"], 6)
+        self.assertEqual(twse["total_validation"], "matched")
 
         tpex_values = ["0"] * 24
         tpex_values[0] = "6488"
-        tpex_values[10], tpex_values[13], tpex_values[22] = "4,000", "2,000", "-1,000"
+        tpex_values[4], tpex_values[7], tpex_values[10] = "4,000", "1,000", "5,000"
+        tpex_values[13], tpex_values[22], tpex_values[23] = "2,000", "-1,000", "5,000"
         tpex = _parse_tpex_institutional_payload({
             "stat": "ok",
             "tables": [{"data": [tpex_values]}],
@@ -193,6 +212,159 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(tpex["trust"], 2)
         self.assertEqual(tpex["dealer"], -1)
         self.assertEqual(tpex["total"], 5)
+
+    def test_tpex_prefers_named_fields_over_offsets(self):
+        row_date = datetime(2026, 8, 19, tzinfo=UTC)
+        result = _parse_tpex_institutional_payload({
+            "stat": "ok",
+            "tables": [{
+                "fields": [
+                    "代號", "投信買賣超股數", "三大法人買賣超股數",
+                    "自營商買賣超股數", "外資自營商買賣超股數",
+                    "外資及陸資(不含外資自營商)買賣超股數",
+                ],
+                "data": [["6488", "2,000", "5,000", "-1,000", "1,000", "4,000"]],
+            }],
+        }, "6488", row_date)
+        self.assertEqual(result["foreign"], 4)
+        self.assertEqual(result["foreign_dealer"], 1)
+        self.assertEqual(result["total"], 5)
+
+    def test_official_chip_missing_or_inconsistent_numbers_are_rejected(self):
+        row_date = datetime(2026, 8, 19, tzinfo=UTC)
+        base = {
+            "stat": "OK",
+            "fields": [
+                "證券代號", "外陸資買賣超股數(不含外資自營商)",
+                "投信買賣超股數", "自營商買賣超股數", "三大法人買賣超股數",
+            ],
+        }
+        missing = dict(base, data=[["2330", "", "2,000", "3,000", "5,000"]])
+        mismatch = dict(base, data=[["2330", "1,000", "2,000", "3,000", "99,000"]])
+        self.assertIsNone(_parse_twse_institutional_payload(missing, "2330", row_date))
+        self.assertIsNone(_parse_twse_institutional_payload(mismatch, "2330", row_date))
+
+    def test_finmind_excludes_foreign_dealer_from_foreign_and_total(self):
+        rows, status, stale = _normalize_finmind_institutional_rows([
+            {"date": "2026-08-19", "name": "Foreign_Investor", "buy": 5000, "sell": 1000},
+            {"date": "2026-08-19", "name": "Foreign_Dealer_Self", "buy": 2000, "sell": 1000},
+            {"date": "2026-08-19", "name": "Investment_Trust", "buy": 3000, "sell": 1000},
+            {"date": "2026-08-19", "name": "Dealer_self", "buy": 0, "sell": 1000},
+            {"date": "2026-08-19", "name": "Dealer_Hedging", "buy": 0, "sell": 0},
+        ], now=datetime(2026, 8, 19, 21, tzinfo=UTC))
+        self.assertEqual(status, "partial")
+        self.assertFalse(stale)
+        self.assertEqual(rows[0]["foreign"], 4)
+        self.assertEqual(rows[0]["foreign_dealer"], 1)
+        self.assertEqual(rows[0]["dealer"], -1)
+        self.assertEqual(rows[0]["total"], 5)
+
+    def test_finmind_missing_required_category_is_not_zero_filled(self):
+        rows, status, _ = _normalize_finmind_institutional_rows([
+            {"date": "2026-08-19", "name": "Foreign_Investor", "buy": 1000, "sell": 0},
+            {"date": "2026-08-19", "name": "Investment_Trust", "buy": 0, "sell": 0},
+        ], now=datetime(2026, 8, 19, 21, tzinfo=UTC))
+        self.assertEqual(rows, [])
+        self.assertEqual(status, "partial")
+
+    def test_finmind_requires_both_new_dealer_components(self):
+        rows, status, _ = _normalize_finmind_institutional_rows([
+            {"date": "2026-08-19", "name": "Foreign_Investor", "buy": 300, "sell": 0},
+            {"date": "2026-08-19", "name": "Investment_Trust", "buy": 100, "sell": 0},
+            {"date": "2026-08-19", "name": "Dealer_self", "buy": 200, "sell": 0},
+        ], now=datetime(2026, 8, 19, 21, tzinfo=UTC))
+        self.assertEqual(rows, [])
+        self.assertEqual(status, "partial")
+
+    def test_finmind_accepts_unambiguous_legacy_combined_dealer(self):
+        rows, status, stale = _normalize_finmind_institutional_rows([
+            {"date": "2026-08-19", "name": "Foreign_Investor", "buy": 300, "sell": 0},
+            {"date": "2026-08-19", "name": "Investment_Trust", "buy": 100, "sell": 0},
+            {"date": "2026-08-19", "name": "Dealer", "buy": 200, "sell": 0},
+        ], now=datetime(2026, 8, 19, 21, tzinfo=UTC))
+        self.assertEqual(status, "partial")
+        self.assertFalse(stale)
+        self.assertEqual(rows[0]["foreign"], 0.3)
+        self.assertEqual(rows[0]["trust"], 0.1)
+        self.assertEqual(rows[0]["dealer"], 0.2)
+        self.assertEqual(rows[0]["total"], 0.6)
+
+    def test_finmind_uses_legacy_combined_dealer_when_split_rows_are_zero(self):
+        rows, status, _ = _normalize_finmind_institutional_rows([
+            {"date": "2026-08-19", "name": "Foreign_Investor", "buy": 1000, "sell": 0},
+            {"date": "2026-08-19", "name": "Investment_Trust", "buy": 0, "sell": 0},
+            {"date": "2026-08-19", "name": "Dealer", "buy": 2000, "sell": 0},
+            {"date": "2026-08-19", "name": "Dealer_self", "buy": 0, "sell": 0},
+            {"date": "2026-08-19", "name": "Dealer_Hedging", "buy": 0, "sell": 0},
+        ], now=datetime(2026, 8, 19, 21, tzinfo=UTC))
+        self.assertEqual(status, "partial")
+        self.assertEqual(rows[0]["dealer"], 2)
+        self.assertEqual(rows[0]["total"], 3)
+
+    def test_official_sub_lot_flows_are_not_rounded_to_fake_zero(self):
+        row_date = datetime(2026, 8, 19, tzinfo=UTC)
+        row = _parse_twse_institutional_payload({
+            "stat": "OK",
+            "fields": [
+                "證券代號", "外陸資買賣超股數(不含外資自營商)",
+                "投信買賣超股數", "自營商買賣超股數", "三大法人買賣超股數",
+            ],
+            "data": [["2330", "300", "-100", "50", "250"]],
+        }, "2330", row_date)
+        self.assertEqual(row["foreign"], 0.3)
+        self.assertEqual(row["trust"], -0.1)
+        self.assertEqual(row["dealer"], 0.05)
+        self.assertEqual(row["total"], 0.25)
+        self.assertAlmostEqual(
+            row["total"], row["foreign"] + row["trust"] + row["dealer"]
+        )
+
+    @patch("data_providers._fetch_official_revenue_growth")
+    @patch("data_providers._finmind_rows")
+    def test_stale_finmind_revenue_falls_back_to_official(self, finmind, official):
+        finmind.return_value = ([
+            {"date": "2025-07-01", "revenue": 100},
+            {"date": "2026-06-01", "revenue": 110},
+            {"date": "2026-07-01", "revenue": 120},
+        ], "ok")
+        official.return_value = {
+            "mom": 5.0,
+            "yoy": 8.0,
+            "period": "2026-08",
+            "as_of_period": "2026-08",
+            "period_type": "calendar_month",
+            "freshness": "unknown",
+            "source": "TWSE OpenAPI",
+            "status": "ok",
+        }
+        result = fetch_revenue_growth(
+            "2330", "token", now=datetime(2026, 9, 18, 12, tzinfo=UTC)
+        )
+        official.assert_called_once_with("2330")
+        self.assertEqual(result["source"], "TWSE OpenAPI")
+        self.assertEqual(result["period"], "2026-08")
+        self.assertEqual(result["freshness"], "fresh")
+        self.assertEqual(result["status"], "ok")
+
+    @patch("data_providers._fetch_official_institutional_rows")
+    @patch("data_providers._finmind_rows")
+    def test_stale_finmind_rows_fall_back_to_official(self, finmind, official):
+        finmind.return_value = ([
+            {"date": "2026-08-18", "name": "Foreign_Investor", "buy": 1000, "sell": 0},
+            {"date": "2026-08-18", "name": "Investment_Trust", "buy": 0, "sell": 0},
+            {"date": "2026-08-18", "name": "Dealer_self", "buy": 0, "sell": 0},
+            {"date": "2026-08-18", "name": "Dealer_Hedging", "buy": 0, "sell": 0},
+        ], "ok")
+        official.return_value = ([{
+            "date": "2026-08-19", "foreign": 2, "trust": 0, "dealer": 0,
+            "total": 2, "source": "TWSE T86", "is_stale": False,
+        }], "partial")
+        rows, status = fetch_institutional_rows(
+            "2330", "token", now=datetime(2026, 8, 19, 21, tzinfo=UTC)
+        )
+        official.assert_called_once()
+        self.assertEqual(rows[0]["source"], "TWSE T86")
+        self.assertEqual(status, "partial")
 
     def test_http_session_retries_rate_limits_and_server_errors(self):
         session = _build_session()

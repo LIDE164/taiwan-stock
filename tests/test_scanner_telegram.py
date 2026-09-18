@@ -155,6 +155,23 @@ class ScannerTelegramTests(unittest.TestCase):
         saved = self.db.collection("notifications").document("daily_executable_2026-08-27").value
         self.assertEqual(saved["executable_count"], 0)
 
+    def test_detailed_executable_image_uses_the_same_diversified_top10(self):
+        rows = [
+            dict(self.rows[0], 代號="1111", 產業="半導體"),
+            dict(self.rows[0], 代號="2222", 產業="半導體"),
+            dict(self.rows[0], 代號="3333", 產業="半導體"),
+            dict(self.rows[0], 代號="4444", 產業="電子零組件"),
+        ]
+        expected = scanner.select_executable_top10(rows)
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_executable_photo", return_value=105) as send,
+        ):
+            scanner.send_daily_executable_notification(rows, "2026-08-27")
+        self.assertEqual(send.call_args.kwargs["selected_results"], expected)
+        self.assertNotIn("3333", [row["代號"] for row in expected])
+
     def test_tracking_performance_uses_prior_analysis_and_deduplicates(self):
         history = self.db.collection("top10_tracking_history").document("2026-08-28")
         history.value = {"data": {"records": [{

@@ -206,11 +206,40 @@ def build_scan_quality(
     confidence in the model or its estimated win rate.
     """
     quality = {str(key): str(value or "unknown").lower() for key, value in statuses.items()}
-    quality["institutional"] = f"{institutional_days}d" if institutional_days > 0 else quality.get("institutional", "missing")
+    institutional_status = quality.get("institutional", "missing")
+    try:
+        reported_institutional_days = max(0, int(institutional_days))
+    except (TypeError, ValueError):
+        reported_institutional_days = 0
 
-    penalty_units = 0.0
+    # One reported day is not equivalent to a complete three-day chip history.
+    # Keep the provider status visible as well: a partial/schema-error response
+    # must never be relabelled as complete merely because it contains rows.
+    if institutional_status in GOOD_STATUSES:
+        quality["institutional"] = (
+            f"{reported_institutional_days}d"
+            if reported_institutional_days > 0
+            else "missing"
+        )
+        if reported_institutional_days >= 3:
+            institutional_penalty = 0.0
+        elif reported_institutional_days == 2:
+            institutional_penalty = 0.5
+        else:
+            institutional_penalty = 1.0
+    else:
+        quality["institutional"] = (
+            f"{institutional_status}:{reported_institutional_days}d"
+            if reported_institutional_days > 0
+            else institutional_status
+        )
+        status_penalty = 0.5 if institutional_status in PARTIAL_STATUSES else 1.0
+        history_penalty = 0.0 if reported_institutional_days >= 3 else (0.5 if reported_institutional_days == 2 else 1.0)
+        institutional_penalty = max(status_penalty, history_penalty)
+
+    penalty_units = institutional_penalty
     for key, status in quality.items():
-        if key == "institutional" and status.endswith("d"):
+        if key == "institutional":
             continue
         if status in GOOD_STATUSES:
             continue
@@ -249,10 +278,10 @@ def build_model_confidence(
 ) -> tuple[float | None, str]:
     """Estimate how dependable a backtest rate is, separately from data quality.
 
-    The score combines effective sample strength with agreement between the
-    full backtest and its validation slice.  It intentionally requires both
-    sets: reporting a plausible percentage when validation is absent would
-    make source completeness look like predictive confidence.
+    The score combines effective sample strength with agreement between a
+    chronological training set and its later, disjoint validation set.  It
+    intentionally requires both sets: reporting a plausible percentage when
+    validation is absent would make source completeness look predictive.
 
     This is an evidence-quality indicator, not a predicted return.  A stable
     low win rate can therefore have high confidence just as a stable high win
@@ -268,9 +297,10 @@ def build_model_confidence(
     if validation_rate is None or holdout_samples in (None, 0):
         return None, "驗證資料不足"
 
-    # Current validation is approximately the latest 30% of the backtest.  The
-    # smaller side determines the effective evidence so a tiny validation
-    # slice cannot inherit the apparent certainty of a much larger backtest.
+    # Validation is approximately the latest 30%, while ``backtest_rate`` now
+    # comes from the earlier training trades only.  The smaller side determines
+    # effective evidence so a tiny holdout cannot inherit the certainty of a
+    # much larger training set.
     effective_samples = min(total_samples, holdout_samples / 0.30)
     sample_strength = min(1.0, effective_samples / 60.0)
     agreement = max(0.0, 1.0 - abs(backtest_rate - validation_rate) / 30.0)

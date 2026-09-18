@@ -11,6 +11,7 @@ from typing import Any
 from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
     calculate_max_odd_lot_position,
+    estimate_round_trip_net_profit,
 )
 
 TRACKER_EXECUTION_SCHEMA = 2
@@ -24,6 +25,14 @@ BUY_COMMISSION_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.buy_commission_rate
 SELL_COMMISSION_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_commission_rate
 SELL_TAX_RATE = DEFAULT_TAIWAN_STOCK_COST_MODEL.sell_tax_rate
 MIN_COMMISSION = DEFAULT_TAIWAN_STOCK_COST_MODEL.minimum_commission
+
+
+def _modeled_stop_execution_price(
+    stop: float,
+    slippage_rate: float = DEFAULT_TAIWAN_STOCK_COST_MODEL.stop_slippage_rate,
+) -> float:
+    """Apply the same stop slippage assumption used by odd-lot risk sizing."""
+    return stop * (1 - slippage_rate)
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -371,20 +380,29 @@ def _attach_benchmark(
 _SIGNAL_SNAPSHOT_FIELDS = (
     "Score", "Rank", "Overall_Rank", "漲跌幅", "產業", "Entry_Status",
     "Entry_Plan_Type", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target",
-    "No_Chase_Price", "Entry_Reason", "Entry_Pattern", "Signal_Conflict",
+    "Entry_RRR", "Entry_Net_RRR", "No_Chase_Price", "Entry_Reason",
+    "Entry_Pattern", "Signal_Conflict",
     "RSI", "BIAS", "ATR", "Est_Vol_Ratio", "Volume_Confirmed", "Confidence",
     "Data_Completeness", "Model_Confidence", "Model_Confidence_Label", "Data_Quality",
     "WinRate", "Backtest_Samples", "Backtest_Scope",
-    "Validation_WinRate", "Validation_Samples", "Reasons", "Feature",
+    "Backtest_Net_Expectancy", "Validation_Net_Expectancy",
+    "Backtest_Max_Drawdown", "Backtest_Max_Consecutive_Losses",
+    "Backtest_Execution_Unresolved", "Backtest_Overall_WinRate",
+    "Backtest_Overall_Samples", "Validation_WinRate", "Validation_Samples",
+    "Validation_Raw_WinRate", "Validation_Wilson_Low", "Validation_Wilson_High",
+    "Validation_Sample_Confidence", "Reasons", "Feature",
+    "Critical_Data_Ready", "Critical_Data_Issues",
     "Market_Regime", "Market_Return",
     "EPS", "EPS_Period", "MoM", "YoY", "Revenue_Period", "Revenue_Source",
+    "Revenue_Status", "Revenue_Expected_Period",
     "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Revenue",
     "Financial_Gross_Profit", "Financial_Operating_Income", "Financial_Net_Income",
     "Financial_EPS", "Financial_Gross_Margin", "Financial_Operating_Margin",
     "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio",
-    "Financial_Risk_Level", "Financial_Risk_Flags",
+    "Financial_Risk_Level", "Financial_Risk_Flags", "Financial_Expected_Period",
     "Whale_Net", "Whale_Net_Days", "Institutional_Days", "Institutional_Status",
     "Institutional_Source", "Institutional_Rows", "Institutional_Sell_Streak",
+    "Institutional_Latest_Date",
     "Foreign_Net", "Trust_Net",
 )
 
@@ -483,6 +501,7 @@ def _snapshot(
         "planned_stop_execution_price": position.get("planned_stop_execution_price"),
         "risk_model": position.get("risk_model"),
         "actual_reward_risk": position.get("actual_reward_risk"),
+        "net_reward_risk": position.get("net_reward_risk"),
         "minimum_reward_risk": position.get("minimum_reward_risk"),
         "holding_session_count": position.get("holding_session_count"),
         "max_holding_sessions": position.get("max_holding_sessions"),
@@ -492,6 +511,8 @@ def _snapshot(
         "action": action,
         "close_date": position.get("close_date"),
         "close_price": position.get("close_price"),
+        "resolution_date": position.get("resolution_date"),
+        "resolution_reason": position.get("resolution_reason"),
         "is_top10": bool(row),
         "top10_rank": _rank(row),
         "score": _number(source.get("Score")) if source.get("Score") is not None else None,
@@ -666,6 +687,8 @@ def _resolve_exit_from_open(
     bar: Mapping[str, float],
     target: float,
     stop: float,
+    *,
+    stop_slippage_rate: float = 0.0,
 ) -> tuple[float | None, str | None, str, float, float, str]:
     """Resolve an open position without using prices observed after its exit.
 
@@ -684,7 +707,14 @@ def _resolve_exit_from_open(
     hit_target = bar["high"] >= target
     if hit_stop:
         resolution = "both_touch_stop_first" if hit_target else "intraday_stop"
-        return stop, "CLOSED_SL", "STOP_LOSS", open_price, stop, resolution
+        return (
+            _modeled_stop_execution_price(stop, stop_slippage_rate),
+            "CLOSED_SL",
+            "STOP_LOSS",
+            open_price,
+            stop,
+            resolution,
+        )
     if hit_target:
         return target, "CLOSED_TP", "TAKE_PROFIT", target, open_price, "intraday_target"
     return None, None, "HOLD", bar["high"], bar["low"], "held_through_close"
@@ -799,7 +829,23 @@ def _activate_pending_position(
         })
         return False, "ENTRY_EXPIRED"
     actual_reward_risk = (target - fill) / (fill - stop)
-    if not math.isfinite(actual_reward_risk) or actual_reward_risk < MIN_EXECUTION_REWARD_RISK:
+    target_net_profit = estimate_round_trip_net_profit(
+        fill,
+        target,
+        risk_estimate.shares,
+    )
+    net_reward_risk = (
+        target_net_profit / risk_estimate.estimated_net_loss
+        if target_net_profit is not None and risk_estimate.estimated_net_loss > 0
+        else None
+    )
+    if (
+        not math.isfinite(actual_reward_risk)
+        or actual_reward_risk < MIN_EXECUTION_REWARD_RISK
+        or net_reward_risk is None
+        or not math.isfinite(net_reward_risk)
+        or net_reward_risk < MIN_EXECUTION_REWARD_RISK
+    ):
         position.update({
             "status": "EXPIRED",
             "expire_date": trading_date,
@@ -811,6 +857,7 @@ def _activate_pending_position(
             "entry_session_status": "reward_risk_below_minimum",
             "candidate_entry_price": round(fill, 4),
             "actual_reward_risk": round(actual_reward_risk, 3),
+            "net_reward_risk": round(net_reward_risk, 3) if net_reward_risk is not None else None,
             "minimum_reward_risk": MIN_EXECUTION_REWARD_RISK,
         })
         return False, "ENTRY_EXPIRED"
@@ -833,6 +880,7 @@ def _activate_pending_position(
         "planned_stop_execution_price": round(risk_estimate.stop_execution_price, 4),
         "risk_model": "commission_tax_stop_slippage",
         "actual_reward_risk": round(actual_reward_risk, 3),
+        "net_reward_risk": round(net_reward_risk, 3),
         "minimum_reward_risk": MIN_EXECUTION_REWARD_RISK,
         "holding_session_count": 1,
         "max_holding_sessions": MAX_HOLDING_SESSIONS,
@@ -854,7 +902,12 @@ def _activate_pending_position(
             observed_high,
             observed_low,
             resolution,
-        ) = _resolve_exit_from_open(bar, target, stop)
+        ) = _resolve_exit_from_open(
+            bar,
+            target,
+            stop,
+            stop_slippage_rate=DEFAULT_TAIWAN_STOCK_COST_MODEL.stop_slippage_rate,
+        )
         position.update({
             "highest_price": round(max(fill, observed_high), 4),
             "lowest_price": round(min(fill, observed_low), 4),
@@ -877,18 +930,40 @@ def _activate_pending_position(
         # can reach the lower stop.  A same-day stop is therefore observable;
         # a possible target/stop tie remains conservatively stop-first.
         action = "STOP_LOSS"
-        mark = stop
+        mark = risk_estimate.stop_execution_price
         position.update({
             "status": "CLOSED_SL",
             "close_date": trading_date,
-            "close_price": round(stop, 4),
-            "current_price": round(stop, 4),
+            "close_price": round(mark, 4),
+            "current_price": round(mark, 4),
             "highest_price": round(fill, 4),
             "lowest_price": round(stop, 4),
             "entry_bar_resolution": "resolved",
             "entry_bar_exit_check": "pullback_crossed_stop_after_fill",
             "entry_bar_extremes_included": False,
             "last_bar_excursion_status": "pullback_stop_after_fill",
+        })
+    elif (
+        fill_rule == "PULLBACK_TOUCH"
+        and bar["high"] >= target
+        and bar["close"] >= target
+    ):
+        # The order was filled on a downward crossing from above the zone.  A
+        # close at/above target proves that price subsequently crossed target;
+        # unlike an intraday high alone, this outcome is not path-ambiguous.
+        action = "TAKE_PROFIT"
+        mark = target
+        position.update({
+            "status": "CLOSED_TP",
+            "close_date": trading_date,
+            "close_price": round(mark, 4),
+            "current_price": round(mark, 4),
+            "highest_price": round(max(fill, target, bar["close"]), 4),
+            "lowest_price": round(min(fill, bar["low"]), 4),
+            "entry_bar_resolution": "resolved",
+            "entry_bar_exit_check": "pullback_close_confirmed_target",
+            "entry_bar_extremes_included": False,
+            "last_bar_excursion_status": "pullback_close_confirmed_target",
         })
     elif fill_rule == "PULLBACK_TOUCH" and bar["high"] < target:
         # No barrier can have been touched: the low follows the first downward
@@ -905,7 +980,9 @@ def _activate_pending_position(
         # The remaining gap/touch combinations cannot order a pre-entry
         # extreme against a possible post-entry barrier from daily OHLC alone.
         position.update({
-            "status": "UNRESOLVED",
+            "status": "EXCLUDED_UNRESOLVED",
+            "resolution_date": trading_date,
+            "resolution_reason": "每日 OHLC 無法判斷進場觸價與目標價的先後順序，排除績效",
             "entry_session_status": "filled_outcome_unresolved",
             "entry_bar_resolution": "unresolved",
             "entry_bar_exit_check": "unresolved_due_to_daily_ohlc_order",
@@ -960,15 +1037,57 @@ def update_positions_with_snapshots(
         if _quote(top_quote_row) is not None:
             quote_by_ticker[ticker] = top_quote_row
     snapshots: list[dict[str, Any]] = []
+    benchmark_context = benchmark if isinstance(benchmark, Mapping) else {}
+    current_session = _iso_date(trading_date)
+    benchmark_session = _iso_date(benchmark_context.get("date"))
+    confirmed_previous_session = _iso_date(
+        benchmark_context.get("previous_trading_date")
+    )
 
     def make_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return _attach_benchmark(_snapshot(*args, **kwargs), benchmark)
 
     for position in updated:
         status = str(position.get("status") or "")
+        if status == "UNRESOLVED":
+            # Migrate schema-2 records written before unresolved executions
+            # became terminal.  They never represent a measurable position and
+            # must not occupy portfolio capacity forever.
+            position.update({
+                "status": "EXCLUDED_UNRESOLVED",
+                "resolution_date": (
+                    position.get("resolution_date")
+                    or position.get("last_tracked_date")
+                    or position.get("entry_date")
+                    or trading_date
+                ),
+                "resolution_reason": (
+                    position.get("resolution_reason")
+                    or "每日 OHLC 無法判斷進場與障礙價先後，排除績效"
+                ),
+                "pnl_pct": None,
+            })
+            previous = position.get("last_snapshot")
+            if isinstance(previous, Mapping):
+                migrated_snapshot = deepcopy(dict(previous))
+                migrated_snapshot.update({
+                    "status": "EXCLUDED_UNRESOLVED",
+                    "resolution_date": position.get("resolution_date"),
+                    "resolution_reason": position.get("resolution_reason"),
+                    "pnl_pct": None,
+                    "net_pnl_amount": None,
+                    "net_pnl_pct": None,
+                })
+                position["last_snapshot"] = migrated_snapshot
+            status = "EXCLUDED_UNRESOLVED"
         if (
             status not in {"OPEN", "PENDING"}
-            and str(position.get("close_date") or position.get("expire_date") or "") != trading_date
+            and str(
+                position.get("close_date")
+                or position.get("expire_date")
+                or position.get("resolution_date")
+                or ""
+            ) != trading_date
         ):
             position.pop("last_snapshot", None)
         position["position_id"] = _position_id(position)
@@ -976,16 +1095,94 @@ def update_positions_with_snapshots(
         top_row = top_by_ticker.get(ticker)
 
         available_bar = _quote(quote_by_ticker.get(ticker))
-        retry_missing_entry_session = (
-            status == "PENDING"
+        previous_snapshot = position.get("last_snapshot")
+        previous_tracked_date = str(position.get("last_tracked_date") or "")
+        previous_tracked_session = _iso_date(previous_tracked_date)
+        prior_snapshot_is_missing = (
+            isinstance(previous_snapshot, Mapping)
+            and str(previous_snapshot.get("action") or "") == "DATA_MISSING"
+        )
+        skipped_confirmed_session = (
+            status == "OPEN"
+            and bool(previous_tracked_date)
+            and previous_tracked_date != trading_date
+            and current_session is not None
+            and benchmark_session == current_session
+            and confirmed_previous_session is not None
+            and previous_tracked_session != confirmed_previous_session
+        )
+        has_unrepaired_open_data_gap = (
+            status == "OPEN"
+            and previous_tracked_date
+            and previous_tracked_date != trading_date
+            and (prior_snapshot_is_missing or skipped_confirmed_session)
+        )
+        if has_unrepaired_open_data_gap:
+            # Same-day reruns may repair a transient quote failure.  Once the
+            # next trading session is processed the missing OHLC can no longer
+            # be reconstructed safely: carrying the position would skip an
+            # unknown stop/target event and fabricate later realized P/L.
+            if prior_snapshot_is_missing:
+                gap_display = previous_tracked_date
+                resolution_reason = (
+                    f"{previous_tracked_date} 持有期間缺少完整 OHLC，"
+                    "無法確認停損或停利，永久排除績效"
+                )
+            else:
+                confirmed_previous_text = (
+                    confirmed_previous_session.isoformat()
+                    if confirmed_previous_session is not None
+                    else trading_date
+                )
+                gap_display = f"{previous_tracked_date} 後至 {confirmed_previous_text}"
+                resolution_reason = (
+                    f"追蹤日由 {previous_tracked_date} 跳至 {trading_date}，"
+                    f"未連續涵蓋本次前一交易日 {confirmed_previous_text}；"
+                    "無法確認缺漏期間是否觸發停損或停利，永久排除績效"
+                )
+            position.update({
+                "status": "EXCLUDED_DATA_GAP",
+                "resolution_date": trading_date,
+                "resolution_reason": resolution_reason,
+                "execution_data_gap_date": gap_display,
+                "execution_data_gap_from": previous_tracked_date,
+                "execution_data_gap_through": (
+                    confirmed_previous_session.isoformat()
+                    if skipped_confirmed_session and confirmed_previous_session is not None
+                    else previous_tracked_date
+                ),
+                "pnl_pct": None,
+                "gross_pnl_amount": None,
+                "estimated_transaction_cost": None,
+                "net_pnl_amount": None,
+                "net_pnl_pct": None,
+            })
+            snapshot = make_snapshot(
+                position,
+                trading_date,
+                top_row,
+                None,
+                action="EXECUTION_DATA_GAP",
+                data_status="execution_data_gap",
+                take_profit_pct=take_profit_pct,
+                stop_loss_pct=stop_loss_pct,
+            )
+            position["last_tracked_date"] = trading_date
+            position["last_snapshot"] = snapshot
+            snapshots.append(snapshot)
+            continue
+        retry_missing_snapshot = (
+            status in {"OPEN", "PENDING"}
             and str(position.get("last_tracked_date", "")) == trading_date
             and isinstance(position.get("last_snapshot"), Mapping)
             and str(position["last_snapshot"].get("action") or "") == "DATA_MISSING"
             and available_bar is not None
-            and _expected_entry_date(position) == trading_date
+            and (
+                status == "OPEN"
+                or _expected_entry_date(position) == trading_date
+            )
         )
-        if str(position.get("last_tracked_date", "")) == trading_date and not retry_missing_entry_session:
-            previous_snapshot = position.get("last_snapshot")
+        if str(position.get("last_tracked_date", "")) == trading_date and not retry_missing_snapshot:
             if isinstance(previous_snapshot, Mapping):
                 snapshot = deepcopy(dict(previous_snapshot))
                 snapshot.update({
@@ -999,13 +1196,10 @@ def update_positions_with_snapshots(
 
         if status == "PENDING":
             expected_date = _expected_entry_date(position)
-            current_date = _iso_date(trading_date)
+            current_date = current_session
             signal_session = _iso_date(position.get("signal_date"))
-            benchmark_context = benchmark if isinstance(benchmark, Mapping) else {}
-            benchmark_date = _iso_date(benchmark_context.get("date"))
-            benchmark_previous = _iso_date(
-                benchmark_context.get("previous_trading_date")
-            )
+            benchmark_date = benchmark_session
+            benchmark_previous = confirmed_previous_session
             benchmark_opening_gap = _optional_number(
                 benchmark_context.get("opening_gap_pct")
             )
@@ -1178,14 +1372,29 @@ def update_positions_with_snapshots(
             continue
 
         if status != "OPEN":
-            if str(position.get("close_date") or position.get("expire_date") or "") == trading_date:
+            terminal_date = str(
+                position.get("close_date")
+                or position.get("expire_date")
+                or position.get("resolution_date")
+                or ""
+            )
+            if terminal_date == trading_date:
                 snapshot = make_snapshot(
                     position,
                     trading_date,
                     top_row,
                     None,
-                    action="ENTRY_EXPIRED" if status == "EXPIRED" else "EXIT",
-                    data_status="legacy_partial",
+                    action=(
+                        "ENTRY_EXPIRED" if status == "EXPIRED"
+                        else "EXECUTION_UNRESOLVED"
+                        if status == "EXCLUDED_UNRESOLVED"
+                        else "EXIT"
+                    ),
+                    data_status=(
+                        "unresolved"
+                        if status == "EXCLUDED_UNRESOLVED"
+                        else "legacy_partial"
+                    ),
                     take_profit_pct=take_profit_pct,
                     stop_loss_pct=stop_loss_pct,
                 )
@@ -1221,7 +1430,16 @@ def update_positions_with_snapshots(
             stop_loss_pct=stop_loss_pct,
         )
         close_price, close_status, action, observed_high, observed_low, resolution = (
-            _resolve_exit_from_open(bar, target, stop)
+            _resolve_exit_from_open(
+                bar,
+                target,
+                stop,
+                stop_slippage_rate=(
+                    DEFAULT_TAIWAN_STOCK_COST_MODEL.stop_slippage_rate
+                    if _schema_version(position) >= TRACKER_EXECUTION_SCHEMA
+                    else 0.0
+                ),
+            )
         )
         if _schema_version(position) >= TRACKER_EXECUTION_SCHEMA:
             raw_holding_count = _optional_number(position.get("holding_session_count"))
@@ -1283,14 +1501,14 @@ def update_positions_with_snapshots(
         for position in updated
         if position.get("status") in {"OPEN", "PENDING"}
         or (
-            position.get("status") == "UNRESOLVED"
-            and str(position.get("entry_date") or "") == trading_date
+            position.get("status") in {"EXCLUDED_UNRESOLVED", "EXCLUDED_DATA_GAP"}
+            and str(position.get("resolution_date") or "") == trading_date
         )
         or str(position.get("close_date") or "") == trading_date
     }
     active_positions = [
         position for position in updated
-        if str(position.get("status") or "") in {"OPEN", "PENDING", "UNRESOLVED"}
+        if str(position.get("status") or "") in {"OPEN", "PENDING"}
     ]
     active_count = len(active_positions)
     active_industries: dict[str, int] = {}

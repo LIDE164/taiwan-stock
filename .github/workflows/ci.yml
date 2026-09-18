@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -21,7 +24,9 @@ jobs:
       - name: Lint fatal errors
         run: ruff check . --select E9,F63,F7,F82
       - name: Type-check pure modules
-        run: mypy app_security.py scan_state.py top10_tracker.py
+        run: >-
+          mypy app_security.py entry_readiness.py execution_costs.py
+          intraday_ranking.py market_http.py scan_state.py top10_tracker.py
       - name: Run tests with coverage
         run: |
           coverage run -m unittest discover -s tests -v

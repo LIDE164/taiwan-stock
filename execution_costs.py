@@ -50,6 +50,7 @@ class StopLossEstimate:
 
 
 DEFAULT_TAIWAN_STOCK_COST_MODEL = TaiwanStockCostModel()
+DEFAULT_MAX_LOSS_PER_TRADE = 5000.0
 
 
 def _finite_number(value: Any) -> float | None:
@@ -144,6 +145,51 @@ def estimate_stop_loss(
     )
 
 
+def estimate_round_trip_net_profit(
+    entry_price: Any,
+    exit_price: Any,
+    shares: Any,
+    *,
+    model: TaiwanStockCostModel = DEFAULT_TAIWAN_STOCK_COST_MODEL,
+) -> float | None:
+    """Return realized net profit after Taiwan stock commissions and sell tax.
+
+    ``exit_price`` is the actual modeled execution price.  Slippage is therefore
+    deliberately not applied here; callers use the stop execution price from
+    :func:`estimate_stop_loss` when modeling a stopped trade.
+    """
+    entry = _finite_number(entry_price)
+    exit_value = _finite_number(exit_price)
+    share_number = _finite_number(shares)
+    if (
+        entry is None
+        or exit_value is None
+        or share_number is None
+        or not share_number.is_integer()
+        or share_number < 1
+        or entry <= 0
+        or exit_value <= 0
+        or not _valid_model(model)
+    ):
+        return None
+
+    share_count = int(share_number)
+    entry_notional = entry * share_count
+    exit_notional = exit_value * share_count
+    buy_commission = (
+        max(entry_notional * model.buy_commission_rate, model.minimum_commission)
+        if model.buy_commission_rate > 0
+        else 0.0
+    )
+    sell_commission = (
+        max(exit_notional * model.sell_commission_rate, model.minimum_commission)
+        if model.sell_commission_rate > 0
+        else 0.0
+    )
+    sell_tax = exit_notional * model.sell_tax_rate
+    return exit_notional - sell_commission - sell_tax - entry_notional - buy_commission
+
+
 def calculate_max_odd_lot_position(
     entry_price: Any,
     stop_price: Any,
@@ -190,3 +236,37 @@ def calculate_max_odd_lot_position(
         else:
             high = candidate_shares - 1
     return best
+
+
+def estimate_risk_sized_net_reward_risk(
+    entry_price: Any,
+    stop_price: Any,
+    target_price: Any,
+    *,
+    max_loss: Any = DEFAULT_MAX_LOSS_PER_TRADE,
+    model: TaiwanStockCostModel = DEFAULT_TAIWAN_STOCK_COST_MODEL,
+) -> float | None:
+    """Return target net profit divided by the modeled all-in stop loss.
+
+    The share count is the same odd-lot risk sizing used by production.  This
+    keeps the entry list, backtest and tracker on one cost-adjusted definition
+    instead of comparing a gross chart ratio with a net realized result.
+    """
+    estimate = calculate_max_odd_lot_position(
+        entry_price,
+        stop_price,
+        max_loss,
+        model=model,
+    )
+    if estimate is None or estimate.shares < 1 or estimate.estimated_net_loss <= 0:
+        return None
+    target_profit = estimate_round_trip_net_profit(
+        entry_price,
+        target_price,
+        estimate.shares,
+        model=model,
+    )
+    if target_profit is None:
+        return None
+    ratio = target_profit / estimate.estimated_net_loss
+    return ratio if math.isfinite(ratio) else None

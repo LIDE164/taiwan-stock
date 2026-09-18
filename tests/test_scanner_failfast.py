@@ -36,7 +36,17 @@ class ScannerFailFastTests(unittest.TestCase):
             patch.object(scanner, "call_with_backoff", return_value=empty_market),
         ):
             with self.assertRaisesRegex(RuntimeError, "最新實際交易日"):
+                scanner.run_daily_scan(force=True, allow_intraday=True)
+
+    def test_force_does_not_publish_before_postclose(self):
+        with (
+            patch.object(scanner, "db", object()),
+            patch.object(scanner, "should_run_postclose_scan", return_value=False),
+            patch.object(scanner, "call_with_backoff") as market_loader,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "盤中禁止"):
                 scanner.run_daily_scan(force=True)
+        market_loader.assert_not_called()
 
 
 if __name__ == "__main__":

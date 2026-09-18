@@ -106,7 +106,9 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 
 INDUSTRY_CACHE: dict[str, str] = {}
 MARKET_SYMBOL_CACHE: dict[str, str] = {}
+UNIVERSE_SOURCE_COUNTS: dict[str, int] = {}
 DAILY_SCAN_CHUNK_COLLECTION = "daily_scan_chunks"
+DAILY_SCAN_HISTORY_CHUNK_COLLECTION = "daily_scan_history_chunks"
 TRACKER_CHUNK_COLLECTION = "top10_tracker_chunks"
 
 
@@ -182,31 +184,160 @@ def get_finmind_revenue(ticker, with_status=False, with_meta=False):
     result = (payload["mom"], payload["yoy"])
     return (*result, payload["status"]) if with_status else result
 
+
+def _shift_month(year: int, month: int, offset: int) -> tuple[int, int]:
+    absolute = year * 12 + month - 1 + offset
+    return absolute // 12, absolute % 12 + 1
+
+
+def expected_revenue_period(scan_date: str) -> str:
+    """Return the newest monthly-revenue period that should already be public."""
+    try:
+        current = datetime.strptime(str(scan_date), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+    # Companies normally publish the prior month by the 10th. Use the 11th as
+    # a conservative boundary so a release-day delay is not mislabeled stale.
+    offset = -1 if current.day >= 11 else -2
+    year, month = _shift_month(current.year, current.month, offset)
+    return f"{year:04d}-{month:02d}"
+
+
+def expected_financial_period(scan_date: str) -> str:
+    """Return the latest quarter whose filing window should have elapsed."""
+    try:
+        current = datetime.strptime(str(scan_date), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+    marker = (current.month, current.day)
+    if marker >= (11, 15):
+        return f"{current.year:04d}-Q3"
+    if marker >= (8, 15):
+        return f"{current.year:04d}-Q2"
+    if marker >= (5, 16):
+        return f"{current.year:04d}-Q1"
+    if marker >= (4, 1):
+        return f"{current.year - 1:04d}-Q4"
+    return f"{current.year - 1:04d}-Q3"
+
+
+def period_aware_status(status: Any, period: Any, expected_period: str) -> str:
+    """Downgrade apparently successful provider data when its period is old."""
+    normalized = str(status or "unknown").strip().lower()
+    actual = str(period or "").strip()
+    if normalized not in {"ok", "confirmed", "partial"}:
+        return normalized
+    if not actual:
+        return "partial"
+    if expected_period and actual < expected_period:
+        return "stale"
+    return normalized
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        parsed = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def institutional_series_for_scan(
+    rows: list[Mapping[str, Any]] | None,
+    expected_date: str,
+) -> list[Mapping[str, Any]]:
+    """Return the valid, distinct institutional rows anchored to the scan date.
+
+    Exchange holidays mean the preceding rows need not be consecutive calendar
+    dates.  They do, however, have to be real dates no later than the scan date,
+    contain every reported flow component, and have the scan date as the newest
+    observation.
+    """
+    try:
+        expected = datetime.strptime(str(expected_date), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return []
+
+    valid_rows: list[tuple[Any, Mapping[str, Any]]] = []
+    seen_dates: set[str] = set()
+    required_fields = ("外資(張)", "投信(張)", "自營商(張)", "單日合計(張)")
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        date_text = str(row.get("_date") or "").strip()[:10]
+        try:
+            trading_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        if trading_date > expected or date_text in seen_dates:
+            continue
+        if any(_finite_number(row.get(field)) is None for field in required_fields):
+            continue
+        seen_dates.add(date_text)
+        valid_rows.append((trading_date, row))
+
+    valid_rows.sort(key=lambda item: item[0], reverse=True)
+    if not valid_rows or valid_rows[0][0] != expected:
+        return []
+    return [row for _, row in valid_rows]
+
+
+def institutional_history_complete(
+    status: Any,
+    rows: list[Mapping[str, Any]] | None,
+    *,
+    required_days: int = 3,
+) -> bool:
+    """Whether the institutional series is safe to pass the execution gate."""
+    return (
+        str(status or "").strip().lower() in {"ok", "confirmed"}
+        and len(rows or []) >= max(1, int(required_days))
+    )
+
+
 def fetch_top_stocks(limit=500):
     limit = max(1, min(1000, int(limit)))
     all_stocks = []
-    global INDUSTRY_CACHE, MARKET_SYMBOL_CACHE
+    source_errors: dict[str, str] = {}
+    global INDUSTRY_CACHE, MARKET_SYMBOL_CACHE, UNIVERSE_SOURCE_COUNTS
     INDUSTRY_CACHE = {}
     MARKET_SYMBOL_CACHE = {}
+    UNIVERSE_SOURCE_COUNTS = {}
     logging.info("🔍 正在獲取上市與上櫃成交量排行...")
     try:
         res = http_get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=10)
         res.raise_for_status()
         twse_payload = res.json()
+        if not isinstance(twse_payload, list) or not twse_payload:
+            raise ValueError("上市行情回應為空或格式錯誤")
         for item in twse_payload:
             code = str(item.get("Code") or "").strip()
             if code:
                 INDUSTRY_CACHE[code] = str(item.get("Name") or code)
         df_twse = pd.DataFrame(twse_payload)
+        if not {"Code", "TradeVolume"}.issubset(df_twse.columns):
+            raise ValueError("上市行情缺少必要欄位")
         df_twse['TradeVolume'] = pd.to_numeric(df_twse['TradeVolume'].astype(str).str.replace(',', '', regex=False), errors='coerce')
         df_twse['Symbol'] = df_twse['Code'].astype(str) + ".TW"
+        df_twse = df_twse[df_twse['Code'].astype(str).str.match(r'^[1-9]\d{3}$')]
+        df_twse = df_twse[
+            df_twse['TradeVolume'].notna()
+            & df_twse['TradeVolume'].map(math.isfinite)
+            & (df_twse['TradeVolume'] > 0)
+        ]
+        if df_twse.empty:
+            raise ValueError("上市行情沒有可用普通股")
+        UNIVERSE_SOURCE_COUNTS["twse"] = int(len(df_twse))
         all_stocks.append(df_twse[['Code', 'TradeVolume', 'Symbol']])
     except Exception as e:
         logging.warning("上市成交量名單取得失敗: %s", e)
+        source_errors["twse"] = type(e).__name__
     try:
         res2 = http_get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=10)
         res2.raise_for_status()
         tpex_payload = res2.json()
+        if not isinstance(tpex_payload, list) or not tpex_payload:
+            raise ValueError("上櫃行情回應為空或格式錯誤")
         for item in tpex_payload:
             code = str(item.get("SecuritiesCompanyCode") or "").strip()
             if code:
@@ -218,15 +349,33 @@ def fetch_top_stocks(limit=500):
             raise ValueError("櫃買行情缺少成交量欄位")
         df_tpex['TradeVolume'] = pd.to_numeric(df_tpex['TradeVolume'].astype(str).str.replace(',', '', regex=False), errors='coerce')
         df_tpex['Symbol'] = df_tpex['Code'].astype(str) + ".TWO"
+        df_tpex = df_tpex[df_tpex['Code'].astype(str).str.match(r'^[1-9]\d{3}$')]
+        df_tpex = df_tpex[
+            df_tpex['TradeVolume'].notna()
+            & df_tpex['TradeVolume'].map(math.isfinite)
+            & (df_tpex['TradeVolume'] > 0)
+        ]
+        if df_tpex.empty:
+            raise ValueError("上櫃行情沒有可用普通股")
+        UNIVERSE_SOURCE_COUNTS["tpex"] = int(len(df_tpex))
         all_stocks.append(df_tpex[['Code', 'TradeVolume', 'Symbol']])
     except Exception as e:
         logging.warning("上櫃成交量名單取得失敗: %s", e)
+        source_errors["tpex"] = type(e).__name__
+
+    if source_errors or set(UNIVERSE_SOURCE_COUNTS) != {"twse", "tpex"}:
+        missing = "、".join(sorted(source_errors or ({"twse", "tpex"} - set(UNIVERSE_SOURCE_COUNTS))))
+        raise RuntimeError(f"成交量宇宙不完整（{missing}），不用單一市場產生正式榜單")
 
     if all_stocks:
         df_all = pd.concat(all_stocks, ignore_index=True)
         df_all['Code'] = df_all['Code'].astype(str)
-        df_all = df_all[df_all['Code'].str.match(r'^\d{4}$')]
+        df_all = df_all[df_all['Code'].str.match(r'^[1-9]\d{3}$')]
         ranked_all = df_all.sort_values(by='TradeVolume', ascending=False).drop_duplicates('Code', keep='first')
+        if len(ranked_all) < limit:
+            raise RuntimeError(
+                f"有效成交量股票不足（{len(ranked_all)}/{limit}），不產生不完整正式榜單"
+            )
         MARKET_SYMBOL_CACHE.update(dict(zip(ranked_all['Code'], ranked_all['Symbol'])))
         ranked = ranked_all.head(limit)
         return ranked['Code'].tolist()
@@ -325,17 +474,27 @@ def fetch_stock_data_batch(tickers, chunk_size=50):
     return result
 
 # ⭐ 補上法人籌碼抓取功能
-def get_institutional_trading(ticker, with_status=False):
+def get_institutional_trading(ticker, with_status=False, *, expected_date=""):
     rows, status = fetch_institutional_rows(ticker, FINMIND_TOKEN)
+    def preserve_lots(value):
+        number = _finite_number(value)
+        if number is None:
+            return None
+        rounded = round(number, 3)
+        return int(rounded) if rounded.is_integer() else rounded
+
     compact = [{
         "日期": str(row.get("date", ""))[-5:].replace("-", "/"),
-        "外資(張)": int(row["foreign"]),
-        "投信(張)": int(row["trust"]),
-        "自營商(張)": int(row["dealer"]),
-        "單日合計(張)": int(row["total"]),
+        "外資(張)": preserve_lots(row["foreign"]),
+        "投信(張)": preserve_lots(row["trust"]),
+        "自營商(張)": preserve_lots(row["dealer"]),
+        "單日合計(張)": preserve_lots(row["total"]),
         "_date": str(row.get("date", "")),
         "_source": row.get("source", ""),
     } for row in rows]
+    latest_date = max((str(row.get("_date") or "") for row in compact), default="")
+    if expected_date and latest_date != str(expected_date):
+        status = "stale" if compact else status
     return (compact, status) if with_status else compact
 
 
@@ -404,8 +563,6 @@ def build_mini_kbars(frame, limit=30):
 
 def should_run_postclose_scan(now_tpe=None):
     now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
-    if os.getenv("FORCE_SCAN") == "1":
-        return True
     if now_tpe.weekday() >= 5:
         return False
     postclose_time = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
@@ -455,10 +612,20 @@ def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size,
         prefix="daily_scan",
         version=str(scan_date),
     )
+    history_documents = build_chunk_documents(
+        scan_results,
+        prefix="daily_scan_history",
+        version=str(scan_date),
+    )
     previous = previous if isinstance(previous, Mapping) else {}
     old_ids = manifest_chunk_ids(previous, "chunk_ids") if int(previous.get("storage_schema") or 1) >= 2 else []
     batch = db.batch()
     chunk_ids = _stage_chunk_documents(batch, DAILY_SCAN_CHUNK_COLLECTION, documents, old_ids)
+    history_chunk_ids = _stage_chunk_documents(
+        batch,
+        DAILY_SCAN_HISTORY_CHUNK_COLLECTION,
+        history_documents,
+    )
     manifest = {
         "storage_schema": STORAGE_SCHEMA_VERSION,
         "chunk_collection": DAILY_SCAN_CHUNK_COLLECTION,
@@ -468,10 +635,25 @@ def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size,
         "scan_date": str(scan_date),
         "scan_limit": int(scan_limit),
         "universe_size": int(universe_size),
+        "universe_sources": dict(UNIVERSE_SOURCE_COUNTS),
         "scan_profile": str(scan_profile),
         "update_time": firestore.SERVER_TIMESTAMP,
     }
     batch.set(db.collection("market_data").document("daily_scan"), manifest)
+    batch.set(db.collection("daily_scan_history").document(str(scan_date)), {
+        "storage_schema": STORAGE_SCHEMA_VERSION,
+        "chunk_collection": DAILY_SCAN_HISTORY_CHUNK_COLLECTION,
+        "chunk_ids": history_chunk_ids,
+        "record_count": len(scan_results),
+        "content_hash": manifest["content_hash"],
+        "scan_date": str(scan_date),
+        "scan_limit": int(scan_limit),
+        "universe_size": int(universe_size),
+        "universe_sources": dict(UNIVERSE_SOURCE_COUNTS),
+        "scan_profile": str(scan_profile),
+        "snapshot_scope": "point_in_time_full_scan",
+        "update_time": firestore.SERVER_TIMESTAMP,
+    })
     batch.commit()
 
 
@@ -701,7 +883,8 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     """Send the second daily image, including an honest empty state when no name qualifies."""
     if db is None:
         raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
-    executable_rows = build_executable_display_rows(scan_results)
+    selected_top10 = select_executable_top10(scan_results)
+    executable_rows = build_executable_display_rows(selected_top10)
     fingerprint_payload = {"date": str(trading_date), "rows": executable_rows}
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
@@ -724,7 +907,13 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     }, merge=True)
     token, chat_id = _telegram_credentials()
     try:
-        message_id = send_executable_photo(scan_results, trading_date, token, chat_id)
+        message_id = send_executable_photo(
+            scan_results,
+            trading_date,
+            token,
+            chat_id,
+            selected_results=selected_top10,
+        )
     except Exception as exc:
         notification_ref.set({
             "status": "failed",
@@ -1086,7 +1275,14 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
                 "tracked_count": len(daily_snapshots),
                 "open_count": len([p for p in all_positions if p.get("status") == "OPEN"]),
                 "pending_count": len([p for p in all_positions if p.get("status") == "PENDING"]),
-                "unresolved_count": len([p for p in all_positions if p.get("status") == "UNRESOLVED"]),
+                "unresolved_count": len([
+                    p for p in all_positions
+                    if p.get("status") in {"UNRESOLVED", "EXCLUDED_UNRESOLVED"}
+                ]),
+                "data_gap_count": len([
+                    p for p in all_positions
+                    if p.get("status") == "EXCLUDED_DATA_GAP"
+                ]),
                 "actions": action_counts,
             },
         }
@@ -1111,11 +1307,27 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
         logging.error("更新 top10_tracker 失敗: %s", e)
         raise
 
-def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend_telegram=False):
+def run_daily_scan(
+    force=False,
+    *,
+    allow_local=False,
+    send_telegram=True,
+    resend_telegram=False,
+    allow_intraday=False,
+):
+    """Run the authoritative post-close scan.
+
+    ``force`` only bypasses the completed lease.  It deliberately does not
+    bypass the market-close boundary; otherwise a manual Actions run could
+    publish an incomplete intraday bar as the official daily result.
+    ``allow_intraday`` exists only for deterministic local tests.
+    """
     force = bool(force or os.getenv("FORCE_SCAN") == "1")
     if db is None and not allow_local:
         raise RuntimeError("Firestore 初始化失敗；排程掃描已中止，避免 GitHub Actions 誤判成功")
-    if not force and not should_run_postclose_scan():
+    if not allow_intraday and not should_run_postclose_scan():
+        if force:
+            raise RuntimeError("盤中禁止寫入正式每日榜單；請於台北時間 14:30 後重試")
         logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
         return []
 
@@ -1199,8 +1411,25 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             if is_financial_stock(stock, f_data.get('Industry', '')):
                 return None
             revenue = get_finmind_revenue(stock, with_meta=True)
-            mom, yoy, revenue_status = revenue["mom"], revenue["yoy"], revenue["status"]
+            mom, yoy = revenue["mom"], revenue["yoy"]
+            revenue_status = period_aware_status(
+                revenue.get("status"),
+                revenue.get("period"),
+                expected_revenue_period(scan_date_str),
+            )
             financial = fetch_financial_quality(stock)
+            financial_status = period_aware_status(
+                financial.get("status"),
+                financial.get("period"),
+                expected_financial_period(scan_date_str),
+            )
+            official_eps = _finite_number(financial.get("eps"))
+            if _finite_number(f_data.get("EPS")) is None and official_eps is not None:
+                f_data = dict(f_data)
+                f_data["EPS"] = str(round(official_eps, 2))
+                f_data["EPS_Period"] = financial.get("period") or "official_quarter"
+                f_data["EPS_Source"] = financial.get("source") or "official_financial_statement"
+                f_data["_status"] = "ok" if f_data.get("Industry") != "一般產業" else "partial"
             fund = {
                 "EPS": f_data.get('EPS'),
                 "EPS_Period": f_data.get('EPS_Period', 'missing'),
@@ -1230,7 +1459,7 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                 "price": "ok",
                 "fundamental": f_data.get("_status", "unknown"),
                 "revenue": revenue_status,
-                "financial": financial.get("status", "unknown"),
+                "financial": financial_status,
                 "institutional": "pending",
                 "market": "ok",
             })
@@ -1241,26 +1470,54 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
             has_buy_pattern = data.get("Advanced_Pattern_Signal") == "Buy"
             # 初篩只節省外部查詢；正式排序仍使用完整籌碼與資料品質。
             if should_complete_candidate(initial_score, data.get("Advanced_Pattern_Signal", "")):
-                inst, inst_status = get_institutional_trading(stock, with_status=True)
-                whale_days = min(3, len(inst))
-                whale_net = sum([int(str(x['單日合計(張)']).replace(',', '')) for x in inst[:whale_days]]) if inst else None
-                institutional_risk = build_institutional_risk_snapshot(inst)
+                inst, inst_status = get_institutional_trading(
+                    stock,
+                    with_status=True,
+                    expected_date=scan_date_str,
+                )
+                institutional_latest_date = max(
+                    (str(row.get("_date") or "") for row in inst),
+                    default="",
+                )
+                fresh_inst = institutional_series_for_scan(inst, scan_date_str)
+                whale_days = min(3, len(fresh_inst))
+                whale_values = [
+                    _finite_number(x.get('單日合計(張)'))
+                    for x in fresh_inst[:whale_days]
+                ]
+                whale_net = (
+                    round(sum(value for value in whale_values if value is not None), 3)
+                    if whale_values and all(value is not None for value in whale_values)
+                    else None
+                )
+                institutional_risk = build_institutional_risk_snapshot(fresh_inst)
                 quality, confidence = build_scan_quality({
                     "price": "ok",
                     "fundamental": f_data.get("_status", "unknown"),
                     "revenue": revenue_status,
-                    "financial": financial.get("status", "unknown"),
+                    "financial": financial_status,
                     "institutional": inst_status,
                     "market": "ok",
-                }, institutional_days=len(inst))
+                }, institutional_days=len(fresh_inst))
+                critical_issues = []
+                if str(f_data.get("_status") or "missing").lower() == "missing":
+                    critical_issues.append("基本面資料缺失")
+                if revenue_status not in {"ok", "confirmed"}:
+                    critical_issues.append("月營收資料缺失或過期")
+                if financial_status not in {"ok", "confirmed"}:
+                    critical_issues.append("季財報資料缺失或過期")
+                if not institutional_history_complete(inst_status, fresh_inst):
+                    critical_issues.append("近 3 個交易日法人籌碼尚未完整")
                 data["Whale_Net"] = whale_net
                 data["Whale_Net_Days"] = whale_days
                 data.update(institutional_risk)
                 data["Data_Quality"] = quality
                 data["Confidence"] = confidence
                 data["Data_Completeness"] = confidence
+                data["Critical_Data_Ready"] = not critical_issues
+                data["Critical_Data_Issues"] = critical_issues
                 sc, label, rs, feature = get_decision_score(
-                    data, fund, inst_data=inst, mode="post", with_reason=True
+                    data, fund, inst_data=fresh_inst, mode="post", with_reason=True
                 )
                 if sc <= 0:
                     return None
@@ -1285,6 +1542,11 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Backtest_Samples": backtest.get("closed_signals"),
                     "Validation_WinRate": backtest.get("validation_win_rate"),
                     "Validation_Samples": backtest.get("validation_samples"),
+                    "Validation_Wilson_Low": backtest.get("validation_wilson_low"),
+                    "Backtest_Net_Expectancy": backtest.get("net_expectancy_pct"),
+                    "Validation_Net_Expectancy": backtest.get("validation_net_expectancy_pct"),
+                    "Backtest_Max_Drawdown": backtest.get("max_drawdown"),
+                    "Backtest_Execution_Unresolved": backtest.get("execution_unresolved", 0),
                     "Model_Confidence": model_confidence,
                     "Model_Confidence_Label": model_confidence_label,
                 })
@@ -1305,15 +1567,26 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Validation_Wilson_Low": backtest.get("validation_wilson_low"),
                     "Validation_Wilson_High": backtest.get("validation_wilson_high"),
                     "Validation_Sample_Confidence": backtest.get("validation_sample_confidence"),
+                    "Backtest_Net_Expectancy": backtest.get("net_expectancy_pct"),
+                    "Validation_Net_Expectancy": backtest.get("validation_net_expectancy_pct"),
+                    "Backtest_Max_Drawdown": backtest.get("max_drawdown"),
+                    "Backtest_Max_Consecutive_Losses": backtest.get("max_consecutive_losses"),
+                    "Backtest_Execution_Unresolved": backtest.get("execution_unresolved", 0),
+                    "Backtest_Overall_WinRate": backtest.get("overall_win_rate"),
+                    "Backtest_Overall_Samples": backtest.get("overall_samples"),
                     "Model_Confidence": model_confidence,
                     "Model_Confidence_Label": model_confidence_label,
                     "EPS": fund['EPS'], "EPS_Period": fund['EPS_Period'],
+                    "EPS_Source": f_data.get("EPS_Source", "Yahoo/CNYES"),
                     "MoM": fund['MoM'], "YoY": fund['YoY'],
                     "Revenue_Period": revenue.get("period", ""),
                     "Revenue_Source": revenue.get("source", ""),
+                    "Revenue_Status": revenue_status,
+                    "Revenue_Expected_Period": expected_revenue_period(scan_date_str),
                     "Financial_Period": financial.get("period", ""),
                     "Financial_Source": financial.get("source", ""),
-                    "Financial_Status": financial.get("status", "unknown"),
+                    "Financial_Status": financial_status,
+                    "Financial_Expected_Period": expected_financial_period(scan_date_str),
                     "Financial_Revenue": financial.get("revenue"),
                     "Financial_Gross_Profit": financial.get("gross_profit"),
                     "Financial_Operating_Income": financial.get("operating_income"),
@@ -1329,11 +1602,14 @@ def run_daily_scan(force=False, *, allow_local=False, send_telegram=True, resend
                     "Advanced_Pattern": data.get("Advanced_Pattern", ""),
                     "Advanced_Pattern_Signal": data.get("Advanced_Pattern_Signal", ""),
                     "Confidence": confidence, "Data_Completeness": confidence,
-                    "Data_Quality": quality, "Institutional_Days": len(inst),
+                    "Data_Quality": quality, "Institutional_Days": len(fresh_inst),
+                    "Critical_Data_Ready": not critical_issues,
+                    "Critical_Data_Issues": critical_issues,
                     "Market_Regime": benchmark_context.get("regime"),
                     "Market_Return": benchmark_context.get("daily_return_pct"),
                     "Institutional_Status": inst_status,
                     "Institutional_Source": inst[0].get("_source", "") if inst else "",
+                    "Institutional_Latest_Date": institutional_latest_date,
                     **institutional_risk,
                     "Institutional_Rows": [{
                         "date": row.get("_date", ""),

@@ -82,6 +82,18 @@ class IntradayRankingTests(unittest.TestCase):
             "自營商(張)": 0, "單日合計(張)": 511, "_source": "FinMind",
         }])
 
+    def test_persisted_sub_lot_rows_are_not_truncated_to_zero(self):
+        rows = institutional_rows_from_record({
+            "Institutional_Rows": [{
+                "date": "2026-08-21", "foreign": 0.3, "trust": -0.1,
+                "dealer": 0.05, "total": 0.25, "source": "TWSE T86",
+            }],
+        })
+        self.assertEqual(rows[0]["外資(張)"], 0.3)
+        self.assertEqual(rows[0]["投信(張)"], -0.1)
+        self.assertEqual(rows[0]["自營商(張)"], 0.05)
+        self.assertEqual(rows[0]["單日合計(張)"], 0.25)
+
     def test_aggregate_is_never_fabricated_into_daily_rows(self):
         rows = institutional_rows_from_record({
             "Whale_Net": 601,

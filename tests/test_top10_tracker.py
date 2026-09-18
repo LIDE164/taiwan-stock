@@ -2,8 +2,8 @@ import unittest
 
 from execution_costs import calculate_max_odd_lot_position
 from top10_tracker import (
-    MAX_BEARISH_OPENING_GAP_PCT,
     MAX_ACTIVE_INDUSTRY_POSITIONS,
+    MAX_BEARISH_OPENING_GAP_PCT,
     MAX_HOLDING_SESSIONS,
     MIN_EXECUTION_REWARD_RISK,
     backfill_entry_backtest_snapshots,
@@ -55,6 +55,10 @@ class Top10TrackerTests(unittest.TestCase):
             "最高價": 130, "最低價": 70, "收盤價": 110,
             "WinRate": 54.32, "Backtest_Samples": 37,
             "Backtest_Scope": "純技術面逐步前推",
+            "Backtest_Net_Expectancy": 0.8,
+            "Validation_Net_Expectancy": 0.4,
+            "Critical_Data_Ready": True,
+            "Institutional_Latest_Date": "2026-08-17",
             "Entry_Low": 105, "Entry_High": 110,
             "Entry_Stop": 100, "Entry_Target": 120,
         }]
@@ -68,6 +72,12 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(positions[0]["entry_backtest_samples"], 37)
         self.assertEqual(positions[0]["entry_backtest_scope"], "純技術面逐步前推")
         self.assertEqual(positions[0]["entry_backtest_status"], "ok")
+        self.assertEqual(positions[0]["signal_snapshot"]["Backtest_Net_Expectancy"], 0.8)
+        self.assertTrue(positions[0]["signal_snapshot"]["Critical_Data_Ready"])
+        self.assertEqual(
+            positions[0]["signal_snapshot"]["Institutional_Latest_Date"],
+            "2026-08-17",
+        )
         self.assertEqual(snapshots[0]["entry_win_rate"], 54.32)
         self.assertEqual(snapshots[0]["entry_backtest_samples"], 37)
         self.assertEqual(snapshots[0]["action"], "SIGNAL")
@@ -114,7 +124,11 @@ class Top10TrackerTests(unittest.TestCase):
 
         self.assertEqual(positions[0]["status"], "CLOSED_SL")
         self.assertEqual(positions[0]["entry_price"], 108)
-        self.assertEqual(positions[0]["close_price"], 100)
+        expected_risk = calculate_max_odd_lot_position(108, 100, 5000)
+        self.assertAlmostEqual(
+            positions[0]["close_price"],
+            round(expected_risk.stop_execution_price, 4),
+        )
         self.assertEqual(positions[0]["highest_price"], 108)
         self.assertEqual(positions[0]["lowest_price"], 100)
         self.assertEqual(
@@ -138,7 +152,9 @@ class Top10TrackerTests(unittest.TestCase):
             positions, [], quotes, "2026-08-18"
         )
 
-        self.assertEqual(positions[0]["status"], "UNRESOLVED")
+        self.assertEqual(positions[0]["status"], "EXCLUDED_UNRESOLVED")
+        self.assertEqual(positions[0]["resolution_date"], "2026-08-18")
+        self.assertIn("OHLC", positions[0]["resolution_reason"])
         self.assertEqual(positions[0]["entry_price"], 110)
         self.assertEqual(positions[0]["fill_rule"], "PULLBACK_TOUCH")
         self.assertEqual(positions[0]["highest_price"], 110)
@@ -157,6 +173,88 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertIsNone(snapshots[0]["pnl_pct"])
         self.assertIsNone(snapshots[0]["net_pnl_amount"])
 
+        positions, rerun = update_positions_with_snapshots(
+            positions, [], quotes, "2026-08-18"
+        )
+        self.assertEqual(len(rerun), 1)
+        self.assertEqual(rerun[0]["action"], "EXECUTION_UNRESOLVED")
+        self.assertEqual(rerun[0]["status"], "EXCLUDED_UNRESOLVED")
+
+        # A terminal excluded observation must not occupy a portfolio slot or
+        # permanently block a later signal for the same ticker.
+        next_signal = [{
+            **top10[0],
+            "開盤價": 109,
+            "最高價": 112,
+            "最低價": 106,
+            "收盤價": 110,
+        }]
+        positions, _ = update_positions_with_snapshots(
+            positions, next_signal, {}, "2026-08-19"
+        )
+        self.assertEqual(len(positions), 2)
+        self.assertEqual(positions[1]["status"], "PENDING")
+
+    def test_pullback_close_above_target_is_observable_take_profit(self):
+        top10 = [{
+            "代號": "2454", "名稱": "聯發科", "開盤價": 108,
+            "最高價": 110, "最低價": 105, "收盤價": 109,
+            "Entry_Low": 105, "Entry_High": 110,
+            "Entry_Stop": 100, "Entry_Target": 125,
+        }]
+        positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
+
+        positions, snapshots = update_positions_with_snapshots(
+            positions,
+            [],
+            {"2454": {"Open": 130, "High": 132, "Low": 105, "Close": 128}},
+            "2026-08-18",
+        )
+
+        self.assertEqual(positions[0]["fill_rule"], "PULLBACK_TOUCH")
+        self.assertEqual(positions[0]["status"], "CLOSED_TP")
+        self.assertEqual(positions[0]["close_price"], 125)
+        self.assertEqual(
+            positions[0]["entry_bar_exit_check"],
+            "pullback_close_confirmed_target",
+        )
+        self.assertEqual(snapshots[0]["action"], "TAKE_PROFIT")
+        self.assertEqual(snapshots[0]["data_status"], "ok")
+        self.assertGreater(snapshots[0]["net_pnl_amount"], 0)
+
+    def test_legacy_unresolved_is_migrated_and_does_not_consume_capacity(self):
+        legacy = [{
+            "position_id": "2454:2026-08-17",
+            "ticker": "2454",
+            "name": "聯發科",
+            "execution_schema": 2,
+            "status": "UNRESOLVED",
+            "signal_date": "2026-08-17",
+            "entry_date": "2026-08-18",
+            "entry_price": 110,
+            "last_tracked_date": "2026-08-18",
+            "last_snapshot": {
+                "ticker": "2454",
+                "date": "2026-08-18",
+                "action": "EXECUTION_UNRESOLVED",
+                "status": "UNRESOLVED",
+            },
+        }]
+        later = [{
+            "代號": "2454", "名稱": "聯發科", "開盤價": 108,
+            "最高價": 110, "最低價": 105, "收盤價": 109,
+            "Entry_Low": 105, "Entry_High": 110,
+            "Entry_Stop": 100, "Entry_Target": 125,
+        }]
+
+        positions, _ = update_positions_with_snapshots(
+            legacy, later, {}, "2026-08-19"
+        )
+
+        self.assertEqual(positions[0]["status"], "EXCLUDED_UNRESOLVED")
+        self.assertIsNotNone(positions[0]["resolution_date"])
+        self.assertEqual(positions[1]["status"], "PENDING")
+
     def test_pullback_touch_resolves_a_stop_that_must_follow_the_fill(self):
         top10 = [{
             "代號": "2454", "名稱": "聯發科", "開盤價": 108,
@@ -174,7 +272,11 @@ class Top10TrackerTests(unittest.TestCase):
         )
 
         self.assertEqual(positions[0]["status"], "CLOSED_SL")
-        self.assertEqual(positions[0]["close_price"], 100)
+        expected_risk = calculate_max_odd_lot_position(110, 100, 5000)
+        self.assertAlmostEqual(
+            positions[0]["close_price"],
+            round(expected_risk.stop_execution_price, 4),
+        )
         self.assertEqual(snapshots[0]["action"], "STOP_LOSS")
         self.assertEqual(positions[0]["entry_bar_resolution"], "resolved")
 
@@ -298,7 +400,7 @@ class Top10TrackerTests(unittest.TestCase):
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 103, "最低價": 99, "收盤價": 101,
             "Entry_Low": 100, "Entry_High": 102,
-            "Entry_Stop": 95, "Entry_Target": 110,
+            "Entry_Stop": 95, "Entry_Target": 112,
         }]
         positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         positions, snapshots = update_positions_with_snapshots(
@@ -309,10 +411,10 @@ class Top10TrackerTests(unittest.TestCase):
         )
 
         self.assertEqual(positions[0]["status"], "OPEN")
-        self.assertEqual(positions[0]["actual_reward_risk"], 1.5)
+        self.assertEqual(positions[0]["actual_reward_risk"], 1.833)
         self.assertEqual(positions[0]["holding_session_count"], 1)
         self.assertEqual(positions[0]["max_holding_sessions"], MAX_HOLDING_SESSIONS)
-        self.assertEqual(snapshots[0]["actual_reward_risk"], 1.5)
+        self.assertEqual(snapshots[0]["actual_reward_risk"], 1.833)
         self.assertEqual(snapshots[0]["holding_session_count"], 1)
 
     def test_entry_backtest_snapshot_is_not_replaced_by_later_ranking(self):
@@ -413,7 +515,7 @@ class Top10TrackerTests(unittest.TestCase):
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 103, "最低價": 99, "收盤價": 101,
             "Entry_Low": 100, "Entry_High": 102,
-            "Entry_Stop": 95, "Entry_Target": 110,
+            "Entry_Stop": 95, "Entry_Target": 112,
         }]
         positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         positions, _ = update_positions_with_snapshots(
@@ -454,7 +556,7 @@ class Top10TrackerTests(unittest.TestCase):
         summary = build_cumulative_performance_summary(positions, "2026-08-28")
         self.assertEqual(summary["execution_schema_2_plus"]["trade_count"], 1)
 
-    def test_missing_quote_and_same_date_rerun_do_not_consume_holding_sessions(self):
+    def test_unrepaired_open_quote_gap_is_terminally_excluded_next_session(self):
         existing = [{
             "ticker": "2330", "name": "台積電", "execution_schema": 2,
             "entry_session_status": "filled", "entry_date": "2026-08-14",
@@ -474,12 +576,85 @@ class Top10TrackerTests(unittest.TestCase):
         positions, first = update_positions_with_snapshots(
             positions, [], quote, "2026-08-18"
         )
-        self.assertEqual(positions[0]["holding_session_count"], 5)
+        self.assertEqual(positions[0]["status"], "EXCLUDED_DATA_GAP")
+        self.assertEqual(positions[0]["execution_data_gap_date"], "2026-08-17")
+        self.assertEqual(positions[0]["holding_session_count"], 4)
+        self.assertIsNone(positions[0]["pnl_pct"])
+        self.assertEqual(first[0]["action"], "EXECUTION_DATA_GAP")
+        self.assertEqual(first[0]["data_status"], "execution_data_gap")
+        self.assertIsNone(first[0]["net_pnl_amount"])
+
+        summary = build_cumulative_performance_summary(positions, "2026-08-18")
+        self.assertEqual(summary["included_count"], 0)
+        self.assertEqual(summary["execution_schema_2_plus"]["trade_count"], 0)
+        self.assertEqual(summary["excluded_count"], 1)
+
         positions, rerun = update_positions_with_snapshots(
             positions, [], quote, "2026-08-18"
         )
-        self.assertEqual(positions[0]["holding_session_count"], 5)
+        self.assertEqual(positions[0]["holding_session_count"], 4)
         self.assertEqual(rerun, first)
+
+    def test_skipped_workflow_session_is_terminally_excluded(self):
+        existing = [{
+            "ticker": "2330", "name": "台積電", "execution_schema": 2,
+            "entry_session_status": "filled", "entry_date": "2026-08-14",
+            "entry_price": 100, "status": "OPEN", "highest_price": 102,
+            "lowest_price": 98, "current_price": 100, "shares": 100,
+            "stop_price": 90, "target_price": 115,
+            "holding_session_count": 4,
+            "max_holding_sessions": MAX_HOLDING_SESSIONS,
+            "last_tracked_date": "2026-08-17",
+            "last_snapshot": {"date": "2026-08-17", "action": "HOLD"},
+        }]
+        quote = {"2330": {"Open": 101, "High": 103, "Low": 99, "Close": 102}}
+
+        positions, snapshots = update_positions_with_snapshots(
+            existing,
+            [],
+            quote,
+            "2026-08-20",
+            benchmark={
+                "date": "2026-08-20",
+                "previous_trading_date": "2026-08-19",
+            },
+        )
+
+        self.assertEqual(positions[0]["status"], "EXCLUDED_DATA_GAP")
+        self.assertEqual(positions[0]["execution_data_gap_from"], "2026-08-17")
+        self.assertEqual(positions[0]["execution_data_gap_through"], "2026-08-19")
+        self.assertIn("追蹤日由 2026-08-17 跳至 2026-08-20", positions[0]["resolution_reason"])
+        self.assertEqual(snapshots[0]["action"], "EXECUTION_DATA_GAP")
+        self.assertIsNone(snapshots[0]["net_pnl_amount"])
+
+    def test_open_missing_quote_can_be_repaired_once_on_the_same_date(self):
+        existing = [{
+            "ticker": "2330", "name": "台積電", "execution_schema": 2,
+            "entry_session_status": "filled", "entry_date": "2026-08-14",
+            "entry_price": 100, "status": "OPEN", "highest_price": 102,
+            "lowest_price": 98, "current_price": 100, "shares": 100,
+            "stop_price": 90, "target_price": 115,
+            "holding_session_count": 4,
+            "max_holding_sessions": MAX_HOLDING_SESSIONS,
+        }]
+        positions, missing = update_positions_with_snapshots(
+            existing, [], {}, "2026-08-17"
+        )
+        self.assertEqual(missing[0]["action"], "DATA_MISSING")
+        self.assertEqual(positions[0]["holding_session_count"], 4)
+
+        quote = {"2330": {"Open": 100, "High": 103, "Low": 99, "Close": 102}}
+        positions, repaired = update_positions_with_snapshots(
+            positions, [], quote, "2026-08-17"
+        )
+        self.assertEqual(repaired[0]["action"], "HOLD")
+        self.assertEqual(positions[0]["holding_session_count"], 5)
+
+        positions, rerun = update_positions_with_snapshots(
+            positions, [], quote, "2026-08-17"
+        )
+        self.assertEqual(positions[0]["holding_session_count"], 5)
+        self.assertEqual(rerun, repaired)
 
     def test_stop_or_target_on_final_session_takes_priority_over_time_exit(self):
         base = {
@@ -569,7 +744,7 @@ class Top10TrackerTests(unittest.TestCase):
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 103, "最低價": 99, "收盤價": 101,
             "Entry_Low": 100, "Entry_High": 102,
-            "Entry_Stop": 95, "Entry_Target": 110,
+            "Entry_Stop": 95, "Entry_Target": 112,
         }]
         positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         positions, first = update_positions_with_snapshots(
@@ -590,7 +765,7 @@ class Top10TrackerTests(unittest.TestCase):
             "代號": "2454", "名稱": "聯發科", "開盤價": 100,
             "最高價": 103, "最低價": 99, "收盤價": 101,
             "Entry_Low": 100, "Entry_High": 102,
-            "Entry_Stop": 95, "Entry_Target": 110,
+            "Entry_Stop": 95, "Entry_Target": 112,
         }]
         positions, _ = update_positions_with_snapshots([], top10, {}, "2026-09-04")
         self.assertEqual(positions[0]["expected_entry_date"], "2026-09-07")
@@ -645,7 +820,7 @@ class Top10TrackerTests(unittest.TestCase):
             "漲跌幅": 2.5, "產業": "半導體",
             "開盤價": 100, "最高價": 103, "最低價": 99, "收盤價": 101,
             "Entry_Low": 100, "Entry_High": 102,
-            "Entry_Stop": 95, "Entry_Target": 110,
+            "Entry_Stop": 95, "Entry_Target": 112,
         }]
         positions, _ = update_positions_with_snapshots([], top10, {}, "2026-08-17")
         fill_quote = {"2454": {"Open": 101, "High": 104, "Low": 98, "Close": 102}}
@@ -673,9 +848,12 @@ class Top10TrackerTests(unittest.TestCase):
             positions, later_ranking, {}, "2026-08-19"
         )
         self.assertEqual(positions[0]["status"], "CLOSED_SL")
-        self.assertEqual(positions[0]["close_price"], 95)
+        self.assertAlmostEqual(
+            positions[0]["close_price"],
+            round(expected_risk.stop_execution_price, 4),
+        )
         self.assertEqual(snapshots[0]["stop_price"], 95)
-        self.assertEqual(snapshots[0]["target_price"], 110)
+        self.assertEqual(snapshots[0]["target_price"], 112)
         self.assertEqual(snapshots[0]["signal_score"], 88)
         self.assertLess(snapshots[0]["net_pnl_amount"], 0)
         self.assertLessEqual(

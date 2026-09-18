@@ -11,14 +11,26 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from execution_costs import (
+    DEFAULT_MAX_LOSS_PER_TRADE,
+    DEFAULT_TAIWAN_STOCK_COST_MODEL,
+    TaiwanStockCostModel,
+    estimate_risk_sized_net_reward_risk,
+)
 
-ENTRY_SCHEMA_VERSION = 2
+# Schema 3 adds an all-in cost-adjusted RRR gate and narrows the executable
+# price range accordingly.  Older gross-only plans must be rebuilt.
+ENTRY_SCHEMA_VERSION = 3
 MIN_EXECUTION_SCORE = 65
 MIN_EFFECTIVE_REWARD_RISK = 1.30
 MIN_BACKTEST_SAMPLES = 15
 MIN_VALIDATION_SAMPLES = 5
-MIN_BACKTEST_WIN_RATE = 40.0
-MIN_VALIDATION_WIN_RATE = 40.0
+# At 1.30 reward/risk the frictionless break-even rate is 43.48%.  The
+# additional two points conservatively cover costs and estimation error.
+MIN_COST_ADJUSTED_WIN_RATE = round(100 / (1 + MIN_EFFECTIVE_REWARD_RISK) + 2.0, 1)
+MIN_BACKTEST_WIN_RATE = MIN_COST_ADJUSTED_WIN_RATE
+MIN_VALIDATION_WIN_RATE = MIN_COST_ADJUSTED_WIN_RATE
+MIN_VALIDATION_WILSON_LOW = 30.0
 READY_STATUS = "現在可執行"
 WAIT_VOLUME_STATUS = "等待量能確認"
 WAIT_PULLBACK_STATUS = "等待拉回"
@@ -125,6 +137,7 @@ def _result(
     target: float | None = None,
     no_chase: float | None = None,
     rrr: float = 1.5,
+    net_rrr: float | None = None,
 ) -> dict[str, Any]:
     has_levels = all(value is not None for value in (low, high, stop, target))
     return {
@@ -138,6 +151,7 @@ def _result(
         "Entry_Stop": stop if has_levels else None,
         "Entry_Target": target if has_levels else None,
         "Entry_RRR": round(rrr, 2) if has_levels else None,
+        "Entry_Net_RRR": round(net_rrr, 2) if has_levels and net_rrr is not None else None,
         "No_Chase_Price": no_chase,
         "Entry_Reason": reason,
     }
@@ -175,6 +189,8 @@ def _levels(
     *,
     stop_atr_mult: float = 1.0,
     reward_risk: float = 1.5,
+    max_loss_per_trade: float = DEFAULT_MAX_LOSS_PER_TRADE,
+    cost_model: TaiwanStockCostModel = DEFAULT_TAIWAN_STOCK_COST_MODEL,
 ) -> tuple[float, float, float, float] | None:
     low = _tick_price(low, "floor")
     high = _tick_price(min(high, no_chase), "ceil")
@@ -187,7 +203,32 @@ def _levels(
     if stop <= 0 or midpoint <= stop:
         return None
     target = _tick_price(midpoint + (midpoint - stop) * reward_risk, "ceil")
-    return low, high, stop, target
+    # Narrow the displayed zone to prices that still retain the minimum
+    # all-in reward/risk after commissions, transaction tax and stop slippage.
+    # This avoids labelling the upper half of a gross-only range executable.
+    candidate = high
+    for _ in range(10_000):
+        gross_rrr = _reward_risk_at_price(candidate, stop, target)
+        net_rrr = estimate_risk_sized_net_reward_risk(
+            candidate,
+            stop,
+            target,
+            max_loss=max_loss_per_trade,
+            model=cost_model,
+        )
+        if (
+            gross_rrr is not None
+            and gross_rrr >= MIN_EFFECTIVE_REWARD_RISK
+            and net_rrr is not None
+            and net_rrr >= MIN_EFFECTIVE_REWARD_RISK
+        ):
+            return low, candidate, stop, target
+        if candidate <= low:
+            break
+        lower_tick = _tick_size(max(candidate - 1e-9, 0.01))
+        decimals = 2 if lower_tick < 0.1 else (1 if lower_tick < 1 else 0)
+        candidate = max(low, round(candidate - lower_tick, decimals))
+    return None
 
 
 def _is_overheated(record: Mapping[str, Any], close: float) -> tuple[bool, str]:
@@ -223,6 +264,20 @@ def _volume_wait_reason(record: Mapping[str, Any]) -> str:
 
 def _execution_risk_reason(record: Mapping[str, Any]) -> str:
     """Return a hard execution veto using only facts available at decision time."""
+    critical_issues = record.get("Critical_Data_Issues")
+    has_critical_issues = False
+    if isinstance(critical_issues, str):
+        has_critical_issues = critical_issues.strip().lower() not in {
+            "", "[]", "none", "null", "ok"
+        }
+    elif critical_issues is not None:
+        has_critical_issues = bool(critical_issues)
+    if (
+        ("Critical_Data_Ready" in record and not _truthy(record.get("Critical_Data_Ready")))
+        or has_critical_issues
+    ):
+        return "關鍵籌碼、營收或財報資料尚未通過日期與完整性檢查，等待資料確認。"
+
     market_regime = str(record.get("Market_Regime") or "").strip()
     market_return = _number(record.get("Market_Return"))
     if market_regime == "空頭":
@@ -266,14 +321,29 @@ def _execution_risk_reason(record: Mapping[str, Any]) -> str:
         backtest_samples = _number(record.get("Backtest_Samples"))
         validation_rate = _number(record.get("Validation_WinRate"))
         validation_samples = _number(record.get("Validation_Samples"))
+        backtest_expectancy = _number(record.get("Backtest_Net_Expectancy"))
+        validation_expectancy = _number(record.get("Validation_Net_Expectancy"))
+        validation_wilson_low = _number(record.get("Validation_Wilson_Low"))
         if backtest_samples is None or backtest_samples < MIN_BACKTEST_SAMPLES:
             return f"策略回測樣本未達 {MIN_BACKTEST_SAMPLES} 筆，僅列觀察。"
         if validation_samples is None or validation_samples < MIN_VALIDATION_SAMPLES:
             return f"近期驗證樣本未達 {MIN_VALIDATION_SAMPLES} 筆，僅列觀察。"
         if backtest_rate is None or backtest_rate < MIN_BACKTEST_WIN_RATE:
-            return f"策略回測勝率未達 {MIN_BACKTEST_WIN_RATE:.0f}%，暫不執行。"
+            return f"策略回測勝率未達 {MIN_BACKTEST_WIN_RATE:.1f}% 成本後損益兩平門檻，暫不執行。"
         if validation_rate is None or validation_rate < MIN_VALIDATION_WIN_RATE:
-            return f"近期驗證勝率未達 {MIN_VALIDATION_WIN_RATE:.0f}%，暫不執行。"
+            return f"近期驗證勝率未達 {MIN_VALIDATION_WIN_RATE:.1f}% 成本後損益兩平門檻，暫不執行。"
+        if backtest_expectancy is not None and backtest_expectancy <= 0:
+            return "策略回測扣除交易成本後期望值未大於 0，暫不執行。"
+        if validation_expectancy is not None and validation_expectancy <= 0:
+            return "近期驗證扣除交易成本後期望值未大於 0，暫不執行。"
+        if (
+            validation_wilson_low is not None
+            and validation_wilson_low < MIN_VALIDATION_WILSON_LOW
+        ):
+            return (
+                f"近期驗證勝率下限僅 {validation_wilson_low:.1f}%，"
+                f"未達 {MIN_VALIDATION_WILSON_LOW:.0f}% 穩健門檻。"
+            )
     return ""
 
 
@@ -292,6 +362,8 @@ def build_entry_readiness(
     baseline_plan: Mapping[str, Any] | None = None,
     stop_atr_mult: float = 1.0,
     reward_risk: float = 1.5,
+    max_loss_per_trade: float = DEFAULT_MAX_LOSS_PER_TRADE,
+    cost_model: TaiwanStockCostModel = DEFAULT_TAIWAN_STOCK_COST_MODEL,
 ) -> dict[str, Any]:
     """Build an honest entry plan from current technical values.
 
@@ -334,6 +406,13 @@ def build_entry_readiness(
                 target=target,
                 no_chase=no_chase,
                 rrr=baseline_rrr,
+                net_rrr=estimate_risk_sized_net_reward_risk(
+                    high,
+                    stop,
+                    target,
+                    max_loss=max_loss_per_trade,
+                    model=cost_model,
+                ),
             )
             if execution_risk_reason:
                 return _result(WAIT_TRIGGER_STATUS, "wait", execution_risk_reason, **kwargs)
@@ -350,13 +429,26 @@ def build_entry_readiness(
                 if confidence is not None and confidence < 70:
                     return _result(WAIT_TRIGGER_STATUS, "wait", f"資料完整度僅 {confidence:.0f}%，暫不執行。", **kwargs)
                 actual_rrr = _reward_risk_at_price(close, stop, target)
-                if actual_rrr is None or actual_rrr < MIN_EFFECTIVE_REWARD_RISK:
+                actual_net_rrr = estimate_risk_sized_net_reward_risk(
+                    close,
+                    stop,
+                    target,
+                    max_loss=max_loss_per_trade,
+                    model=cost_model,
+                )
+                if (
+                    actual_rrr is None
+                    or actual_rrr < MIN_EFFECTIVE_REWARD_RISK
+                    or actual_net_rrr is None
+                    or actual_net_rrr < MIN_EFFECTIVE_REWARD_RISK
+                ):
                     return _result(
                         WAIT_PULLBACK_STATUS,
                         "wait",
-                        f"現價風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
+                        f"現價成本後風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
                         **kwargs,
                     )
+                kwargs["net_rrr"] = actual_net_rrr
                 return _result(READY_STATUS, "ready", build_entry_summary(record), **kwargs)
             if close < low:
                 return _result(WAIT_TRIGGER_STATUS, "wait", f"現價尚未進入 {low:g}–{high:g} 觀察區間。", **kwargs)
@@ -379,11 +471,17 @@ def build_entry_readiness(
             no_chase,
             stop_atr_mult=stop_atr_mult,
             reward_risk=reward_risk,
+            max_loss_per_trade=max_loss_per_trade,
+            cost_model=cost_model,
         )
         if level_values:
             return _result(WAIT_PULLBACK_STATUS, "wait", overheat_reason, plan_type=plan_type, no_chase=no_chase,
                            low=level_values[0], high=level_values[1], stop=level_values[2], target=level_values[3],
-                           rrr=reward_risk)
+                           rrr=reward_risk,
+                           net_rrr=estimate_risk_sized_net_reward_risk(
+                               level_values[1], level_values[2], level_values[3],
+                               max_loss=max_loss_per_trade, model=cost_model,
+                           ))
         return _result(WAIT_PULLBACK_STATUS, "wait", overheat_reason, no_chase=no_chase)
 
     if pattern in _BREAKOUT_PATTERNS:
@@ -395,6 +493,8 @@ def build_entry_readiness(
             no_chase,
             stop_atr_mult=stop_atr_mult,
             reward_risk=reward_risk,
+            max_loss_per_trade=max_loss_per_trade,
+            cost_model=cost_model,
         )
         if not level_values:
             pullback = _levels(
@@ -404,15 +504,25 @@ def build_entry_readiness(
                 no_chase,
                 stop_atr_mult=stop_atr_mult,
                 reward_risk=reward_risk,
+                max_loss_per_trade=max_loss_per_trade,
+                cost_model=cost_model,
             )
             if pullback:
                 return _result(WAIT_PULLBACK_STATUS, "wait", "突破觸發價已超過禁止追高價，改等回測。",
                                plan_type="pullback", no_chase=no_chase, low=pullback[0], high=pullback[1],
-                               stop=pullback[2], target=pullback[3], rrr=reward_risk)
+                               stop=pullback[2], target=pullback[3], rrr=reward_risk,
+                               net_rrr=estimate_risk_sized_net_reward_risk(
+                                   pullback[1], pullback[2], pullback[3],
+                                   max_loss=max_loss_per_trade, model=cost_model,
+                               ))
             return _result(WAIT_PULLBACK_STATUS, "wait", "突破觸發價已超過禁止追高價。", no_chase=no_chase)
         return _result(WAIT_TRIGGER_STATUS, "wait", "突破今日高點且量能延續後，才進入可執行區間。",
                        plan_type=plan_type, no_chase=no_chase, low=level_values[0], high=level_values[1],
-                       stop=level_values[2], target=level_values[3], rrr=reward_risk)
+                       stop=level_values[2], target=level_values[3], rrr=reward_risk,
+                       net_rrr=estimate_risk_sized_net_reward_risk(
+                           level_values[1], level_values[2], level_values[3],
+                           max_loss=max_loss_per_trade, model=cost_model,
+                       ))
 
     level_values = _levels(
         ma20,
@@ -421,6 +531,8 @@ def build_entry_readiness(
         no_chase,
         stop_atr_mult=stop_atr_mult,
         reward_risk=reward_risk,
+        max_loss_per_trade=max_loss_per_trade,
+        cost_model=cost_model,
     )
     if not level_values:
         return _result(WAIT_PULLBACK_STATUS, "wait", "目前無法建立風險報酬合理的區間。", no_chase=no_chase)
@@ -432,6 +544,13 @@ def build_entry_readiness(
         stop=level_values[2],
         target=level_values[3],
         rrr=reward_risk,
+        net_rrr=estimate_risk_sized_net_reward_risk(
+            level_values[1],
+            level_values[2],
+            level_values[3],
+            max_loss=max_loss_per_trade,
+            model=cost_model,
+        ),
     )
     if execution_risk_reason:
         return _result(WAIT_TRIGGER_STATUS, "wait", execution_risk_reason, **level_kwargs)
@@ -444,13 +563,26 @@ def build_entry_readiness(
         if confidence is not None and confidence < 70:
             return _result(WAIT_TRIGGER_STATUS, "wait", f"價格已進區間，但資料完整度僅 {confidence:.0f}%。", **level_kwargs)
         actual_rrr = _reward_risk_at_price(close, level_values[2], level_values[3])
-        if actual_rrr is None or actual_rrr < MIN_EFFECTIVE_REWARD_RISK:
+        actual_net_rrr = estimate_risk_sized_net_reward_risk(
+            close,
+            level_values[2],
+            level_values[3],
+            max_loss=max_loss_per_trade,
+            model=cost_model,
+        )
+        if (
+            actual_rrr is None
+            or actual_rrr < MIN_EFFECTIVE_REWARD_RISK
+            or actual_net_rrr is None
+            or actual_net_rrr < MIN_EFFECTIVE_REWARD_RISK
+        ):
             return _result(
                 WAIT_PULLBACK_STATUS,
                 "wait",
-                f"現價風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
+                f"現價成本後風險報酬比未達 {MIN_EFFECTIVE_REWARD_RISK:.1f}，等待更佳價格。",
                 **level_kwargs,
             )
+        level_kwargs["net_rrr"] = actual_net_rrr
         return _result(READY_STATUS, "ready", build_entry_summary(record), **level_kwargs)
     if close > level_values[1]:
         return _result(WAIT_PULLBACK_STATUS, "wait", "價格仍高於 20MA 回測區，不追價。", **level_kwargs)

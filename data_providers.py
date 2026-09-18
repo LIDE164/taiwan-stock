@@ -191,6 +191,10 @@ def _financial_risk(
 def _empty_financial_quality(status: str) -> dict[str, Any]:
     return {
         "period": "",
+        "as_of_period": "",
+        "period_type": "fiscal_quarter",
+        "snapshot_type": "current_published",
+        "freshness": "unknown",
         "source": "official open data (current snapshot)",
         "status": status,
         "revenue": None,
@@ -262,6 +266,13 @@ def _parse_financial_quality_rows(
     )
     return {
         "period": period,
+        "as_of_period": period,
+        "period_type": "fiscal_quarter",
+        # The official endpoint is a current snapshot and does not expose the
+        # original publication timestamp.  Do not infer one: callers can use
+        # ``as_of_period`` to apply their own as-of policy.
+        "snapshot_type": "current_published",
+        "freshness": "unknown",
         "source": source,
         "status": "ok" if all(value is not None for value in required_values) else "partial",
         "revenue": revenue,
@@ -334,9 +345,46 @@ def fetch_financial_quality(ticker: Any) -> dict[str, Any]:
     return _empty_financial_quality("empty" if successful_request else "error")
 
 
-def _shares_to_lots(value: Any) -> int:
+def _shares_to_lots(value: Any) -> float | None:
+    """Convert a reported share count to lots without inventing a zero.
+
+    Missing/invalid official fields used to become ``0`` here, which made a
+    schema change indistinguishable from a genuine zero-position day.
+    """
     shares = _number(value)
-    return int(round(shares / 1000)) if shares is not None else 0
+    # One lot is 1,000 shares, so three decimal places preserve an official
+    # integer share count exactly.  Rounding to a whole lot turned genuine
+    # small trades (for example 300 shares) into a fabricated zero.
+    return round(shares / 1000, 3) if shares is not None else None
+
+
+def _expected_revenue_period(now: datetime) -> str:
+    """Latest calendar month expected after the statutory publication window."""
+    local_now = now.astimezone(TPE) if now.tzinfo else now.replace(tzinfo=TPE)
+    month_offset = -1 if local_now.day >= 11 else -2
+    absolute_month = local_now.year * 12 + local_now.month - 1 + month_offset
+    year, zero_based_month = divmod(absolute_month, 12)
+    return f"{year:04d}-{zero_based_month + 1:02d}"
+
+
+def _annotate_revenue_freshness(
+    payload: dict[str, Any], now: datetime
+) -> dict[str, Any]:
+    """Attach period freshness without presenting an old release as current."""
+    result = dict(payload)
+    expected = _expected_revenue_period(now)
+    result["expected_period"] = expected
+    period = str(result.get("period") or "").strip()
+    try:
+        datetime.strptime(period, "%Y-%m")
+    except (TypeError, ValueError):
+        result["freshness"] = "unknown"
+        return result
+    stale = period < expected
+    result["freshness"] = "stale" if stale else "fresh"
+    if stale and str(result.get("status") or "").lower() in {"ok", "partial"}:
+        result["status"] = "stale"
+    return result
 
 
 def _official_revenue_rows(market: str) -> list[dict[str, Any]]:
@@ -356,12 +404,16 @@ def _official_revenue_rows(market: str) -> list[dict[str, Any]]:
 def _parse_official_revenue_row(row: dict[str, Any], source: str) -> dict[str, Any]:
     mom = _number(row.get("營業收入-上月比較增減(%)"))
     yoy = _number(row.get("營業收入-去年同月增減(%)"))
+    period = _roc_month_to_iso(row.get("資料年月"))
     return {
         "mom": round(mom, 2) if mom is not None else None,
         "yoy": round(yoy, 2) if yoy is not None else None,
-        "period": _roc_month_to_iso(row.get("資料年月")),
+        "period": period,
+        "as_of_period": period,
+        "period_type": "calendar_month",
+        "freshness": "unknown",
         "source": source,
-        "status": "ok" if mom is not None and yoy is not None else "partial",
+        "status": "ok" if period and mom is not None and yoy is not None else "partial",
     }
 
 
@@ -382,6 +434,9 @@ def _fetch_official_revenue_growth(ticker: Any) -> dict[str, Any]:
         "mom": None,
         "yoy": None,
         "period": "",
+        "as_of_period": "",
+        "period_type": "calendar_month",
+        "freshness": "unknown",
         "source": "official open data",
         "status": "empty" if successful_market_request else "error",
     }
@@ -418,13 +473,18 @@ def fetch_revenue_growth(ticker: Any, token: str, *, now: datetime | None = None
     # One official bulk request serves the entire tokenless scanner universe and
     # avoids consuming one FinMind public-quota request per stock.
     if not token:
-        official_result = _fetch_official_revenue_growth(ticker)
-        if official_result["status"] in ("ok", "partial"):
+        official_result = _annotate_revenue_freshness(
+            _fetch_official_revenue_growth(ticker), now
+        )
+        if official_result["status"] in ("ok", "partial", "stale"):
             return official_result
     finmind_result: dict[str, Any] = {
         "mom": None,
         "yoy": None,
         "period": "",
+        "as_of_period": "",
+        "period_type": "calendar_month",
+        "freshness": "unknown",
         "source": "FinMind",
         "status": "missing" if not token else "error",
     }
@@ -455,21 +515,28 @@ def fetch_revenue_growth(ticker: Any, token: str, *, now: datetime | None = None
                     yoy = (latest_revenue / float(year_ago.iloc[-1]["revenue"]) - 1) * 100
         if rows and (mom is None or yoy is None):
             status = "partial"
-        finmind_result = {
+        finmind_result = _annotate_revenue_freshness({
             "mom": round(mom, 2) if mom is not None else None,
             "yoy": round(yoy, 2) if yoy is not None else None,
             "period": period,
+            "as_of_period": period,
+            "period_type": "calendar_month",
+            "freshness": "unknown",
             "source": "FinMind",
             "status": status,
-        }
+        }, now)
     except Exception as exc:
         logger.warning("FinMind revenue request failed for %s (%s)", normalize_ticker(ticker), type(exc).__name__)
         finmind_result["status"] = "error"
 
     if finmind_result["status"] == "ok":
         return finmind_result
-    official_result = _fetch_official_revenue_growth(ticker)
-    if official_result["status"] in ("ok", "partial"):
+    # A syntactically valid FinMind response can still be months behind.  In
+    # that case consult the exchange snapshots rather than returning ``ok``.
+    official_result = _annotate_revenue_freshness(
+        _fetch_official_revenue_growth(ticker), now
+    )
+    if official_result["status"] in ("ok", "partial", "stale"):
         return official_result
     return finmind_result if token else official_result
 
@@ -492,6 +559,85 @@ def _market_for_ticker(ticker: Any) -> str:
     return ""
 
 
+def _header_text(value: Any) -> str:
+    """Return a stable comparison key for provider field labels."""
+    if isinstance(value, dict):
+        value = _first_value(value, "label", "name", "title", "text", "key")
+    return (
+        str(value or "")
+        .replace("\n", "")
+        .replace("\r", "")
+        .replace(" ", "")
+        .replace("（", "(")
+        .replace("）", ")")
+        .strip()
+    )
+
+
+def _field_value(row: dict[str, Any], *aliases: str) -> Any:
+    normalized = {_header_text(key): value for key, value in row.items()}
+    for alias in aliases:
+        key = _header_text(alias)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def _build_institutional_row(
+    *,
+    row_date: datetime,
+    source: str,
+    foreign_ex_dealer: Any,
+    trust: Any,
+    dealer: Any,
+    foreign_dealer: Any = None,
+    reported_total: Any = None,
+) -> dict[str, Any] | None:
+    """Build one official row using the regulator's non-duplicating total.
+
+    The official definition is foreign investors *excluding* foreign dealer
+    self, plus investment trust, plus dealer.  Foreign dealer self is kept as
+    separate metadata because it is already included in the dealer figure.
+    """
+    foreign_shares = _number(foreign_ex_dealer)
+    trust_shares = _number(trust)
+    dealer_shares = _number(dealer)
+    if foreign_shares is None or trust_shares is None or dealer_shares is None:
+        return None
+
+    foreign_dealer_shares = _number(foreign_dealer)
+    reported_total_shares = _number(reported_total)
+    computed_total_shares = foreign_shares + trust_shares + dealer_shares
+    if reported_total_shares is not None and abs(reported_total_shares - computed_total_shares) > 1:
+        # A provider schema change must not silently produce a plausible but
+        # wrong chip value.  The caller treats the skipped row as partial.
+        return None
+
+    foreign_lots = _shares_to_lots(foreign_shares)
+    trust_lots = _shares_to_lots(trust_shares)
+    dealer_lots = _shares_to_lots(dealer_shares)
+    total_lots = _shares_to_lots(
+        reported_total_shares if reported_total_shares is not None else computed_total_shares
+    )
+    if None in (foreign_lots, trust_lots, dealer_lots, total_lots):
+        return None
+    return {
+        "date": row_date.strftime("%Y-%m-%d"),
+        # ``foreign`` intentionally excludes Foreign_Dealer_Self.
+        "foreign": foreign_lots,
+        "foreign_ex_dealer": foreign_lots,
+        "foreign_dealer": _shares_to_lots(foreign_dealer_shares),
+        "foreign_semantics": "excludes_foreign_dealer",
+        "trust": trust_lots,
+        "dealer": dealer_lots,
+        "total": total_lots,
+        "reported_total": _shares_to_lots(reported_total_shares),
+        "total_validation": "matched" if reported_total_shares is not None else "unavailable",
+        "data_status": "ok" if reported_total_shares is not None else "partial",
+        "source": source,
+    }
+
+
 def _parse_twse_institutional_payload(payload: Any, ticker: Any, row_date: datetime) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("stat") != "OK":
         return None
@@ -501,21 +647,25 @@ def _parse_twse_institutional_payload(payload: Any, ticker: Any, row_date: datet
     if not isinstance(fields, list) or not isinstance(data, list):
         return None
     for values in data:
-        if not isinstance(values, list) or not values or normalize_ticker(values[0]) != code:
+        if not isinstance(values, list) or len(values) != len(fields):
             continue
         row = dict(zip(fields, values))
-        foreign = _shares_to_lots(row.get("外陸資買賣超股數(不含外資自營商)"))
-        foreign += _shares_to_lots(row.get("外資自營商買賣超股數"))
-        trust = _shares_to_lots(row.get("投信買賣超股數"))
-        dealer = _shares_to_lots(row.get("自營商買賣超股數"))
-        return {
-            "date": row_date.strftime("%Y-%m-%d"),
-            "foreign": foreign,
-            "trust": trust,
-            "dealer": dealer,
-            "total": foreign + trust + dealer,
-            "source": "TWSE T86",
-        }
+        row_code = _field_value(row, "證券代號", "股票代號", "代號")
+        if normalize_ticker(row_code) != code:
+            continue
+        return _build_institutional_row(
+            row_date=row_date,
+            source="TWSE T86",
+            foreign_ex_dealer=_field_value(
+                row,
+                "外陸資買賣超股數(不含外資自營商)",
+                "外資及陸資買賣超股數(不含外資自營商)",
+            ),
+            foreign_dealer=_field_value(row, "外資自營商買賣超股數"),
+            trust=_field_value(row, "投信買賣超股數"),
+            dealer=_field_value(row, "自營商買賣超股數"),
+            reported_total=_field_value(row, "三大法人買賣超股數", "三大法人買賣超股數合計"),
+        )
     return None
 
 
@@ -525,24 +675,124 @@ def _parse_tpex_institutional_payload(payload: Any, ticker: Any, row_date: datet
     tables = payload.get("tables", [])
     if not isinstance(tables, list) or not tables:
         return None
-    data = tables[0].get("data", []) if isinstance(tables[0], dict) else []
+    table = tables[0] if isinstance(tables[0], dict) else {}
+    data = table.get("data", [])
+    raw_fields = table.get("fields", table.get("columns", []))
+    fields = [_header_text(field) for field in raw_fields] if isinstance(raw_fields, list) else []
     code = normalize_ticker(ticker)
     for values in data:
-        if not isinstance(values, list) or len(values) < 23 or normalize_ticker(values[0]) != code:
+        if not isinstance(values, list) or not values:
             continue
-        # TPEX groups: foreign total (8:11), trust (11:14), dealer total (20:23).
-        foreign = _shares_to_lots(values[10])
-        trust = _shares_to_lots(values[13])
-        dealer = _shares_to_lots(values[22])
-        return {
-            "date": row_date.strftime("%Y-%m-%d"),
-            "foreign": foreign,
-            "trust": trust,
-            "dealer": dealer,
-            "total": foreign + trust + dealer,
-            "source": "TPEx 3insti",
-        }
+        if fields and len(fields) == len(values):
+            row = dict(zip(fields, values))
+            row_code = _field_value(row, "代號", "證券代號", "股票代號")
+            if normalize_ticker(row_code) != code:
+                continue
+            # Prefer provider labels whenever they are usable.  If required
+            # labels disappear, return no row instead of applying stale offsets.
+            return _build_institutional_row(
+                row_date=row_date,
+                source="TPEx 3insti",
+                foreign_ex_dealer=_field_value(
+                    row,
+                    "外資及陸資(不含外資自營商)買賣超股數",
+                    "外資及陸資買賣超股數(不含外資自營商)",
+                    "外陸資買賣超股數(不含外資自營商)",
+                ),
+                foreign_dealer=_field_value(row, "外資自營商買賣超股數"),
+                trust=_field_value(row, "投信買賣超股數"),
+                dealer=_field_value(row, "自營商買賣超股數"),
+                reported_total=_field_value(
+                    row, "三大法人買賣超股數", "三大法人買賣超股數合計"
+                ),
+            )
+
+        # Legacy TPEx JSON did not expose field labels.  Its documented layout
+        # is: foreign ex-dealer 2:5, foreign dealer 5:8, combined foreign 8:11,
+        # trust 11:14, dealer 20:23, official total at 23.  Validate the total
+        # so a future schema shift cannot silently be interpreted as real data.
+        if len(values) < 23 or normalize_ticker(values[0]) != code:
+            continue
+        return _build_institutional_row(
+            row_date=row_date,
+            source="TPEx 3insti",
+            foreign_ex_dealer=values[4],
+            foreign_dealer=values[7],
+            trust=values[13],
+            dealer=values[22],
+            reported_total=values[23] if len(values) > 23 else None,
+        )
     return None
+
+
+def _payload_contains_institutional_ticker(payload: Any, ticker: Any, market: str) -> bool:
+    """Whether a provider payload contains the requested ticker row.
+
+    This lets the fetcher distinguish a normal no-row response from a row that
+    was rejected because required numeric fields or the schema were invalid.
+    """
+    code = normalize_ticker(ticker)
+    if not code or not isinstance(payload, dict):
+        return False
+    if market == "listed":
+        fields = payload.get("fields", [])
+        data = payload.get("data", [])
+        if not isinstance(fields, list) or not isinstance(data, list):
+            return False
+        for values in data:
+            if not isinstance(values, list) or len(values) != len(fields):
+                continue
+            row = dict(zip(fields, values))
+            if normalize_ticker(_field_value(row, "證券代號", "股票代號", "代號")) == code:
+                return True
+        return False
+    tables = payload.get("tables", [])
+    if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
+        return False
+    return any(
+        isinstance(values, list) and bool(values) and normalize_ticker(values[0]) == code
+        for values in tables[0].get("data", [])
+    )
+
+
+def _expected_latest_institutional_date(now: datetime) -> str:
+    """Most recent weekday expected after Taiwan's cash-market close.
+
+    Exchange holidays cannot be inferred from a timestamp alone.  When a
+    weekday holiday occurs, the official fallback will normally corroborate
+    the same prior date; freshness metadata remains explicit for the caller.
+    """
+    local_now = now.astimezone(TPE) if now.tzinfo else now.replace(tzinfo=TPE)
+    candidate = local_now.date()
+    if local_now.weekday() >= 5 or local_now.hour < 15:
+        candidate -= timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate.isoformat()
+
+
+def _annotate_institutional_freshness(
+    rows: list[dict[str, Any]], now: datetime
+) -> tuple[list[dict[str, Any]], bool]:
+    expected = _expected_latest_institutional_date(now)
+    dates = sorted(
+        str(row.get("date", ""))
+        for row in rows
+        if str(row.get("date", ""))[:10].replace("-", "").isdigit()
+    )
+    latest = dates[-1] if dates else ""
+    stale = not latest or latest < expected
+    annotated: list[dict[str, Any]] = []
+    for original in rows:
+        row = dict(original)
+        row.update({
+            "latest_date": latest,
+            "expected_latest_date": expected,
+            "freshness": "stale" if stale else "fresh",
+            "is_stale": stale,
+        })
+        annotated.append(row)
+    return annotated, stale
 
 
 def _fetch_official_institutional_rows(
@@ -560,7 +810,7 @@ def _fetch_official_institutional_rows(
         if (now - timedelta(days=offset)).weekday() < 5
     ]
 
-    def fetch_date(row_date: datetime) -> tuple[dict[str, Any] | None, bool]:
+    def fetch_date(row_date: datetime) -> tuple[dict[str, Any] | None, bool, bool]:
         try:
             if market == "listed":
                 date_text = row_date.strftime("%Y%m%d")
@@ -581,8 +831,11 @@ def _fetch_official_institutional_rows(
                     },
                 )
                 row = _parse_tpex_institutional_payload(payload, ticker, row_date)
-            successful = isinstance(payload, dict) and payload.get("stat") in ("OK", None)
-            return row, successful
+            successful = isinstance(payload, dict) and payload.get("stat") in ("OK", "ok", None)
+            schema_error = row is None and _payload_contains_institutional_ticker(
+                payload, ticker, market
+            )
+            return row, successful, schema_error
         except Exception as exc:
             logger.warning(
                 "%s institutional fallback failed for %s (%s)",
@@ -590,10 +843,11 @@ def _fetch_official_institutional_rows(
                 row_date.strftime("%Y-%m-%d"),
                 type(exc).__name__,
             )
-            return None, False
+            return None, False, False
 
     normalized: list[dict[str, Any]] = []
     successful_requests = 0
+    schema_errors = 0
     # Twelve weekdays normally contain ten trading sessions. Query a small second
     # batch only when holidays or provider gaps leave the first batch incomplete.
     for batch in (candidate_dates[:12], candidate_dates[12:]):
@@ -601,12 +855,124 @@ def _fetch_official_institutional_rows(
             break
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             results = list(executor.map(fetch_date, batch))
-        successful_requests += sum(1 for _, successful in results if successful)
-        normalized.extend(row for row, _ in results if row)
+        successful_requests += sum(1 for _, successful, _ in results if successful)
+        schema_errors += sum(1 for _, _, schema_error in results if schema_error)
+        normalized.extend(row for row, _, _ in results if row)
         normalized = sorted(normalized, key=lambda item: item["date"], reverse=True)[:10]
     if normalized:
-        return normalized, "ok" if len(normalized) >= 10 else "partial"
+        normalized, stale = _annotate_institutional_freshness(normalized, now)
+        complete = len(normalized) >= 10 and not schema_errors and not stale
+        return normalized, "ok" if complete else "partial"
+    if schema_errors:
+        return [], "partial"
     return [], "empty" if successful_requests else "error"
+
+
+def _normalize_finmind_institutional_rows(
+    rows: list[dict[str, Any]], *, now: datetime
+) -> tuple[list[dict[str, Any]], str, bool]:
+    """Normalize FinMind categories using their documented exact meanings."""
+    if not rows:
+        return [], "empty", True
+    frame = pd.DataFrame(rows)
+    required_columns = {"buy", "sell", "date", "name"}
+    if not required_columns.issubset(frame.columns):
+        return [], "error", True
+
+    frame["buy"] = pd.to_numeric(frame["buy"], errors="coerce")
+    frame["sell"] = pd.to_numeric(frame["sell"], errors="coerce")
+    parsed_dates = pd.to_datetime(frame["date"], errors="coerce")
+    invalid_rows = frame[["buy", "sell"]].isna().any(axis=1) | parsed_dates.isna()
+    had_partial = bool(invalid_rows.any())
+    frame = frame.loc[~invalid_rows].copy()
+    if frame.empty:
+        return [], "error", True
+    frame["date"] = parsed_dates.loc[frame.index].dt.strftime("%Y-%m-%d")
+    frame["net"] = frame["buy"] - frame["sell"]
+    frame["category"] = frame["name"].astype(str).str.strip().str.lower().map({
+        "foreign_investor": "foreign",
+        "外資": "foreign",
+        "外資及陸資": "foreign",
+        "foreign_dealer_self": "foreign_dealer",
+        "外資自營商": "foreign_dealer",
+        "investment_trust": "trust",
+        "投信": "trust",
+        "dealer": "dealer_combined",
+        "自營商": "dealer_combined",
+        "dealer_self": "dealer_self",
+        "自營商(自行買賣)": "dealer_self",
+        "自營商（自行買賣）": "dealer_self",
+        "dealer_hedging": "dealer_hedging",
+        "自營商(避險)": "dealer_hedging",
+        "自營商（避險）": "dealer_hedging",
+    })
+
+    normalized: list[dict[str, Any]] = []
+    for row_date, day in frame.groupby("date"):
+        known = day.dropna(subset=["category"])
+        categories = set(known["category"])
+        if not {"foreign", "trust"}.issubset(categories):
+            had_partial = True
+            continue
+        has_combined = "dealer_combined" in categories
+        split_categories = {"dealer_self", "dealer_hedging"} & categories
+        has_complete_split = split_categories == {"dealer_self", "dealer_hedging"}
+        has_any_split = bool(split_categories)
+        if not has_combined and not has_any_split:
+            had_partial = True
+            continue
+        # In the newer FinMind schema Dealer_self and Dealer_Hedging are two
+        # required components.  Treating an absent component as zero creates a
+        # plausible but false dealer total.  A legacy day is accepted only when
+        # it contains the single documented combined Dealer row and no split
+        # categories at all.
+        if has_any_split and not has_complete_split:
+            had_partial = True
+            continue
+        category_nets = known.groupby("category")["net"].sum().to_dict()
+        combined_dealer = float(category_nets.get("dealer_combined", 0.0))
+        split_dealer = (
+            float(category_nets["dealer_self"])
+            + float(category_nets["dealer_hedging"])
+            if has_complete_split
+            else 0.0
+        )
+        # FinMind documents the combined and split dealer categories as
+        # mutually exclusive eras.  Non-zero values in both are ambiguous.
+        if has_combined and has_complete_split and combined_dealer and split_dealer:
+            had_partial = True
+            continue
+        dealer_shares = (
+            split_dealer
+            if has_complete_split and (split_dealer or not combined_dealer)
+            else combined_dealer
+        )
+        foreign_dealer_shares = (
+            float(category_nets["foreign_dealer"])
+            if "foreign_dealer" in categories
+            else None
+        )
+        item = _build_institutional_row(
+            row_date=datetime.strptime(str(row_date), "%Y-%m-%d").replace(tzinfo=TPE),
+            source="FinMind",
+            foreign_ex_dealer=float(category_nets["foreign"]),
+            foreign_dealer=foreign_dealer_shares,
+            trust=float(category_nets["trust"]),
+            dealer=dealer_shares,
+        )
+        if item is None:
+            had_partial = True
+            continue
+        item["data_status"] = "ok"
+        item["total_validation"] = "computed_from_documented_components"
+        normalized.append(item)
+
+    normalized = sorted(normalized, key=lambda item: item["date"], reverse=True)[:10]
+    if not normalized:
+        return [], "partial" if had_partial else "empty", True
+    normalized, stale = _annotate_institutional_freshness(normalized, now)
+    complete_history = len(normalized) >= 10
+    return normalized, "partial" if had_partial or stale or not complete_history else "ok", stale
 
 
 def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = None) -> tuple[list[dict[str, Any]], str]:
@@ -615,6 +981,7 @@ def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = 
         return _fetch_official_institutional_rows(ticker, now=now)
 
     finmind_status = "error"
+    finmind_rows: list[dict[str, Any]] = []
     try:
         rows, status = _finmind_rows(
             "TaiwanStockInstitutionalInvestorsBuySell",
@@ -625,43 +992,11 @@ def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = 
         if not rows:
             finmind_status = status
         else:
-            frame = pd.DataFrame(rows)
-            if "buy" not in frame.columns or "sell" not in frame.columns or "date" not in frame.columns:
-                finmind_status = "error"
-            else:
-                frame["buy"] = pd.to_numeric(frame["buy"], errors="coerce")
-                frame["sell"] = pd.to_numeric(frame["sell"], errors="coerce")
-                invalid_rows = frame[["buy", "sell"]].isna().any(axis=1)
-                if invalid_rows.any():
-                    status = "partial"
-                    frame = frame[~invalid_rows].copy()
-                if not frame.empty:
-                    frame["net"] = (frame["buy"] - frame["sell"]) / 1000
-                    frame["type"] = "其他"
-                    names = frame.get("name", pd.Series("", index=frame.index)).astype(str)
-                    frame.loc[names.str.contains("Dealer|自營", case=False, na=False), "type"] = "自營商"
-                    # Foreign_Dealer_Self is an overseas-investor subcategory, not
-                    # a domestic dealer; apply foreign/trust precedence last.
-                    frame.loc[names.str.contains("Foreign|外資", case=False, na=False), "type"] = "外資"
-                    frame.loc[names.str.contains("Trust|投信", case=False, na=False), "type"] = "投信"
-                    pivot = frame.groupby(["date", "type"])["net"].sum().unstack(fill_value=0).reset_index()
-                    for column in ("外資", "投信", "自營商"):
-                        if column not in pivot.columns:
-                            pivot[column] = 0
-                    pivot["合計"] = pivot["外資"] + pivot["投信"] + pivot["自營商"]
-                    normalized = [
-                        {
-                            "date": str(row["date"]),
-                            "foreign": int(row["外資"]),
-                            "trust": int(row["投信"]),
-                            "dealer": int(row["自營商"]),
-                            "total": int(row["合計"]),
-                            "source": "FinMind",
-                        }
-                        for _, row in pivot.sort_values("date", ascending=False).head(10).iterrows()
-                    ]
-                    return normalized, status
-                finmind_status = "error"
+            finmind_rows, finmind_status, stale = _normalize_finmind_institutional_rows(
+                rows, now=now
+            )
+            if finmind_rows and not stale:
+                return finmind_rows, finmind_status
     except Exception as exc:
         logger.warning("FinMind institutional request failed for %s (%s)", normalize_ticker(ticker), type(exc).__name__)
         finmind_status = "error"
@@ -669,4 +1004,9 @@ def fetch_institutional_rows(ticker: Any, token: str, *, now: datetime | None = 
     official_rows, official_status = _fetch_official_institutional_rows(ticker, now=now)
     if official_rows:
         return official_rows, official_status
+    # Stale FinMind data is preferable to no history, but it is explicitly
+    # partial and carries ``is_stale=True`` so callers cannot mistake it for
+    # current-day chip data.
+    if finmind_rows:
+        return finmind_rows, "partial"
     return [], finmind_status

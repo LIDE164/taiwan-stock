@@ -523,7 +523,11 @@ def load_cloud_data(collection_name, document_name, default_data):
         st.session_state._cloud_doc_cache[cache_key] = {"value": default_data, "ts": now_ts}
     return default_data
 
-def load_cloud_doc(collection_name, document_name):
+class CloudDocumentReadError(RuntimeError):
+    """A Firestore document could not be read; distinct from a missing document."""
+
+
+def load_cloud_doc(collection_name, document_name, *, raise_on_error=False):
     target = f"{collection_name}/{document_name}"
     cache_key = f"{target}:doc"
     now_ts = time.time()
@@ -532,21 +536,42 @@ def load_cloud_doc(collection_name, document_name):
     ttl = CLOUD_READ_TTL_SECONDS.get(target, 300)
     cached_entry = st.session_state._cloud_doc_cache.get(cache_key)
     if LOW_FIREBASE_READ_MODE and cached_entry and now_ts - cached_entry.get("ts", 0) <= ttl:
-        return cached_entry.get("value", {})
+        if not raise_on_error or "document_exists" in cached_entry:
+            return cached_entry.get("value", {})
     if db is None:
+        message = f"Firebase 未初始化，無法讀取 {target}"
+        if collection_name == "market_data":
+            st.session_state.cloud_last_error = message
+        if raise_on_error:
+            raise CloudDocumentReadError(message)
         return {}
     try:
         doc = db.collection(collection_name).document(document_name).get()
         if not doc.exists:
-            st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
+            st.session_state._cloud_doc_cache[cache_key] = {
+                "value": {},
+                "ts": now_ts,
+                "document_exists": False,
+            }
             return {}
-        value = doc.to_dict() or {}
-        st.session_state._cloud_doc_cache[cache_key] = {"value": value, "ts": now_ts}
+        value = doc.to_dict()
+        if not isinstance(value, dict) or not value:
+            raise CloudDocumentReadError(f"{target} 文件存在但內容為空或格式錯誤")
+        st.session_state._cloud_doc_cache[cache_key] = {
+            "value": value,
+            "ts": now_ts,
+            "document_exists": True,
+        }
         return value
     except Exception as e:
+        message = f"讀取 {target} 失敗：{e}"
         if collection_name == "market_data":
-            st.session_state.cloud_last_error = f"讀取 {target} 失敗：{e}"
-        st.session_state._cloud_doc_cache[cache_key] = {"value": {}, "ts": now_ts}
+            st.session_state.cloud_last_error = message
+        # A transport/authentication failure is not an empty document.  Do not
+        # cache a fabricated {}, otherwise the next hydration would erase the
+        # last complete scan and its provenance for the entire TTL window.
+        if raise_on_error:
+            raise CloudDocumentReadError(message) from e
         return {}
 
 
@@ -702,8 +727,8 @@ def hydrate_scan_results(force=False):
         or now_ts - last_sync >= CLOUD_READ_TTL_SECONDS["market_data/daily_scan"]
     )
     if should_sync:
-        scan_doc = load_cloud_doc("market_data", "daily_scan")
         try:
+            scan_doc = load_cloud_doc("market_data", "daily_scan", raise_on_error=True)
             data = hydrate_manifest_items(
                 scan_doc,
                 collection_name="daily_scan_chunks",
@@ -1079,6 +1104,76 @@ def is_plausible_txf_price(price, previous=None, reference_index=None):
         return False
     return True
 
+
+def select_finmind_txf_series(rows, *, now_tpe=None):
+    """Select two closes from one front-month/session series; never mix contracts."""
+    if not isinstance(rows, list) or not rows:
+        return None
+    frame = pd.DataFrame(rows)
+    required = {"date", "contract_date", "trading_session"}
+    if not required.issubset(frame.columns):
+        return None
+    if "futures_id" in frame.columns:
+        frame = frame[frame["futures_id"].astype(str).str.upper().eq("TX")]
+    if frame.empty:
+        return None
+
+    price = pd.Series(float("nan"), index=frame.index, dtype="float64")
+    for column in ("close", "settlement_price", "Close"):
+        if column in frame.columns:
+            price = price.fillna(pd.to_numeric(frame[column], errors="coerce"))
+    frame = frame.assign(
+        _price=price,
+        _date=frame["date"].astype(str).str.slice(0, 10),
+        _contract=frame["contract_date"].astype(str).str.strip(),
+        _session=frame["trading_session"].astype(str).str.strip(),
+    )
+    frame = frame[
+        frame["_date"].str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+        & frame["_contract"].str.fullmatch(r"\d{6}", na=False)
+        & frame["_session"].ne("")
+        & frame["_price"].between(10000, 100000, inclusive="neither")
+    ]
+    if frame.empty:
+        return None
+
+    now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
+    prefer_night = now_tpe.hour >= 15 or now_tpe.hour < 5
+    candidates = []
+    for session, session_frame in frame.groupby("_session", sort=False):
+        latest_date = str(session_frame["_date"].max())
+        latest_rows = session_frame[session_frame["_date"].eq(latest_date)]
+        if latest_rows.empty:
+            continue
+        reference_month = int(latest_date[:7].replace("-", ""))
+        contract_months = sorted({int(value) for value in latest_rows["_contract"]})
+        current_or_later = [value for value in contract_months if value >= reference_month]
+        front_month = min(current_or_later or contract_months)
+        contract = f"{front_month:06d}"
+        series = session_frame[session_frame["_contract"].eq(contract)].copy()
+        series = series.sort_values("_date").drop_duplicates("_date", keep="last")
+        if len(series) < 2:
+            continue
+        session_key = str(session).lower()
+        is_night = any(token in session_key for token in ("after", "night", "夜", "盤後"))
+        session_preference = int(is_night == prefer_night)
+        candidates.append((latest_date, session_preference, str(session), contract, series))
+
+    if not candidates:
+        return None
+    _, _, session, contract, series = max(
+        candidates,
+        key=lambda item: (item[0], item[1], item[3]),
+    )
+    current_row, previous_row = series.iloc[-1], series.iloc[-2]
+    return {
+        "current": float(current_row["_price"]),
+        "previous": float(previous_row["_price"]),
+        "date": str(current_row["_date"]),
+        "contract_date": contract,
+        "trading_session": session,
+    }
+
 @st.cache_resource(show_spinner=False)
 def init_shioaji_api(api_key, secret_key, simulation):
     try:
@@ -1152,18 +1247,16 @@ def get_txf_quote(reference_index=None):
             response.raise_for_status()
             res = response.json()
             rows = res.get("data", [])
-            if rows:
-                df = pd.DataFrame(rows).sort_values(by="date")
-                close_col = next((c for c in ["close", "settlement_price", "Close"] if c in df.columns), None)
-                if close_col and len(df) >= 2:
-                    df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
-                    df = df.dropna(subset=[close_col])
-                    df = df[(df[close_col] > 10000) & (df[close_col] < 100000)]
-                    if len(df) >= 2:
-                        curr = float(df[close_col].iloc[-1])
-                        prev = float(df[close_col].iloc[-2])
-                        if is_plausible_txf_price(curr, prev, reference_index):
-                            return curr, curr - prev, "FinMind TX", str(df["date"].iloc[-1])
+            selected = select_finmind_txf_series(rows)
+            if selected:
+                curr = selected["current"]
+                prev = selected["previous"]
+                if is_plausible_txf_price(curr, prev, reference_index):
+                    source = (
+                        f"FinMind TX {selected['contract_date']} "
+                        f"({selected['trading_session']})"
+                    )
+                    return curr, curr - prev, source, selected["date"]
         except Exception as e:
             logging.warning("FinMind 台指期資料取得失敗 (%s)", type(e).__name__)
     return None, None, "資料源受限", "暫無資料"
@@ -1179,6 +1272,14 @@ def get_stock_data_time(df, is_intraday=False):
     suffix = "盤中合併資料" if is_intraday else "日 K 資料"
     return f"{data_date}（{suffix}）"
 
+def preserve_lot_value(value, default=None):
+    number = optional_num(value)
+    if number is None:
+        return default
+    rounded = round(number, 3)
+    return int(rounded) if rounded.is_integer() else rounded
+
+
 def normalize_institutional_rows(rows):
     normalized = []
     for row in rows or []:
@@ -1186,10 +1287,14 @@ def normalize_institutional_rows(rows):
             continue
         date_text = str(row.get("date", ""))
         try:
-            foreign = int(row["foreign"])
-            trust = int(row["trust"])
-            dealer = int(row["dealer"])
-            total = int(row.get("total", foreign + trust + dealer))
+            foreign = preserve_lot_value(row["foreign"])
+            trust = preserve_lot_value(row["trust"])
+            dealer = preserve_lot_value(row["dealer"])
+            if None in (foreign, trust, dealer):
+                continue
+            total = preserve_lot_value(row.get("total", foreign + trust + dealer))
+            if total is None:
+                continue
         except (KeyError, TypeError, ValueError):
             continue
         normalized.append({
@@ -1429,6 +1534,23 @@ def get_dynamic_theme(ticker, industry):
         if kw in ind: return (ind, ic)
     return (ind, "🏷️")
 
+MIN_ANALYSIS_BARS = 60
+
+
+def require_analysis_result(result, ticker_number, df):
+    """Stop this Streamlit page cleanly when the technical history is incomplete."""
+    if isinstance(result, dict):
+        return result
+    available = len(df) if df is not None else 0
+    st.warning(
+        f"{normalize_ticker(ticker_number)} 目前只有 {available} 個交易日的完整行情，"
+        f"至少需要 {MIN_ANALYSIS_BARS} 個交易日才能計算 60MA 與完整解析。"
+    )
+    st.caption("系統不會以缺值或推估值補齊指標，資料足夠後會自動恢復。")
+    st.stop()
+    return {}  # pragma: no cover - st.stop() interrupts the current Streamlit run.
+
+
 @st.cache_data(ttl=5, show_spinner=False)
 def analyze_today(
     df,
@@ -1440,7 +1562,7 @@ def analyze_today(
     is_intraday=False,
     historical_date="",
 ):
-    if df is None or len(df) < 20:
+    if df is None or len(df) < MIN_ANALYSIS_BARS:
         return None
     required_columns = {
         "Open", "High", "Low", "Close", "Volume", "5MA", "20MA",
@@ -1522,14 +1644,14 @@ def analyze_today(
     inst_days = len(inst_data) if inst_data else (cached_inst_days if cached_whale_net is not None else 0)
     # 法人資料有幾天算幾天，避免少於 3 天時把籌碼歸零
     if inst_data:
-        f_net_10d = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data])
-        t_net_10d = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data])
-        d_net_10d = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data])
+        f_net_10d = round(sum(safe_num(x['外資(張)']) for x in inst_data), 3)
+        t_net_10d = round(sum(safe_num(x['投信(張)']) for x in inst_data), 3)
+        d_net_10d = round(sum(safe_num(x['自營商(張)']) for x in inst_data), 3)
         sample_days = min(3, inst_days)
-        f_net = sum([int(str(x['外資(張)']).replace(',', '')) for x in inst_data[:sample_days]])
-        t_net = sum([int(str(x['投信(張)']).replace(',', '')) for x in inst_data[:sample_days]])
-        d_net = sum([int(str(x['自營商(張)']).replace(',', '')) for x in inst_data[:sample_days]])
-        whale_net_buy = f_net + t_net + d_net
+        f_net = sum(safe_num(x['外資(張)']) for x in inst_data[:sample_days])
+        t_net = sum(safe_num(x['投信(張)']) for x in inst_data[:sample_days])
+        d_net = sum(safe_num(x['自營商(張)']) for x in inst_data[:sample_days])
+        whale_net_buy = round(f_net + t_net + d_net, 3)
         whale_net_days = sample_days
     elif cached_whale_net is not None:
         whale_net_buy = cached_whale_net
@@ -1793,9 +1915,9 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
     th_color = "#ccc" if not is_light_mode else "#555"
     def get_c(val): return "#ef4444" if safe_num(val) > 0 else ("#22c55e" if safe_num(val) < 0 else t_text_c)
 
-    f_net = int(safe_num(data.get('ForeignNet10d', 0)))
-    t_net = int(safe_num(data.get('TrustNet10d', 0)))
-    d_net = int(safe_num(data.get('DealerNet10d', 0)))
+    f_net = preserve_lot_value(data.get('ForeignNet10d', 0), 0)
+    t_net = preserve_lot_value(data.get('TrustNet10d', 0), 0)
+    d_net = preserve_lot_value(data.get('DealerNet10d', 0), 0)
     institutional_status = str(data.get("Institutional_Status") or f_data.get("_institutional_status") or "unknown")
     institutional_source = str(
         data.get("Institutional_Source")
@@ -1806,8 +1928,8 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
     
     if inst_data:
         sample_days = min(3, len(inst_data))
-        f_net_today = sum(int(safe_num(x.get('外資(張)', 0))) for x in inst_data[:sample_days] if isinstance(x, dict))
-        t_net_today = sum(int(safe_num(x.get('投信(張)', 0))) for x in inst_data[:sample_days] if isinstance(x, dict))
+        f_net_today = round(sum(safe_num(x.get('外資(張)', 0)) for x in inst_data[:sample_days] if isinstance(x, dict)), 3)
+        t_net_today = round(sum(safe_num(x.get('投信(張)', 0)) for x in inst_data[:sample_days] if isinstance(x, dict)), 3)
         if f_net_today > 0 and t_net_today > 0:
             chip_res_text = f"近 {sample_days} 個可用交易日，外資與投信合計皆為買超；不推論後續走勢。"
         elif f_net_today < 0 and t_net_today < 0:
@@ -1828,10 +1950,10 @@ def generate_comprehensive_analysis_sections(data, inst_data, sc, f_data, is_lig
         tables_html += f"<tr style='background-color: {sum_bg}; color: {th_color};'><th style='border: 1px solid {b_col}; padding: 8px 4px;'>日期</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>外資</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>投信</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>自營商</th><th style='border: 1px solid {b_col}; padding: 8px 4px;'>合計</th></tr>"
         
         for row in inst_data[:5]:
-            foreign = int(safe_num(row.get('外資(張)', 0)))
-            trust = int(safe_num(row.get('投信(張)', 0)))
-            dealer = int(safe_num(row.get('自營商(張)', 0)))
-            total = int(safe_num(row.get('單日合計(張)', 0)))
+            foreign = preserve_lot_value(row.get('外資(張)', 0), 0)
+            trust = preserve_lot_value(row.get('投信(張)', 0), 0)
+            dealer = preserve_lot_value(row.get('自營商(張)', 0), 0)
+            total = preserve_lot_value(row.get('單日合計(張)', 0), 0)
             tables_html += f"<tr><td style='border: 1px solid {b_col}; padding: 8px 4px;'>{escape_html(row.get('日期', ''))}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(foreign)}; font-weight: 500;'>{foreign}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(trust)}; font-weight: 500;'>{trust}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(dealer)}; font-weight: 500;'>{dealer}</td><td style='border: 1px solid {b_col}; padding: 8px 4px; color: {get_c(total)}; font-weight: 500;'>{total}</td></tr>"
         source_label = escape_html(institutional_source or "來源未標示")
         tables_html += f"</table><div style='text-align: right; font-size: 0.75rem; color: #888; margin-top: 10px;'>來源: {source_label}</div></div></div>"
@@ -2637,12 +2759,15 @@ elif st.session_state.page == "top10_tracking":
                 "SIGNAL": "待次日觸價", "WAIT_ENTRY_SESSION": "等待預定交易日",
                 "ENTRY": "區間成交", "ENTRY_EXPIRED": "進場訊號失效",
                 "EXECUTION_UNRESOLVED": "當日價格順序不明",
+                "EXECUTION_DATA_GAP": "持有期間行情缺漏（排除績效）",
                 "HOLD": "持有", "TAKE_PROFIT": "停利", "STOP_LOSS": "停損",
                 "DATA_MISSING": "行情缺漏", "EXIT": "已出場",
             }
             status_labels = {
                 "PENDING": "等待次日觸價", "OPEN": "持有中", "EXPIRED": "進場訊號失效",
                 "UNRESOLVED": "成交後結果不明（排除績效）",
+                "EXCLUDED_UNRESOLVED": "當日價格順序不明（已終止並排除績效）",
+                "EXCLUDED_DATA_GAP": "持有期間行情缺漏（已終止並排除績效）",
                 "CLOSED_TP": "停利出場", "CLOSED_SL": "停損出場",
             }
             display_rows = []
@@ -2693,6 +2818,7 @@ elif st.session_state.page == "top10_tracking":
                     "資料狀態": {
                         "ok": "完整",
                         "unresolved": "OHLC 無法判定先後",
+                        "execution_data_gap": "持有期間行情缺漏（績效排除）",
                     }.get(str(row.get("data_status") or ""), "缺漏"),
                 })
             display_df = pd.DataFrame(display_rows).sort_values(
@@ -2705,11 +2831,25 @@ elif st.session_state.page == "top10_tracking":
             unresolved_count = sum(1 for row in daily_records if row.get("data_status") == "unresolved")
             if unresolved_count:
                 st.info(f"本日有 {unresolved_count} 筆無法由日 K 判定成交後門檻先後，已排除績效且不延續假設持倉。")
+            data_gap_count = sum(
+                1 for row in daily_records
+                if row.get("data_status") == "execution_data_gap"
+                or row.get("status") == "EXCLUDED_DATA_GAP"
+            )
+            if data_gap_count:
+                st.warning(
+                    f"本日有 {data_gap_count} 筆持有期間行情缺漏已跨日未修復；"
+                    "因無法確認缺漏日是否觸發停損或停利，已永久排除績效。"
+                )
     
     pending_pos = [p for p in positions if p.get("status") == "PENDING"]
     open_pos = [p for p in positions if p.get("status") == "OPEN"]
     expired_pos = [p for p in positions if p.get("status") == "EXPIRED"]
-    unresolved_pos = [p for p in positions if p.get("status") == "UNRESOLVED"]
+    unresolved_pos = [
+        p for p in positions
+        if p.get("status") in {"UNRESOLVED", "EXCLUDED_UNRESOLVED"}
+    ]
+    data_gap_pos = [p for p in positions if p.get("status") == "EXCLUDED_DATA_GAP"]
     closed_pos = [p for p in positions if str(p.get("status") or "").startswith("CLOSED_")]
 
     def tracking_number_text(value, digits=1, suffix=""):
@@ -2729,6 +2869,28 @@ elif st.session_state.page == "top10_tracking":
         st.warning(
             f"共 {len(unresolved_pos)} 筆：日 K 同時涵蓋進場與出場門檻，但無逐筆先後順序；"
             "系統不延續假設持倉，並永久排除於績效統計。"
+        )
+
+    if data_gap_pos:
+        st.subheader("⚪ 持有期間行情缺漏")
+        st.warning(
+            f"共 {len(data_gap_pos)} 筆：缺漏交易日無完整 OHLC，無法確認是否曾觸發停損或停利；"
+            "系統已終止追蹤並永久排除於績效統計。"
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "代號": normalize_ticker(position.get("ticker", "")),
+                    "名稱": position.get("name"),
+                    "訊號日": position.get("signal_date"),
+                    "進場日": position.get("entry_date"),
+                    "缺漏日": position.get("execution_data_gap_date"),
+                    "原因": position.get("resolution_reason") or "持有期間缺少完整 OHLC",
+                }
+                for position in data_gap_pos
+            ]),
+            hide_index=True,
+            width="stretch",
         )
         st.dataframe(
             pd.DataFrame([
@@ -2917,6 +3079,11 @@ elif st.session_state.page == "analysis":
     )
     if df_chart is not None and len(df_chart) >= 20:
         df_slice = df_chart.iloc[:len(df_chart) + st.session_state.date_offset] if st.session_state.date_offset < 0 else df_chart
+        # Enforce the history requirement before consulting any cached score.
+        # Otherwise a 20–59 bar frame could reuse an older realtime snapshot
+        # and continue into charts/backtests whose 60MA inputs are incomplete.
+        if len(df_slice) < MIN_ANALYSIS_BARS:
+            require_analysis_result(None, target, df_slice)
         force_key = f"force_analysis_refresh_{target}"
         force_analysis_refresh = st.session_state.pop(force_key, False)
         analysis_context = analysis_target_date or ("realtime" if is_intra else "latest")
@@ -2954,14 +3121,18 @@ elif st.session_state.page == "analysis":
                     current_price=float(df_slice['Close'].iloc[-1]),
                 )
                 inst_data = institutional_rows_from_record(cached_doc)
-            data = analyze_today(
-                df_slice,
+            data = require_analysis_result(
+                analyze_today(
+                    df_slice,
+                    target,
+                    inst_data,
+                    is_light_mode,
+                    f_data,
+                    cached_doc=cached_doc,
+                    is_intraday=True,
+                ),
                 target,
-                inst_data,
-                is_light_mode,
-                f_data,
-                cached_doc=cached_doc,
-                is_intraday=True,
+                df_slice,
             )
             data["Score_Source"] = "解析頁盤中即時重算"
             data["Intraday_Quote_Source"] = analysis_live_quote.get("source", "")
@@ -2993,14 +3164,18 @@ elif st.session_state.page == "analysis":
                     current_price=float(df_slice['Close'].iloc[-1]),
                 )
                 inst_data = institutional_rows_from_record(cached_doc)
-                data = analyze_today(
-                    df_slice,
+                data = require_analysis_result(
+                    analyze_today(
+                        df_slice,
+                        target,
+                        inst_data,
+                        is_light_mode,
+                        f_data,
+                        cached_doc=cached_doc,
+                        is_intraday=False,
+                    ),
                     target,
-                    inst_data,
-                    is_light_mode,
-                    f_data,
-                    cached_doc=cached_doc,
-                    is_intraday=False,
+                    df_slice,
                 )
                 data["Score_Source"] = "盤中報價暫缺，沿用盤後行情"
             data["Intraday_Quote_Status"] = "stale"
@@ -3052,15 +3227,19 @@ elif st.session_state.page == "analysis":
                 f_data, inst_data = get_analysis_support_data(
                     target, df_slice['Close'].iloc[-1], cached_doc=cached_doc
                 )
-            data = analyze_today(
-                df_slice,
+            data = require_analysis_result(
+                analyze_today(
+                    df_slice,
+                    target,
+                    inst_data,
+                    is_light_mode,
+                    f_data,
+                    cached_doc=cached_doc,
+                    is_intraday=False,
+                    historical_date=analysis_target_date,
+                ),
                 target,
-                inst_data,
-                is_light_mode,
-                f_data,
-                cached_doc=cached_doc,
-                is_intraday=False,
-                historical_date=analysis_target_date,
+                df_slice,
             )
             if not cached_analysis:
                 save_analysis_cache(

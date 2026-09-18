@@ -85,7 +85,7 @@ class BackfillTop10StorageTests(unittest.TestCase):
             "2026-09-01": [{
                 "代號": "2330", "名稱": "台積電", "收盤價": 100,
                 "Entry_Low": 99, "Entry_High": 102,
-                "Entry_Stop": 95, "Entry_Target": 110,
+                "Entry_Stop": 95, "Entry_Target": 112,
             }],
         }
 

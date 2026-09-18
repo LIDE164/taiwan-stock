@@ -8,6 +8,33 @@ import scanner
 
 
 class BatchMarketDataTests(unittest.TestCase):
+    def test_daily_scan_write_keeps_an_immutable_date_snapshot_manifest(self):
+        database = Mock()
+        batch = database.batch.return_value
+        with (
+            patch.object(scanner, "db", database),
+            patch.object(scanner, "UNIVERSE_SOURCE_COUNTS", {"twse": 900, "tpex": 800}),
+        ):
+            scanner._write_daily_scan_doc(
+                [{"代號": "2330", "Score": 80}],
+                scan_date="2026-09-17",
+                scan_limit=300,
+                universe_size=300,
+                scan_profile="daily_300",
+                previous={},
+            )
+
+        history_manifests = [
+            call.args[1]
+            for call in batch.set.call_args_list
+            if isinstance(call.args[1], dict)
+            and call.args[1].get("snapshot_scope") == "point_in_time_full_scan"
+        ]
+        self.assertEqual(len(history_manifests), 1)
+        self.assertEqual(history_manifests[0]["scan_date"], "2026-09-17")
+        self.assertEqual(history_manifests[0]["universe_sources"]["twse"], 900)
+        batch.commit.assert_called_once_with()
+
     def test_stock_frame_must_match_the_confirmed_scan_date(self):
         frame = pd.DataFrame(
             {"Close": [100.0, 101.0]},
@@ -109,7 +136,12 @@ class BatchMarketDataTests(unittest.TestCase):
             patch.object(scanner, "get_institutional_trading", return_value=([], "ok")),
             patch.object(scanner, "calc_winrate", return_value=backtest),
         ):
-            rows = scanner.run_daily_scan(force=True, allow_local=True, send_telegram=False)
+            rows = scanner.run_daily_scan(
+                force=True,
+                allow_local=True,
+                send_telegram=False,
+                allow_intraday=True,
+            )
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["漲跌幅"], 8.0)
@@ -131,6 +163,19 @@ class BatchMarketDataTests(unittest.TestCase):
         self.assertEqual(rows[0]["單日合計(張)"], 526)
         self.assertEqual(rows[0]["日期"], "08/21")
 
+    def test_scanner_preserves_sub_lot_institutional_values(self):
+        provider_rows = [{
+            "date": "2026-08-21", "foreign": 0.3, "trust": -0.1,
+            "dealer": 0.05, "total": 0.25, "source": "TWSE T86",
+        }]
+        with patch.object(scanner, "fetch_institutional_rows", return_value=(provider_rows, "partial")):
+            rows, status = scanner.get_institutional_trading("2330", with_status=True)
+        self.assertEqual(status, "partial")
+        self.assertEqual(rows[0]["外資(張)"], 0.3)
+        self.assertEqual(rows[0]["投信(張)"], -0.1)
+        self.assertEqual(rows[0]["自營商(張)"], 0.05)
+        self.assertEqual(rows[0]["單日合計(張)"], 0.25)
+
     def test_top_stock_pool_accepts_current_tpex_trading_shares_field(self):
         twse_response = Mock()
         twse_response.raise_for_status.return_value = None
@@ -148,6 +193,108 @@ class BatchMarketDataTests(unittest.TestCase):
         self.assertEqual(scanner.MARKET_SYMBOL_CACHE["6488"], "6488.TWO")
         self.assertEqual(scanner.INDUSTRY_CACHE["6488"], "環球晶")
         self.assertEqual(scanner.INDUSTRY_CACHE["2330"], "台積電")
+
+    def test_top_stock_pool_discards_non_finite_and_non_positive_volume(self):
+        twse_response = Mock()
+        twse_response.raise_for_status.return_value = None
+        twse_response.json.return_value = [
+            {"Code": "2330", "TradeVolume": "1000", "Name": "台積電"},
+            {"Code": "2317", "TradeVolume": "NaN", "Name": "鴻海"},
+            {"Code": "2454", "TradeVolume": "inf", "Name": "聯發科"},
+            {"Code": "2303", "TradeVolume": "0", "Name": "聯電"},
+        ]
+        tpex_response = Mock()
+        tpex_response.raise_for_status.return_value = None
+        tpex_response.json.return_value = [
+            {"SecuritiesCompanyCode": "6488", "TradingShares": "2000", "CompanyName": "環球晶"},
+            {"SecuritiesCompanyCode": "6547", "TradingShares": "-1", "CompanyName": "高端疫苗"},
+        ]
+        with patch.object(scanner, "http_get", side_effect=[twse_response, tpex_response]):
+            ranked = scanner.fetch_top_stocks(2)
+        self.assertEqual(ranked, ["6488", "2330"])
+        self.assertEqual(scanner.UNIVERSE_SOURCE_COUNTS, {"twse": 1, "tpex": 1})
+
+    def test_top_stock_pool_rejects_when_valid_rows_do_not_fill_limit(self):
+        twse_response = Mock()
+        twse_response.raise_for_status.return_value = None
+        twse_response.json.return_value = [
+            {"Code": "2330", "TradeVolume": "1000", "Name": "台積電"},
+            {"Code": "2317", "TradeVolume": "NaN", "Name": "鴻海"},
+        ]
+        tpex_response = Mock()
+        tpex_response.raise_for_status.return_value = None
+        tpex_response.json.return_value = [{
+            "SecuritiesCompanyCode": "6488",
+            "TradingShares": "2000",
+            "CompanyName": "環球晶",
+        }]
+        with patch.object(scanner, "http_get", side_effect=[twse_response, tpex_response]):
+            with self.assertRaisesRegex(RuntimeError, "有效成交量股票不足"):
+                scanner.fetch_top_stocks(3)
+
+    def test_institutional_series_requires_valid_distinct_rows_anchored_to_scan_date(self):
+        def row(date_text, total):
+            return {
+                "_date": date_text,
+                "外資(張)": total,
+                "投信(張)": 0,
+                "自營商(張)": 0,
+                "單日合計(張)": total,
+            }
+
+        rows = [
+            row("2026-09-18", 30),
+            row("2026-09-17", 20),
+            row("2026-09-17", 99),  # duplicate date cannot inflate coverage
+            row("2026-09-16", 10),
+            row("2026-09-15", float("nan")),
+        ]
+        series = scanner.institutional_series_for_scan(rows, "2026-09-18")
+        self.assertEqual([item["_date"] for item in series], ["2026-09-18", "2026-09-17", "2026-09-16"])
+        self.assertTrue(scanner.institutional_history_complete("ok", series))
+        self.assertFalse(scanner.institutional_history_complete("partial", series))
+        self.assertFalse(scanner.institutional_history_complete("schema_error", series))
+        self.assertFalse(scanner.institutional_history_complete("ok", series[:2]))
+        self.assertEqual(scanner.institutional_series_for_scan(rows[1:], "2026-09-18"), [])
+
+    def test_top_stock_pool_rejects_a_single_market_partial_universe(self):
+        failed_twse = Mock()
+        failed_twse.raise_for_status.side_effect = RuntimeError("temporary outage")
+        tpex_response = Mock()
+        tpex_response.raise_for_status.return_value = None
+        tpex_response.json.return_value = [{
+            "SecuritiesCompanyCode": "6488",
+            "TradingShares": "2000",
+            "CompanyName": "環球晶",
+        }]
+        with patch.object(scanner, "http_get", side_effect=[failed_twse, tpex_response]):
+            with self.assertRaisesRegex(RuntimeError, "宇宙不完整"):
+                scanner.fetch_top_stocks(1)
+
+    def test_etf_codes_are_not_part_of_the_stock_universe(self):
+        twse_response = Mock()
+        twse_response.raise_for_status.return_value = None
+        twse_response.json.return_value = [
+            {"Code": "0050", "TradeVolume": "9999", "Name": "ETF"},
+            {"Code": "2330", "TradeVolume": "1000", "Name": "台積電"},
+        ]
+        tpex_response = Mock()
+        tpex_response.raise_for_status.return_value = None
+        tpex_response.json.return_value = [{
+            "SecuritiesCompanyCode": "6488",
+            "TradingShares": "2000",
+            "CompanyName": "環球晶",
+        }]
+        with patch.object(scanner, "http_get", side_effect=[twse_response, tpex_response]):
+            ranked = scanner.fetch_top_stocks(2)
+        self.assertNotIn("0050", ranked)
+
+    def test_period_freshness_helpers_use_publication_windows(self):
+        self.assertEqual(scanner.expected_revenue_period("2026-09-10"), "2026-07")
+        self.assertEqual(scanner.expected_revenue_period("2026-09-11"), "2026-08")
+        self.assertEqual(scanner.expected_financial_period("2026-09-17"), "2026-Q2")
+        self.assertEqual(scanner.period_aware_status("ok", "2026-Q1", "2026-Q2"), "stale")
+        self.assertEqual(scanner.period_aware_status("ok", "2026-Q2", "2026-Q2"), "ok")
 
     def test_scan_pool_keeps_exact_limit_and_core_names(self):
         ranked = [f"{1000 + index}" for index in range(10)]

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       scan_limit:
-        description: 手動掃描範圍（auto 依交易日自動選擇）
+        description: 手動掃描範圍（僅台北時間 14:30 後可寫入；auto 依交易日選擇）
         required: false
         default: auto
         type: choice
@@ -76,3 +76,11 @@ jobs:
           else
             python scanner.py
           fi
+
+      - name: 掃描失敗時發送 Telegram 告警
+        if: ${{ failure() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scan_failure_alert.py

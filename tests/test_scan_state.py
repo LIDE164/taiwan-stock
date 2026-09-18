@@ -101,6 +101,27 @@ class ScanStateTests(unittest.TestCase):
         self.assertEqual(quality["revenue"], "missing")
         self.assertLess(confidence, 100)
 
+    def test_institutional_completeness_requires_three_days(self):
+        base = {"price": "ok", "institutional": "ok", "market": "ok"}
+        one_quality, one_day = build_scan_quality(base, institutional_days=1)
+        two_quality, two_days = build_scan_quality(base, institutional_days=2)
+        three_quality, three_days = build_scan_quality(base, institutional_days=3)
+
+        self.assertEqual(one_quality["institutional"], "1d")
+        self.assertEqual(two_quality["institutional"], "2d")
+        self.assertEqual(three_quality["institutional"], "3d")
+        self.assertLess(one_day, two_days)
+        self.assertLess(two_days, three_days)
+        self.assertEqual(three_days, 100)
+
+    def test_partial_institutional_status_cannot_become_complete(self):
+        quality, confidence = build_scan_quality(
+            {"price": "ok", "institutional": "partial", "market": "ok"},
+            institutional_days=3,
+        )
+        self.assertEqual(quality["institutional"], "partial:3d")
+        self.assertLess(confidence, 100)
+
     def test_model_confidence_requires_backtest_and_validation_evidence(self):
         confidence, label = build_model_confidence(None, None, None, None)
         self.assertIsNone(confidence)

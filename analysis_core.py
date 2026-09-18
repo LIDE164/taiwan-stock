@@ -3,7 +3,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
 import advanced_patterns
+from execution_costs import (
+    TaiwanStockCostModel,
+    calculate_max_odd_lot_position,
+    estimate_round_trip_net_profit,
+    estimate_stop_loss,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +27,10 @@ DEFAULT_BUY_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_COMMISSION_RATE = 0.001425
 DEFAULT_SELL_TAX_RATE = 0.003
 DEFAULT_MIN_COMMISSION = 20.0
+# Kept for callers that explicitly request the legacy fixed-share simulation.
+# The production/default backtest now sizes each trade from its stop risk.
 DEFAULT_TRADE_SHARES = 1000
+BACKTEST_MAX_LOSS_PER_TRADE = 5000.0
 BACKTEST_SCOPE = (
     "純技術面可執行策略逐步前推（65 分、訊號日須位於可執行區、"
     "次一交易日觸價成交、拒絕向下跳空後回觸、成交後實際報酬風險比至少 1.30、"
@@ -536,7 +546,11 @@ def _trade_result(
         # Backward-compatible alias retained for callers that previously used one
         # symmetric commission rate. Transaction tax remains a separate sell cost.
         buy_fee_rate = sell_fee_rate = fee_rate
-    execution_exit_price = exit_price * (1 - exit_slippage_rate)
+    # Match the live risk model: ordinary target/time exits use the observed
+    # price, while a non-gap stop may fill slightly below its trigger.  An
+    # opening gap already supplies an observable worse execution price.
+    stop_execution = exit_reason in {"停損", "同日先算停損"}
+    execution_exit_price = exit_price * (1 - exit_slippage_rate) if stop_execution else exit_price
     entry_notional = entry_price * shares
     exit_notional = execution_exit_price * shares
     buy_fee = max(entry_notional * buy_fee_rate, minimum_commission if buy_fee_rate > 0 else 0.0)
@@ -618,16 +632,38 @@ def _bars_observable_after_fill(
     future_df: pd.DataFrame,
     fill_price: float,
     fill_rule: str,
-) -> pd.DataFrame:
-    """Remove pre-fill highs from a pullback entry's first daily bar."""
+    *,
+    target_price: float | None = None,
+    stop_price: float | None = None,
+) -> pd.DataFrame | None:
+    """Return bars observable after entry, or ``None`` for an unknowable outcome.
+
+    On a pullback fill the day's high may precede the downward zone crossing.
+    When that high reaches the target while the low never reaches the stop,
+    daily OHLC cannot normally establish whether a trade hit its target after
+    entry.  A close at or above the target is the exception: after the downward
+    crossing filled the order, the continuous path to that closing print must
+    cross the target, so that take-profit is observable.
+    """
     adjusted = future_df.copy()
     if adjusted.empty or fill_rule != "PULLBACK_TOUCH":
         return adjusted
     first_index = adjusted.index[0]
     close = strict_float(adjusted.at[first_index, "Close"])
     low = strict_float(adjusted.at[first_index, "Low"])
-    if close is None or low is None:
-        return adjusted.iloc[0:0]
+    high = strict_float(adjusted.at[first_index, "High"])
+    if close is None or low is None or high is None:
+        return None
+    parsed_target = strict_float(target_price)
+    parsed_stop = strict_float(stop_price)
+    if (
+        parsed_target is not None
+        and parsed_stop is not None
+        and low > parsed_stop
+        and high >= parsed_target
+        and close < parsed_target
+    ):
+        return None
     adjusted.at[first_index, "Open"] = fill_price
     # The original high may have happened before the downward zone crossing.
     # The fill and closing print are the only post-fill upper observations known.
@@ -651,7 +687,8 @@ def calculate_historical_performance(
     sell_fee_rate: float = DEFAULT_SELL_COMMISSION_RATE,
     sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
     minimum_commission: float = DEFAULT_MIN_COMMISSION,
-    shares: int = DEFAULT_TRADE_SHARES,
+    shares: int | None = None,
+    max_loss_per_trade: float = BACKTEST_MAX_LOSS_PER_TRADE,
     slippage_rate: float = 0.0005,
     enable_trailing: bool = False,
     filter_low_conf: bool = False,
@@ -680,6 +717,18 @@ def calculate_historical_performance(
         "validation_wilson_low": 0.0,
         "validation_wilson_high": 0.0,
         "validation_sample_confidence": "無樣本",
+        "training_win_rate": 0.0,
+        "training_samples": 0,
+        "training_avg_return": 0.0,
+        "training_raw_win_rate": 0.0,
+        "training_wilson_low": 0.0,
+        "training_wilson_high": 0.0,
+        "overall_win_rate": 0.0,
+        "overall_samples": 0,
+        "overall_avg_return": 0.0,
+        "net_expectancy_pct": 0.0,
+        "validation_net_expectancy_pct": 0.0,
+        "execution_unresolved": 0,
     }
 
     scalar_parameters = {
@@ -691,17 +740,19 @@ def calculate_historical_performance(
         "sell_tax_rate": strict_float(sell_tax_rate),
         "minimum_commission": strict_float(minimum_commission),
         "slippage_rate": strict_float(slippage_rate),
+        "max_loss_per_trade": strict_float(max_loss_per_trade),
     }
     integer_parameters = {
         "lookback_days": strict_float(lookback_days),
         "hold_days": strict_float(hold_days),
         "min_gap_days": strict_float(min_gap_days),
-        "shares": strict_float(shares),
     }
+    parsed_shares = strict_float(shares) if shares is not None else None
     parsed_fee_rate = strict_float(fee_rate) if fee_rate is not None else None
     if (
         any(value is None for value in scalar_parameters.values())
         or any(value is None or not value.is_integer() for value in integer_parameters.values())
+        or (shares is not None and (parsed_shares is None or not parsed_shares.is_integer()))
         or (fee_rate is not None and parsed_fee_rate is None)
     ):
         return empty
@@ -717,10 +768,11 @@ def calculate_historical_performance(
         or finite_scalars["sell_tax_rate"] < 0
         or finite_scalars["minimum_commission"] < 0
         or not 0 <= finite_scalars["slippage_rate"] < 1
+        or finite_scalars["max_loss_per_trade"] <= 0
         or finite_integers["lookback_days"] < 1
         or finite_integers["hold_days"] < 1
         or finite_integers["min_gap_days"] < 0
-        or finite_integers["shares"] < 1
+        or (parsed_shares is not None and parsed_shares < 1)
         or (parsed_fee_rate is not None and parsed_fee_rate < 0)
     ):
         return empty
@@ -736,8 +788,18 @@ def calculate_historical_performance(
     lookback_days = finite_integers["lookback_days"]
     hold_days = finite_integers["hold_days"]
     min_gap_days = finite_integers["min_gap_days"]
-    shares = finite_integers["shares"]
+    fixed_shares = int(parsed_shares) if parsed_shares is not None else None
+    max_loss_per_trade = finite_scalars["max_loss_per_trade"]
     fee_rate = parsed_fee_rate
+    effective_buy_fee_rate = fee_rate if fee_rate is not None else buy_fee_rate
+    effective_sell_fee_rate = fee_rate if fee_rate is not None else sell_fee_rate
+    cost_model = TaiwanStockCostModel(
+        buy_commission_rate=effective_buy_fee_rate,
+        sell_commission_rate=effective_sell_fee_rate,
+        sell_tax_rate=sell_tax_rate,
+        minimum_commission=minimum_commission,
+        stop_slippage_rate=slippage_rate,
+    )
 
     if df_slice is None or len(df_slice) < 21:
         return empty
@@ -753,6 +815,7 @@ def calculate_historical_performance(
     start_idx = len(df_slice) - len(recent)
     trades: List[Dict[str, Any]] = []
     buy_dates: List[Any] = []
+    execution_unresolved = 0
 
     for idx in range(len(recent)):
         actual_idx = start_idx + idx
@@ -785,6 +848,8 @@ def calculate_historical_performance(
                 signal_data,
                 stop_atr_mult=stop_mult,
                 reward_risk=target_mult / stop_mult,
+                max_loss_per_trade=max_loss_per_trade,
+                cost_model=cost_model,
             )
         except (TypeError, ValueError, ZeroDivisionError):
             continue
@@ -804,7 +869,10 @@ def calculate_historical_performance(
         raw_entry_price, fill_rule = _next_session_plan_fill(entry_row, entry_low, entry_high)
         if raw_entry_price is None:
             continue
-        entry_price = raw_entry_price * (1 + slippage_rate)
+        # Production tracking fills an observed open/zone price exactly.  The
+        # conservative slippage assumption belongs to stop execution, not to
+        # both entry and every possible exit.
+        entry_price = raw_entry_price
         atr_val = safe_float(signal_row.get("ATR"), 0.0)
         if entry_price <= 0 or atr_val <= 0:
             continue
@@ -820,7 +888,41 @@ def calculate_historical_performance(
             df_slice.iloc[entry_idx : entry_idx + hold_days],
             raw_entry_price,
             fill_rule,
+            target_price=target_price,
+            stop_price=stop_price,
         )
+        if future_df is None:
+            execution_unresolved += 1
+            last_buy_idx = entry_idx
+            continue
+        risk_estimate = (
+            estimate_stop_loss(entry_price, stop_price, fixed_shares, model=cost_model)
+            if fixed_shares is not None
+            else calculate_max_odd_lot_position(
+                entry_price,
+                stop_price,
+                max_loss_per_trade,
+                model=cost_model,
+            )
+        )
+        if risk_estimate is None or risk_estimate.shares < 1:
+            continue
+        trade_shares = risk_estimate.shares
+        target_net_profit = estimate_round_trip_net_profit(
+            entry_price,
+            target_price,
+            trade_shares,
+            model=cost_model,
+        )
+        if (
+            target_net_profit is None
+            or target_net_profit <= 0
+            or risk_estimate.estimated_net_loss <= 0
+        ):
+            continue
+        effective_net_reward_risk = target_net_profit / risk_estimate.estimated_net_loss
+        if effective_net_reward_risk < BACKTEST_MIN_EFFECTIVE_REWARD_RISK:
+            continue
         result = _trade_result(
             future_df,
             target_price,
@@ -831,7 +933,7 @@ def calculate_historical_performance(
             sell_fee_rate=sell_fee_rate,
             sell_tax_rate=sell_tax_rate,
             minimum_commission=minimum_commission,
-            shares=shares,
+            shares=trade_shares,
             exit_slippage_rate=slippage_rate,
             enable_trailing=enable_trailing,
             atr_val=atr_val,
@@ -854,15 +956,26 @@ def calculate_historical_performance(
         result["planned_entry_low"] = round(entry_low, 2)
         result["planned_entry_high"] = round(entry_high, 2)
         result["effective_reward_risk"] = round(effective_reward_risk, 2)
+        result["effective_net_reward_risk"] = round(effective_net_reward_risk, 2)
+        result["shares"] = trade_shares
+        result["planned_net_risk"] = round(risk_estimate.estimated_net_loss, 2)
         trades.append(result)
         buy_dates.append(df_slice.index[entry_idx])
 
     if not trades:
-        return empty
+        result = dict(empty)
+        result["execution_unresolved"] = execution_unresolved
+        return result
 
-    wins = sum(1 for t in trades if t["win"])
-    losses = len(trades) - wins
-    returns = [safe_float(t.get("return_pct")) for t in trades]
+    validation_count = max(1, int(np.ceil(len(trades) * 0.3))) if len(trades) >= 2 else 0
+    validation_count = min(validation_count, max(0, len(trades) - 1))
+    validation_trades = trades[-validation_count:] if validation_count else []
+    training_trades = trades[:-validation_count] if validation_count else trades
+    wins = sum(1 for trade in training_trades if trade["win"])
+    losses = len(training_trades) - wins
+    returns = [safe_float(trade.get("return_pct")) for trade in training_trades]
+    overall_wins = sum(1 for trade in trades if trade["win"])
+    overall_returns = [safe_float(trade.get("return_pct")) for trade in trades]
     equity = 1.0
     peak = 1.0
     max_drawdown = 0.0
@@ -878,19 +991,19 @@ def calculate_historical_performance(
             max_consecutive_losses = max(max_consecutive_losses, current_losses)
         else:
             current_losses = 0
-    winrate_stats = summarize_winrate(wins, len(trades))
-    validation_count = max(1, int(np.ceil(len(trades) * 0.3)))
-    validation_trades = trades[-validation_count:]
+    winrate_stats = summarize_winrate(wins, len(training_trades))
+    overall_stats = summarize_winrate(overall_wins, len(trades))
     validation_wins = sum(1 for trade in validation_trades if trade["win"])
     validation_stats = summarize_winrate(validation_wins, validation_count)
     validation_returns = [safe_float(trade.get("return_pct")) for trade in validation_trades]
+    training_buy_dates = [trade.get("entry_date") for trade in training_trades]
 
     return {
         "win_rate": winrate_stats["adjusted_win_rate"],
-        "closed_signals": len(trades),
+        "closed_signals": len(training_trades),
         "wins": wins,
         "losses": losses,
-        "buy_dates": buy_dates,
+        "buy_dates": training_buy_dates,
         "avg_return": round(float(np.mean(returns)), 2),
         "max_drawdown": round(max_drawdown, 2),
         "max_consecutive_losses": max_consecutive_losses,
@@ -899,11 +1012,27 @@ def calculate_historical_performance(
         "backtest_scope": BACKTEST_SCOPE,
         "validation_win_rate": validation_stats["adjusted_win_rate"],
         "validation_samples": validation_count,
-        "validation_avg_return": round(float(np.mean(validation_returns)), 2),
+        "validation_avg_return": (
+            round(float(np.mean(validation_returns)), 2) if validation_returns else 0.0
+        ),
         "validation_raw_win_rate": validation_stats["raw_win_rate"],
         "validation_wilson_low": validation_stats["wilson_low"],
         "validation_wilson_high": validation_stats["wilson_high"],
         "validation_sample_confidence": validation_stats["sample_confidence"],
+        "training_win_rate": winrate_stats["adjusted_win_rate"],
+        "training_samples": len(training_trades),
+        "training_avg_return": round(float(np.mean(returns)), 2),
+        "training_raw_win_rate": winrate_stats["raw_win_rate"],
+        "training_wilson_low": winrate_stats["wilson_low"],
+        "training_wilson_high": winrate_stats["wilson_high"],
+        "overall_win_rate": overall_stats["adjusted_win_rate"],
+        "overall_samples": len(trades),
+        "overall_avg_return": round(float(np.mean(overall_returns)), 2),
+        "net_expectancy_pct": round(float(np.mean(returns)), 2),
+        "validation_net_expectancy_pct": (
+            round(float(np.mean(validation_returns)), 2) if validation_returns else 0.0
+        ),
+        "execution_unresolved": execution_unresolved,
     }
 
 
@@ -922,7 +1051,8 @@ def calculate_historical_winrate(
     sell_fee_rate: float = DEFAULT_SELL_COMMISSION_RATE,
     sell_tax_rate: float = DEFAULT_SELL_TAX_RATE,
     minimum_commission: float = DEFAULT_MIN_COMMISSION,
-    shares: int = DEFAULT_TRADE_SHARES,
+    shares: int | None = None,
+    max_loss_per_trade: float = BACKTEST_MAX_LOSS_PER_TRADE,
     slippage_rate: float = 0.0005,
     enable_trailing: bool = False,
     filter_low_conf: bool = False,
@@ -943,6 +1073,7 @@ def calculate_historical_winrate(
         sell_tax_rate=sell_tax_rate,
         minimum_commission=minimum_commission,
         shares=shares,
+        max_loss_per_trade=max_loss_per_trade,
         slippage_rate=slippage_rate,
         enable_trailing=enable_trailing,
         filter_low_conf=filter_low_conf,

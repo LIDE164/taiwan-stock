@@ -61,6 +61,26 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(report["cumulative_legacy_count"], 2)
         self.assertEqual(report["cumulative_excluded_count"], 4)
 
+    def test_tracking_report_counts_terminal_holding_data_gaps(self):
+        records = [{
+            "position_id": "2330:2026-09-01",
+            "ticker": "2330",
+            "name": "台積電",
+            "signal_date": "2026-09-01",
+            "entry_date": "2026-09-02",
+            "action": "EXECUTION_DATA_GAP",
+            "data_status": "execution_data_gap",
+            "pnl_pct": None,
+            "daily_return_pct": None,
+        }]
+
+        report = build_tracking_performance_report(records, [], "2026-09-04")
+
+        self.assertEqual(report["tracked_count"], 0)
+        self.assertEqual(report["data_gap_count"], 1)
+        self.assertEqual(report["actions"]["EXECUTION_DATA_GAP"], 1)
+        self.assertEqual(report["excluded_count"], 1)
+
     def setUp(self):
         self.rows = [{
             "Rank": 1,
@@ -342,6 +362,27 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(kwargs["files"]["document"][2], "image/png")
         self.assertTrue(kwargs["files"]["document"][1].startswith(b"\x89PNG"))
         self.assertIn("8/28股票預測", kwargs["data"]["caption"])
+
+    def test_executable_sender_can_render_the_exact_preselected_top10_population(self):
+        session = _Session()
+        first = dict(self.rows[0], 代號="1111", Entry_Status="現在可執行")
+        selected = [dict(self.rows[0], 代號="2222", Entry_Status="現在可執行")]
+
+        message_id = send_executable_photo(
+            [first, *selected],
+            "2026-08-27",
+            "token",
+            "chat",
+            selected_results=selected,
+            session=session,
+        )
+
+        self.assertEqual(message_id, 321)
+        self.assertIn("共 1 檔", session.calls[0][1]["data"]["caption"])
+        self.assertEqual(
+            [row["ticker"] for row in build_top10_display_rows(selected)],
+            [row["ticker"] for row in build_executable_display_rows(selected)],
+        )
 
     def test_tracking_sender_uses_separate_filename_and_truthful_caption(self):
         session = _Session()

@@ -327,6 +327,7 @@ def _tracking_action_label(row: Mapping[str, Any]) -> str:
         "WAIT_ENTRY_SESSION": "等待預定交易日",
         "ENTRY_EXPIRED": "進場訊號失效",
         "EXECUTION_UNRESOLVED": "當日順序不明",
+        "EXECUTION_DATA_GAP": "持有期間行情缺漏（排除）",
         "HOLD": "持有",
         "TAKE_PROFIT": "停利",
         "STOP_LOSS": "停損",
@@ -347,7 +348,8 @@ def _tracking_as_of_status(row: Mapping[str, Any]) -> str:
         "STOP_LOSS": "CLOSED_SL",
         "SIGNAL": "PENDING",
         "ENTRY_EXPIRED": "EXPIRED",
-        "EXECUTION_UNRESOLVED": "UNRESOLVED",
+        "EXECUTION_UNRESOLVED": "EXCLUDED_UNRESOLVED",
+        "EXECUTION_DATA_GAP": "EXCLUDED_DATA_GAP",
     }.get(str(row.get("action") or ""), "")
 
 
@@ -630,7 +632,12 @@ def build_tracking_performance_report(
             _tracking_as_of_status(row) == "EXPIRED" for row in candidate_records
         ),
         "unresolved_count": sum(
-            _tracking_as_of_status(row) == "UNRESOLVED" for row in candidate_records
+            _tracking_as_of_status(row) in {"UNRESOLVED", "EXCLUDED_UNRESOLVED"}
+            for row in candidate_records
+        ),
+        "data_gap_count": sum(
+            _tracking_as_of_status(row) == "EXCLUDED_DATA_GAP"
+            for row in candidate_records
         ),
         "strategy_count": strategy_count,
         "legacy_count": legacy_count,
@@ -861,9 +868,15 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
     return output.getvalue()
 
 
-def render_executable_image(results: Sequence[Mapping[str, Any]], trading_date: str) -> bytes:
-    """Render the stocks whose saved post-close entry plan is executable now."""
-    rows = build_executable_display_rows(results)
+def render_executable_image(
+    results: Sequence[Mapping[str, Any]],
+    trading_date: str,
+    *,
+    selected_results: Sequence[Mapping[str, Any]] | None = None,
+) -> bytes:
+    """Render the exact selected Top-10 population when one is supplied."""
+    render_source = selected_results if selected_results is not None else results
+    rows = build_executable_display_rows(render_source)
     image = Image.new("RGB", (IMAGE_WIDTH, EXECUTABLE_IMAGE_HEIGHT), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
@@ -1021,6 +1034,7 @@ def render_tracking_performance_image(
             ("WAIT_ENTRY_SESSION", "待交易日"),
             ("ENTRY", "成交"),
             ("EXECUTION_UNRESOLVED", "順序不明"),
+            ("EXECUTION_DATA_GAP", "行情缺漏"),
             ("HOLD", "持有"),
             ("ENTRY_EXPIRED", "失效"),
             ("TAKE_PROFIT", "停利"),
@@ -1052,6 +1066,8 @@ def render_tracking_performance_image(
     ]
     if report["unresolved_count"]:
         context_parts.append(f"OHLC 順序不明 {report['unresolved_count']}（績效排除）")
+    if report["data_gap_count"]:
+        context_parts.append(f"持有行情缺漏 {report['data_gap_count']}（績效排除）")
     if report["cumulative_available"]:
         context_parts.append(
             f"累積排除 {report['cumulative_excluded_count']}｜舊版另計 {report['cumulative_legacy_count']}"
@@ -1289,11 +1305,13 @@ def send_executable_photo(
     bot_token: Any,
     chat_id: Any,
     *,
+    selected_results: Sequence[Mapping[str, Any]] | None = None,
     session: requests.Session | None = None,
 ) -> int | None:
     """Send the executable prediction as a lossless PNG document."""
-    rows = build_executable_display_rows(results)
-    png = render_executable_image(results, trading_date)
+    render_source = selected_results if selected_results is not None else results
+    rows = build_executable_display_rows(render_source)
+    png = render_executable_image(results, trading_date, selected_results=selected_results)
     count_text = f"共 {len(rows)} 檔" if rows else "今日無符合標的"
     return _send_document_bytes(
         png,

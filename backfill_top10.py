@@ -214,7 +214,11 @@ def build_backfill(
                 "open_count": len([position for position in positions if position.get("status") == "OPEN"]),
                 "unresolved_count": len([
                     position for position in positions
-                    if position.get("status") == "UNRESOLVED"
+                    if position.get("status") in {"UNRESOLVED", "EXCLUDED_UNRESOLVED"}
+                ]),
+                "data_gap_count": len([
+                    position for position in positions
+                    if position.get("status") == "EXCLUDED_DATA_GAP"
                 ]),
                 "actions": action_counts,
             },
