@@ -51,6 +51,30 @@ For public deployments, configure Streamlit authentication or set a private
 documents so users and concurrent tabs cannot silently overwrite one another. Without
 either setting, those items are isolated to the anonymous Streamlit session.
 
+## Manual trade journal analyst
+
+The **交易日誌分析師** page keeps manually confirmed real trades and explicitly
+recorded missed decisions separate from simulated orders and the Top-10 hypothetical
+tracker. Enter an actual entry and share count, then either enter an actual exit or
+close the open record later. Actual buy/sell fees and tax are optional, but when
+missing the journal reports gross P/L only and leaves net P/L unknown. A missed
+decision requires both its decision date and a manually observed date/price
+(which may be later on the same day). The observed change is never treated as
+an executable trade or missed profit.
+
+The page reviews the latest 30 records for repeated plan deviations, stop execution,
+planned risk above NT$5,000, early profitable exits needing review, self-reported
+emotion tags, and explicitly recorded missed opportunities. It always shows three
+discipline rules, marking rules as personalized only after sufficient comparable
+evidence. These are audit prompts, not psychological diagnoses or promises of profit.
+
+Journal cloud persistence requires a Streamlit-authenticated user. Anonymous
+sessions are kept only in memory; export a JSON backup and import it after logging
+in or in a later session. A static `USER_DATA_NAMESPACE` is not used for the journal,
+because it could expose one person's real trades to other visitors on a public app.
+Cloud reads must succeed and their revision must be known before a journal write;
+an outage cannot replace the saved journal with an empty list.
+
 Development checks:
 
 ```powershell

@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import concurrent.futures
 import logging
 import math
+import json
 from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
@@ -52,6 +53,7 @@ from scan_state import (
 )
 from scoring import decision_label, get_decision_score
 from strategy_advice import build_strategy_text
+from trade_journal import analyze_journal, normalize_record
 try:
     from ui_components import (
         credibility_label,
@@ -187,6 +189,9 @@ if st.sidebar.button("強制清除快取資料", width="stretch"):
     if "scan_results_is_local" in st.session_state: del st.session_state["scan_results_is_local"]
     if "_cloud_doc_cache" in st.session_state: del st.session_state["_cloud_doc_cache"]
     if "_analysis_session_cache" in st.session_state: del st.session_state["_analysis_session_cache"]
+    # A journal write must be tied to the revision loaded from Firestore.
+    # Invalidating the document cache also invalidates its in-session scope.
+    st.session_state.pop("_trade_journal_scope", None)
 
 render_app_style(is_light_mode)
 
@@ -435,6 +440,8 @@ if st.sidebar.button("經理人績效儀表板", width="stretch"):
     st.session_state.page = "simulated_orders"; st.rerun()
 if st.sidebar.button("🏆 Top 10 自動追蹤績效", width="stretch"):
     st.session_state.page = "top10_tracking"; st.rerun()
+if st.sidebar.button("📝 交易日誌分析師", width="stretch"):
+    st.session_state.page = "trade_journal"; st.rerun()
 
 st.sidebar.divider()
 fav_sidebar_slot = st.sidebar.empty()
@@ -2658,7 +2665,356 @@ elif st.session_state.page == "simulated_orders":
                     st.session_state.delete_order_id = order['id']; st.rerun()
 
 # ==========================================
-# 🚀 進入單一個股解析頁面 
+# 📝 手動真實交易日誌（與模擬單、Top10 假設成交分離）
+# ==========================================
+elif st.session_state.page == "trade_journal":
+    st.title("📝 交易日誌分析師")
+    st.caption("只分析你手動確認的實際交易及明確記錄的錯過機會；不把模擬單或 Top10 假設成交當成真實績效。")
+    if st.button("回雷達總機", key="journal_home"):
+        st.session_state.page = "home"
+        st.rerun()
+
+    journal_identity = {}
+    try:
+        journal_user = st.user
+        if getattr(journal_user, "is_logged_in", False):
+            journal_identity = {
+                "sub": journal_user.get("sub", ""),
+                "email": journal_user.get("email", ""),
+            }
+    except Exception:
+        pass
+    journal_authenticated = bool(journal_identity.get("sub") or journal_identity.get("email"))
+    journal_document = (
+        scoped_document_name("trade_journal", journal_identity, "")
+        if journal_authenticated else None
+    )
+    journal_scope = journal_document or "anonymous_session"
+    journal_storage_key = f"user_data:{journal_document}" if journal_document else ""
+    if st.session_state.get("_trade_journal_scope") != journal_scope:
+        if journal_document:
+            try:
+                journal_payload = load_cloud_doc("user_data", journal_document, raise_on_error=True)
+                stored_records = journal_payload.get("data", []) if journal_payload else []
+                if not isinstance(stored_records, list):
+                    raise ValueError("雲端日誌格式不是清單")
+                if len(stored_records) > 500:
+                    raise ValueError("雲端日誌超過 500 筆安全上限")
+                verified_records = [normalize_record(row) for row in stored_records]
+                analyze_journal(verified_records)
+                revision = int(journal_payload.get("revision", 0) or 0) if journal_payload else 0
+                st.session_state._cloud_doc_cache[journal_storage_key] = {
+                    "value": verified_records,
+                    "ts": time.time(),
+                    "revision": revision,
+                }
+            except Exception as exc:
+                st.error(f"交易日誌讀取或格式驗證失敗，已停止新增以避免覆寫：{exc}")
+                st.stop()
+            st.session_state.trade_journal_records = verified_records
+        else:
+            st.session_state.trade_journal_records = []
+        st.session_state._trade_journal_scope = journal_scope
+
+    def save_journal_records(next_records):
+        if len(next_records) > 500:
+            st.error("日誌已達 500 筆上限；請先匯出備份並整理舊紀錄。")
+            return False
+        try:
+            analyze_journal(next_records)
+        except (TypeError, ValueError, OverflowError) as exc:
+            st.error(f"日誌驗證失敗，原紀錄未更動：{exc}")
+            return False
+        if len(json.dumps(next_records, ensure_ascii=False).encode("utf-8")) > 800_000:
+            st.error("日誌內容已接近雲端文件大小限制；請先匯出備份並精簡舊紀錄。")
+            return False
+        if journal_document:
+            loaded_entry = st.session_state.get("_cloud_doc_cache", {}).get(journal_storage_key)
+            if (
+                not isinstance(loaded_entry, dict)
+                or not isinstance(loaded_entry.get("revision"), int)
+                or isinstance(loaded_entry.get("revision"), bool)
+                or loaded_entry["revision"] < 0
+            ):
+                st.error("交易日誌版本資訊已失效；請先按『重新載入雲端日誌』，避免覆蓋其他分頁的紀錄。")
+                return False
+            if not save_cloud_data("user_data", journal_document, next_records):
+                st.error("雲端寫入失敗，原紀錄未更動；請按『重新載入雲端日誌』後再試。")
+                return False
+        st.session_state.trade_journal_records = next_records
+        return True
+
+    def journal_optional_number(value):
+        text = str(value or "").strip().replace(",", "")
+        return None if not text else float(text)
+
+    records = st.session_state.trade_journal_records
+    if journal_document:
+        st.success("已登入：交易日誌以個人範圍儲存在雲端，並檢查跨頁籤版本衝突。")
+        if st.button("重新載入雲端日誌", key="journal_reload_cloud"):
+            st.session_state.pop("_trade_journal_scope", None)
+            st.session_state._cloud_doc_cache.pop(journal_storage_key, None)
+            st.session_state._cloud_doc_cache.pop(f"user_data/{journal_document}:doc", None)
+            st.rerun()
+    else:
+        st.warning("未登入：交易日誌只保留在目前工作階段。請用下方 JSON 匯出備份；登入後可匯入。")
+
+    with st.expander("新增實際交易或錯過機會", expanded=not records):
+        record_status = st.radio(
+            "紀錄類型",
+            ["closed", "open", "missed"],
+            format_func=lambda value: {
+                "closed": "已完成交易", "open": "持有中", "missed": "錯過機會",
+            }[value],
+            horizontal=True,
+            key="journal_record_status",
+        )
+        with st.form("journal_new_record_form"):
+            ticker_input = st.text_input("股票代號", placeholder="例如 2330")
+            decision_date_value = st.date_input(
+                "進場日／決策日", datetime.now(timezone(timedelta(hours=8))).date(),
+            )
+            if record_status != "missed":
+                entry_col, shares_col = st.columns(2)
+                with entry_col:
+                    entry_price_value = st.number_input("實際進場價", min_value=0.0, value=0.0, step=0.1)
+                with shares_col:
+                    shares_value = st.number_input("實際股數", min_value=1, value=1, step=1)
+            else:
+                entry_price_value = None
+                shares_value = None
+            plan_col_a, plan_col_b = st.columns(2)
+            with plan_col_a:
+                planned_entry_low_value = st.text_input("原計畫入場下限（可留空）")
+                planned_stop_value = st.text_input("原計畫停損價（可留空）")
+            with plan_col_b:
+                planned_entry_high_value = st.text_input("原計畫入場上限（可留空）")
+                planned_target_value = st.text_input("原計畫目標價（可留空）")
+            exit_date_value = None
+            exit_price_value = None
+            actual_costs_value = None
+            observed_date_value = None
+            observed_price_value = None
+            if record_status == "closed":
+                exit_col_a, exit_col_b = st.columns(2)
+                with exit_col_a:
+                    exit_date_value = st.date_input("實際出場日")
+                    actual_costs_value = st.text_input("實付費稅合計（元；留空則淨損益未知）")
+                with exit_col_b:
+                    exit_price_value = st.number_input("實際出場價", min_value=0.0, value=0.0, step=0.1)
+            elif record_status == "missed":
+                observed_col_a, observed_col_b = st.columns(2)
+                with observed_col_a:
+                    observed_date_value = st.date_input("事後觀察日")
+                with observed_col_b:
+                    observed_price_value = st.number_input("事後觀察價", min_value=0.0, value=0.0, step=0.1)
+                st.caption("觀察價只用來檢視後續價格變化，不當成實際可成交價或漏賺金額。")
+            entry_reason_value = st.text_input("進場理由／原計畫依據（可留空）")
+            exit_reason_value = st.text_input("出場理由（可留空）") if record_status == "closed" else ""
+            missed_reason_value = st.text_input("當時未進場原因") if record_status == "missed" else ""
+            emotion_value = st.selectbox(
+                "當時自評的情緒／行為（可不標記）",
+                ["", "怕錯過", "急於回本", "不願認賠", "怕獲利回吐", "臨時改單", "其他"],
+                format_func=lambda value: value or "未標記",
+            )
+            notes_value = st.text_area("覆盤備註（可留空）", max_chars=1000)
+            add_record = st.form_submit_button("儲存日誌", width="stretch")
+        if add_record:
+            code = normalize_ticker(ticker_input)
+            if not code or code.startswith("^"):
+                st.error("請輸入有效的個股代號。")
+            else:
+                try:
+                    next_record = normalize_record({
+                        "id": uuid.uuid4().hex,
+                        "status": record_status,
+                        "ticker": code,
+                        "name": get_stock_name(code),
+                        "entry_date": decision_date_value.isoformat() if record_status != "missed" else None,
+                        "decision_date": decision_date_value.isoformat() if record_status == "missed" else None,
+                        "entry_price": entry_price_value,
+                        "shares": shares_value,
+                        "exit_date": exit_date_value.isoformat() if exit_date_value else None,
+                        "exit_price": exit_price_value,
+                        "actual_costs": journal_optional_number(actual_costs_value),
+                        "planned_entry_low": journal_optional_number(planned_entry_low_value),
+                        "planned_entry_high": journal_optional_number(planned_entry_high_value),
+                        "planned_stop": journal_optional_number(planned_stop_value),
+                        "planned_target": journal_optional_number(planned_target_value),
+                        "entry_reason": entry_reason_value,
+                        "exit_reason": exit_reason_value,
+                        "emotion": emotion_value,
+                        "missed_reason": missed_reason_value,
+                        "observed_date": observed_date_value.isoformat() if observed_date_value else None,
+                        "observed_price": observed_price_value,
+                        "notes": notes_value,
+                    })
+                except (TypeError, ValueError) as exc:
+                    st.error(f"紀錄未儲存：{exc}")
+                else:
+                    if save_journal_records([next_record, *records]):
+                        st.success("日誌已儲存。")
+                        st.rerun()
+
+    open_records = [row for row in records if row.get("status") == "open"]
+    if open_records:
+        with st.expander(f"補填出場結果（持有中 {len(open_records)} 筆）"):
+            chosen_open_id = st.selectbox(
+                "選擇持有紀錄",
+                [row["id"] for row in open_records],
+                format_func=lambda key: next(
+                    f"{row['ticker']} {row['name']}｜{row['entry_date']} 進場"
+                    for row in open_records if row["id"] == key
+                ),
+            )
+            chosen_open = next(row for row in open_records if row["id"] == chosen_open_id)
+            with st.form("journal_close_record_form"):
+                close_col_a, close_col_b = st.columns(2)
+                with close_col_a:
+                    close_date = st.date_input("出場日", key="journal_close_date")
+                    close_costs = st.text_input("實付買賣費稅合計（可留空）", key="journal_close_costs")
+                with close_col_b:
+                    close_price = st.number_input("實際出場價", min_value=0.0, value=0.0, step=0.1, key="journal_close_price")
+                close_reason = st.text_input("出場理由", key="journal_close_reason")
+                close_submit = st.form_submit_button("確認實際出場", width="stretch")
+            if close_submit:
+                try:
+                    closed_record = normalize_record({
+                        **chosen_open,
+                        "status": "closed",
+                        "exit_date": close_date.isoformat(),
+                        "exit_price": close_price,
+                        "actual_costs": journal_optional_number(close_costs),
+                        "exit_reason": close_reason,
+                    })
+                except (TypeError, ValueError) as exc:
+                    st.error(f"出場結果未儲存：{exc}")
+                else:
+                    next_records = [
+                        closed_record if row["id"] == chosen_open_id else row
+                        for row in records
+                    ]
+                    if save_journal_records(next_records):
+                        st.success("實際出場結果已更新。")
+                        st.rerun()
+
+    analysis = analyze_journal(records, recent_limit=30)
+    summary = analysis["summary"]
+    st.subheader("最近交易檢視")
+    st.caption("下列規律僅使用最近 30 筆手動日誌；整體統計與最近規律分開顯示。")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("日誌筆數", summary["total_records"])
+    metric_cols[1].metric("已完成", summary["closed_count"])
+    metric_cols[2].metric("持有中", summary["open_count"])
+    metric_cols[3].metric("錯過機會", summary["missed_count"])
+    if summary["closed_count"]:
+        st.caption(f"實際已實現毛損益：NT${summary['realized_gross_pnl']:+,.0f}。")
+        if summary["unknown_cost_count"]:
+            st.info(
+                f"{summary['unknown_cost_count']} 筆已完成交易未填實付費稅；"
+                "不計入淨損益與淨勝率，避免把毛利誤當淨利。"
+            )
+        if summary["known_net_count"]:
+            st.caption(
+                f"已填費稅的 {summary['known_net_count']} 筆淨損益："
+                f"NT${summary['known_net_pnl']:+,.0f}；"
+                f"淨勝率 {summary['net_win_rate_pct']:.1f}%。"
+            )
+
+    st.subheader("反覆錯誤、錯失機會與可能偏誤")
+    display_findings = [finding for finding in analysis["findings"] if finding["count"] > 0]
+    if not display_findings:
+        st.info("目前沒有足夠的可核對事件；先持續記錄原計畫、實際成交與決策原因。")
+    for finding in display_findings:
+        st.markdown(
+            f"**{finding['label']}：{finding['count']} / {finding['denominator']} 筆**"
+        )
+        st.caption(finding["interpretation"])
+        if finding.get("evidence"):
+            st.caption(
+                "依據：" + "、".join(
+                    f"{item['ticker']}（{item['event_date']}）"
+                    for item in finding["evidence"][:5]
+                )
+            )
+
+    st.subheader("3 條執行規則（樣本足夠時個人化）")
+    for number, rule in enumerate(analysis["rules"], start=1):
+        badge = "個人紀錄" if rule["personalized"] else "基礎守則／樣本不足"
+        st.markdown(f"**{number}. {rule['title']}**  ·  {badge}")
+        st.write(rule["text"])
+        st.caption(rule["basis"])
+    st.caption("以上為紀律覆盤，不是心理診斷或獲利保證；價格事後上漲不等於當時一定能成交。")
+    st.caption("5,000 元單筆風險使用台股費稅與停損滑價模型估計；跳空或流動性不足仍可能使實際損失超過估計。")
+
+    recent_display_rows = []
+    for item in analysis["rows"]:
+        row = item["record"]
+        metrics = item["metrics"]
+        recent_display_rows.append({
+            "日期": row.get("decision_date") or item["event_date"],
+            "類型": {"closed": "已完成", "open": "持有中", "missed": "錯過機會"}[row["status"]],
+            "股票": f"{row['ticker']} {row['name']}",
+            "進場價": row.get("entry_price"),
+            "出場價": row.get("exit_price"),
+            "股數": row.get("shares"),
+            "毛損益": metrics.get("gross_pnl"),
+            "淨損益": metrics.get("net_pnl"),
+            "當時原因": row.get("missed_reason") or row.get("entry_reason") or "--",
+        })
+    if recent_display_rows:
+        st.dataframe(pd.DataFrame(recent_display_rows), hide_index=True, width="stretch")
+    else:
+        st.info("尚無真實交易日誌；先新增一筆已完成交易、持有中部位或明確錯過的機會。")
+
+    st.download_button(
+        "匯出個人日誌 JSON 備份",
+        data=json.dumps(records, ensure_ascii=False, indent=2),
+        file_name="trade-journal-backup.json",
+        mime="application/json",
+        disabled=not records,
+    )
+    with st.expander("匯入 JSON 備份或修正誤植"):
+        uploaded_journal = st.file_uploader("選擇日誌備份", type=["json"], key="journal_import_file")
+        if uploaded_journal is not None and st.button("驗證後合併備份", key="journal_import_button"):
+            try:
+                if uploaded_journal.size > 1_000_000:
+                    raise ValueError("檔案超過 1 MB 上限")
+                imported = json.loads(uploaded_journal.getvalue().decode("utf-8"))
+                if not isinstance(imported, list) or len(imported) > 500:
+                    raise ValueError("備份必須是不超過 500 筆的日誌清單")
+                normalized_import = [normalize_record(row) for row in imported]
+                imported_ids = [row["id"] for row in normalized_import]
+                if len(imported_ids) != len(set(imported_ids)):
+                    raise ValueError("備份含重複紀錄 ID")
+                existing_ids = {row["id"] for row in records}
+                merged = records + [row for row in normalized_import if row["id"] not in existing_ids]
+                if len(merged) > 500:
+                    raise ValueError("合併後超過 500 筆上限")
+            except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                st.error(f"備份未匯入：{exc}")
+            else:
+                if save_journal_records(merged):
+                    st.success(f"已新增 {len(merged) - len(records)} 筆；相同 ID 已略過。")
+                    st.rerun()
+        if records:
+            delete_id = st.selectbox(
+                "選擇要刪除的誤植紀錄",
+                [row["id"] for row in records],
+                format_func=lambda key: next(
+                    f"{row['ticker']} {row['name']}｜{row.get('decision_date') or row.get('entry_date')}｜{row['status']}"
+                    for row in records if row["id"] == key
+                ),
+                key="journal_delete_id",
+            )
+            confirm_delete = st.checkbox("確認刪除此筆日誌", key="journal_confirm_delete")
+            if st.button("刪除此筆", disabled=not confirm_delete, key="journal_delete_button"):
+                if save_journal_records([row for row in records if row["id"] != delete_id]):
+                    st.success("該筆日誌已刪除。")
+                    st.rerun()
+
+# ==========================================
+# 🚀 進入單一個股解析頁面
 # ==========================================
 # 🏆 Top 10 自動追蹤績效
 # ==========================================

@@ -27,6 +27,7 @@ jobs:
         run: >-
           mypy app_security.py entry_readiness.py execution_costs.py
           intraday_ranking.py market_http.py scan_state.py top10_tracker.py
+          trade_journal.py
       - name: Run tests with coverage
         run: |
           coverage run -m unittest discover -s tests -v

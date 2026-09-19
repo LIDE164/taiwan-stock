@@ -26,6 +26,7 @@ source = [
     "strategy_advice",
     "top10_telegram",
     "top10_tracker",
+    "trade_journal",
 ]
 
 [tool.coverage.report]
