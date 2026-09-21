@@ -15,6 +15,7 @@ branch = true
 source = [
     "analysis_core",
     "app_security",
+    "backtest_reporting",
     "data_providers",
     "entry_readiness",
     "execution_costs",

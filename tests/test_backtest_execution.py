@@ -8,11 +8,41 @@ from analysis_core import (
     BACKTEST_MIN_GAP_DAYS,
     _bars_observable_after_fill,
     _trade_result,
+    build_score_input,
     calculate_historical_performance,
 )
 
 
 class BacktestExecutionTests(unittest.TestCase):
+    def _assert_diagnostics_conserved(self, result):
+        diag = result["diagnostics"]
+        self.assertEqual(result["backtest_schema"], "executable_v3")
+        self.assertEqual(
+            diag["window_bars"],
+            diag["evaluated"] + diag["skipped_overlap"] + diag["skipped_no_next_session"],
+        )
+        self.assertEqual(diag["evaluated"], diag["signal_pass"] + diag["signal_rejected"])
+        self.assertEqual(
+            diag["signal_pass"],
+            diag["filter_rejected"] + diag["plan_rejected"] + diag["plan_ready"],
+        )
+        self.assertEqual(diag["plan_ready"], diag["fill_rejected"] + diag["filled"])
+        self.assertEqual(
+            diag["filled"],
+            diag["execution_rejected"] + diag["execution_unresolved"]
+            + diag["incomplete"] + diag["completed"],
+        )
+        self.assertEqual(diag["completed"], diag["training"] + diag["validation"])
+        self.assertEqual(diag["completed"], result["overall_samples"])
+        self.assertEqual(diag["training"], result["training_samples"])
+        self.assertEqual(diag["validation"], result["validation_samples"])
+        self.assertEqual(diag["execution_unresolved"], result["execution_unresolved"])
+        for stage in ("filter", "plan", "fill", "execution"):
+            self.assertEqual(
+                diag[f"{stage}_rejected"], sum(diag[f"{stage}_rejected_reasons"].values())
+            )
+        self.assertEqual(diag["plan_rejected"], sum(diag["plan_rejected_statuses"].values()))
+
     @staticmethod
     def _flat_bars(count=25):
         return pd.DataFrame(
@@ -202,6 +232,9 @@ class BacktestExecutionTests(unittest.TestCase):
         self.assertEqual(result["closed_signals"], 0)
         self.assertEqual(result["execution_unresolved"], 1)
         self.assertEqual(result["trades"], [])
+        self.assertEqual(result["diagnostics"]["incomplete"], 0)
+        self.assertEqual(result["diagnostics"]["execution_rejected"], 0)
+        self._assert_diagnostics_conserved(result)
 
     def test_missing_open_does_not_create_a_synthetic_exit_price(self):
         bars = pd.DataFrame([{"Open": None, "High": 101, "Low": 99, "Close": 100}])
@@ -255,6 +288,8 @@ class BacktestExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["closed_signals"], 0)
         self.assertEqual(result["trades"], [])
+        self.assertEqual(result["diagnostics"]["status"], "invalid_parameters")
+        self._assert_diagnostics_conserved(result)
         signal.assert_not_called()
 
     def test_current_fundamental_snapshot_is_not_reused_in_history(self):
@@ -284,6 +319,9 @@ class BacktestExecutionTests(unittest.TestCase):
 
         self.assertEqual(result["closed_signals"], 0)
         self.assertEqual(result["trades"], [])
+        self.assertEqual(result["diagnostics"]["incomplete"], 1)
+        self.assertEqual(result["diagnostics"]["execution_unresolved"], 0)
+        self._assert_diagnostics_conserved(result)
 
     def test_incomplete_tail_window_with_triggered_exit_is_retained(self):
         bars = self._flat_bars()
@@ -308,6 +346,7 @@ class BacktestExecutionTests(unittest.TestCase):
         self.assertEqual(result["closed_signals"], 1)
         self.assertEqual(result["trades"][0]["exit_reason"], "停利")
         self.assertEqual(result["trades"][0]["holding_days"], 1)
+        self._assert_diagnostics_conserved(result)
 
     def test_default_signal_gap_is_at_least_the_holding_window(self):
         self.assertGreaterEqual(BACKTEST_MIN_GAP_DAYS, BACKTEST_HOLD_DAYS)
@@ -330,10 +369,12 @@ class BacktestExecutionTests(unittest.TestCase):
         self.assertGreater(len(entry_positions), 1)
         self.assertTrue(
             all(
-                later - earlier >= BACKTEST_HOLD_DAYS
+                later - earlier == BACKTEST_HOLD_DAYS
                 for earlier, later in zip(entry_positions, entry_positions[1:])
             )
         )
+        self.assertGreater(result["diagnostics"]["skipped_overlap"], 0)
+        self._assert_diagnostics_conserved(result)
 
     def test_default_backtest_risk_sizes_each_trade_to_five_thousand(self):
         bars = self._flat_bars(40)
@@ -392,6 +433,92 @@ class BacktestExecutionTests(unittest.TestCase):
         self.assertEqual(result["validation_samples"], 2)
         self.assertEqual(result["training_raw_win_rate"], 100.0)
         self.assertEqual(result["validation_raw_win_rate"], 0.0)
+        self._assert_diagnostics_conserved(result)
+
+    def test_diagnostics_distinguish_signal_plan_fill_and_execution_rejections(self):
+        bars = self._flat_bars(31)
+        # The candidate following history length 26 gaps beneath support.
+        bars.iloc[26] = {"Open": 98, "High": 100, "Low": 97, "Close": 99, "ATR": 1}
+
+        def varied_signals(history, _fund, **_kwargs):
+            data = self._executable_signal(history)
+            data["audit_case"] = len(history)
+            if len(history) == 22:
+                data["Confidence"] = 50
+            return len(history) in range(22, 30), 80, data
+
+        def varied_plans(data, **_kwargs):
+            case = data["audit_case"]
+            plan = {
+                "Entry_Status": "現在可執行", "Entry_Low": 99.9,
+                "Entry_High": 100.4, "Entry_Stop": 98.9, "Entry_Target": 102.1,
+            }
+            if case == 23:
+                return {"Entry_Status": "等待拉回", "Entry_Reason": "價格超出區間"}
+            if case == 24:
+                raise ValueError("invalid technical input")
+            if case == 25:
+                plan["Entry_Low"] = None
+            if case == 27:
+                plan["Entry_Target"] = 100.1
+            return plan
+
+        with (
+            patch("analysis_core.is_strategy_signal", side_effect=varied_signals),
+            patch("entry_readiness.build_entry_readiness", side_effect=varied_plans),
+            patch("analysis_core._trade_result", side_effect=[
+                None,
+                {"win": False, "return_pct": 0, "exit_reason": "到期出場"},
+            ]),
+        ):
+            result = calculate_historical_performance(
+                bars, lookback_days=len(bars), min_gap_days=0,
+                filter_low_conf=True, fee_rate=0, sell_tax_rate=0,
+                minimum_commission=0, slippage_rate=0,
+            )
+
+        diag = result["diagnostics"]
+        self.assertEqual(diag["signal_pass"], 8)
+        self.assertEqual(diag["filter_rejected_reasons"], {"low_confidence": 1})
+        self.assertEqual(diag["plan_rejected_reasons"], {
+            "價格超出區間": 1, "invalid_plan_input": 1,
+        })
+        self.assertEqual(diag["fill_rejected_reasons"], {
+            "invalid_plan_levels": 1, "gap_below_zone": 1,
+        })
+        self.assertEqual(diag["execution_rejected_reasons"], {
+            "gross_reward_risk": 1, "invalid_exit_data": 1,
+        })
+        self.assertEqual(diag["incomplete"], 1)
+        self.assertEqual(diag["execution_unresolved"], 0)
+        self._assert_diagnostics_conserved(result)
+
+    def test_insufficient_history_has_zero_sample_diagnostics(self):
+        result = calculate_historical_performance(self._flat_bars(20))
+        self.assertEqual(result["diagnostics"]["status"], "insufficient_history")
+        self.assertEqual(result["diagnostics"]["history_bars"], 20)
+        self._assert_diagnostics_conserved(result)
+
+    def test_historical_daily_gain_uses_previous_close_and_blocks_overheat(self):
+        bars = self._flat_bars(30)
+        values = {
+            "Volume": 1000, "5MA": 100, "20MA": 107, "60MA": 90,
+            "BB_UP": 125, "BB_DN": 90, "MACD_Hist": 1,
+            "J": 50, "RSI": 55, "ADX": 30,
+        }
+        for column, value in values.items():
+            bars[column] = float(value)
+        bars.loc[bars.index[-1], ["Close", "High", "Volume", "ATR"]] = [107, 108, 1300, 4]
+        bars.loc[bars.index[-2], "MACD_Hist"] = 0.9
+        with patch("analysis_core.advanced_patterns.detect_pattern", return_value={}):
+            signal_input = build_score_input(bars)
+        self.assertEqual(signal_input["漲跌幅"], 7.0)
+
+        from entry_readiness import build_entry_readiness
+
+        plan = build_entry_readiness(dict(signal_input, Score=80))
+        self.assertFalse(plan["Entry_Ready"])
+        self.assertIn("單日上漲 7.0%", plan["Entry_Reason"])
 
 
 if __name__ == "__main__":

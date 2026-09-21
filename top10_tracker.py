@@ -80,7 +80,9 @@ def _expected_entry_date(position: Mapping[str, Any]) -> str | None:
     return _next_weekday(position.get("signal_date"))
 
 
-def _entry_backtest_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
+def _entry_backtest_snapshot(
+    row: Mapping[str, Any], *, include_breakdown: bool = True,
+) -> dict[str, Any]:
     """Normalize the technical backtest that existed when a name entered Top-10."""
     raw_samples = _optional_number(row.get("Backtest_Samples"))
     samples = int(raw_samples) if raw_samples is not None and raw_samples >= 0 else None
@@ -92,12 +94,31 @@ def _entry_backtest_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     scope = str(row.get("Backtest_Scope") or "").strip()
     status = "ok" if win_rate is not None else ("no_samples" if samples == 0 else "missing")
-    return {
+    snapshot = {
         "entry_win_rate": win_rate,
         "entry_backtest_samples": samples,
         "entry_backtest_scope": scope or None,
         "entry_backtest_status": status,
     }
+    if include_breakdown:
+        def count(field: str) -> int | None:
+            value = _optional_number(row.get(field))
+            return int(value) if value is not None and value >= 0 and value.is_integer() else None
+
+        def rate(field: str) -> float | None:
+            value = _optional_number(row.get(field))
+            return round(value, 2) if value is not None and 0 <= value <= 100 else None
+
+        schema = str(row.get("Backtest_Schema") or "").strip()
+        snapshot.update({
+            "entry_backtest_schema": schema or None,
+            "entry_backtest_overall_samples": count("Backtest_Overall_Samples"),
+            "entry_backtest_training_samples": count("Backtest_Training_Samples"),
+            "entry_backtest_validation_samples": count("Validation_Samples"),
+            "entry_backtest_raw_win_rate": rate("Backtest_Raw_WinRate"),
+            "entry_backtest_validation_raw_win_rate": rate("Validation_Raw_WinRate"),
+        })
+    return snapshot
 
 
 def _quote(row: Mapping[str, Any] | None) -> dict[str, float] | None:
@@ -384,7 +405,8 @@ _SIGNAL_SNAPSHOT_FIELDS = (
     "Entry_Pattern", "Signal_Conflict",
     "RSI", "BIAS", "ATR", "Est_Vol_Ratio", "Volume_Confirmed", "Confidence",
     "Data_Completeness", "Model_Confidence", "Model_Confidence_Label", "Data_Quality",
-    "WinRate", "Backtest_Samples", "Backtest_Scope",
+    "WinRate", "Backtest_Samples", "Backtest_Scope", "Backtest_Schema",
+    "Backtest_Training_Samples", "Backtest_Raw_WinRate",
     "Backtest_Net_Expectancy", "Validation_Net_Expectancy",
     "Backtest_Max_Drawdown", "Backtest_Max_Consecutive_Losses",
     "Backtest_Execution_Unresolved", "Backtest_Overall_WinRate",
@@ -478,6 +500,12 @@ def _snapshot(
         "entry_backtest_samples": position.get("entry_backtest_samples"),
         "entry_backtest_scope": position.get("entry_backtest_scope"),
         "entry_backtest_status": str(position.get("entry_backtest_status", "missing")),
+        "entry_backtest_schema": position.get("entry_backtest_schema"),
+        "entry_backtest_overall_samples": position.get("entry_backtest_overall_samples"),
+        "entry_backtest_training_samples": position.get("entry_backtest_training_samples"),
+        "entry_backtest_validation_samples": position.get("entry_backtest_validation_samples"),
+        "entry_backtest_raw_win_rate": position.get("entry_backtest_raw_win_rate"),
+        "entry_backtest_validation_raw_win_rate": position.get("entry_backtest_validation_raw_win_rate"),
         "open": round(quote["open"], 4) if quote else None,
         "high": round(quote["high"], 4) if quote else None,
         "low": round(quote["low"], 4) if quote else None,
@@ -657,7 +685,9 @@ def backfill_entry_backtest_snapshots(
         )
         if source is None:
             continue
-        snapshot = _entry_backtest_snapshot(source)
+        # Historical rankings can restore the original legacy values, but must
+        # not retrofit a newer sample schema onto already-existing positions.
+        snapshot = _entry_backtest_snapshot(source, include_breakdown=False)
         position.update(snapshot)
     return updated
 

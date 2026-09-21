@@ -40,6 +40,22 @@ class _StopRun(RuntimeError):
 
 
 class UiResilienceTests(unittest.TestCase):
+    def test_cards_label_disjoint_samples_without_fabricating_missing_win_rate(self):
+        from ui_components import generate_cards_html
+
+        frame = pd.DataFrame([{
+            '代號': '2330', '名稱': '測試', 'Score': 80, '收盤價': 100, 'WinRate': None,
+            'Backtest_Samples': 1, 'Backtest_Training_Samples': 1,
+            'Backtest_Overall_Samples': 2, 'Validation_Samples': 1,
+            'Entry_Status': '條件符合，待驗證', 'Entry_Ready': False,
+        }])
+        html = generate_cards_html(frame, safe_num=lambda value, default=0: float(value or default))
+        self.assertIn('全期 2｜訓練 1｜驗證 1', html)
+        self.assertIn('訓練校正勝率', html)
+        self.assertIn('條件符合，待驗證', html)
+        self.assertNotIn('>0.0%</span>', html)
+        self.assertNotIn('nan%', html)
+
     def test_manifest_read_failure_preserves_last_good_rows_and_provenance(self):
         state = _SessionState(
             scan_results=[{"代號": "2330"}],

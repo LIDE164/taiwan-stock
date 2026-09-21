@@ -6,6 +6,7 @@ from PIL import Image
 from top10_telegram import (
     EXECUTABLE_GAP_RISK_TEXT,
     EXECUTABLE_RISK_MODEL_TEXT,
+    _tracking_strategy_footer,
     build_executable_display_rows,
     build_tracking_performance_report,
     build_top10_display_rows,
@@ -60,6 +61,13 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(report["cumulative_strategy_win_rate"], 66.67)
         self.assertEqual(report["cumulative_legacy_count"], 2)
         self.assertEqual(report["cumulative_excluded_count"], 4)
+        self.assertIn("累積模擬勝率僅計區間已結", _tracking_strategy_footer(report))
+
+    def test_tracking_without_cumulative_summary_labels_daily_mixed_cohort(self):
+        report = build_tracking_performance_report([], [], "2026-09-09")
+        footer = _tracking_strategy_footer(report)
+        self.assertIn("本日已結模擬勝率可能混列舊制與區間", footer)
+        self.assertNotIn("累積模擬勝率僅計區間已結", footer)
 
     def test_tracking_report_counts_terminal_holding_data_gaps(self):
         records = [{
@@ -108,6 +116,27 @@ class Top10TelegramTests(unittest.TestCase):
         self.assertEqual(missing[0]["win_rate_text"], "--")
         self.assertEqual(missing[0]["sample_text"], "--")
         self.assertEqual(missing[0]["credibility"], "資料缺失")
+
+    def test_prediction_rows_distinguish_total_training_validation_from_legacy(self):
+        split = dict(
+            self.rows[0], Entry_Status="現在可執行",
+            Backtest_Schema="executable_v3", Backtest_Samples=1,
+            Backtest_Overall_Samples=2, Backtest_Training_Samples=1,
+            Validation_Samples=1,
+        )
+        top = build_top10_display_rows([split])[0]
+        executable = build_executable_display_rows([split])[0]
+        self.assertEqual(top["sample_breakdown_text"], "全2/訓1/驗1")
+        self.assertEqual(executable["sample_breakdown_text"], "全2/訓1/驗1")
+        self.assertIn("樣本嚴重不足", executable["sample_credibility_text"])
+        self.assertEqual(executable["credibility_text"], "樣本嚴重不足")
+        self.assertEqual(top["win_rate_label"], "訓練校正勝率")
+
+        legacy = build_executable_display_rows([
+            dict(self.rows[0], Entry_Status="現在可執行")
+        ])[0]
+        self.assertEqual(legacy["sample_breakdown_text"], "原制42/驗--")
+        self.assertEqual(legacy["win_rate_label"], "原制校正勝率")
 
     def test_renderer_returns_a_valid_mobile_png(self):
         png = render_top10_image(self.rows * 10, "2026-08-27")
@@ -329,6 +358,37 @@ class Top10TelegramTests(unittest.TestCase):
         image = Image.open(io.BytesIO(png))
         self.assertEqual(image.format, "PNG")
         self.assertEqual(image.size, (1080, 1400))
+
+    def test_performance_uses_frozen_entry_evidence_and_marks_execution_cohort(self):
+        common = {
+            "signal_date": "2026-09-01", "entry_date": "2026-09-02",
+            "entry_price": 100, "mark_price": 101, "daily_return_pct": 1,
+            "pnl_pct": 1, "data_status": "ok", "action": "HOLD", "status": "OPEN",
+        }
+        records = [
+            dict(common, ticker="2330", name="新版", execution_schema=2,
+                 entry_win_rate=51.2, entry_backtest_samples=1,
+                 entry_backtest_schema="executable_v3",
+                 entry_backtest_overall_samples=2,
+                 entry_backtest_training_samples=1,
+                 entry_backtest_validation_samples=1),
+            dict(common, ticker="2317", name="舊制", execution_schema=1,
+                 entry_win_rate=60, entry_backtest_samples=40),
+        ]
+        # A later ranking must never alter either historical entry-day snapshot.
+        positions = [
+            dict(records[0], entry_win_rate=95, entry_backtest_samples=99,
+                 entry_backtest_overall_samples=120),
+            dict(records[1], entry_win_rate=95, entry_backtest_samples=99),
+        ]
+        rows = build_tracking_performance_report(records, positions, "2026-09-03")["rows"]
+        by_ticker = {row["ticker"]: row for row in rows}
+        self.assertEqual(by_ticker["2330"]["strategy_label"], "區間策略")
+        self.assertEqual(by_ticker["2330"]["backtest_sample_text"], "全2/訓1/驗1")
+        self.assertEqual(by_ticker["2330"]["backtest_win_rate_text"], "51.2%")
+        self.assertEqual(by_ticker["2317"]["strategy_label"], "舊制")
+        self.assertEqual(by_ticker["2317"]["backtest_sample_text"], "原制40/驗--")
+        self.assertEqual(by_ticker["2317"]["backtest_win_rate_text"], "60.0%")
 
     def test_sender_posts_png_and_returns_message_id(self):
         session = _Session()

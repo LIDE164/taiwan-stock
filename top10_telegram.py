@@ -13,6 +13,7 @@ from typing import Any
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+from backtest_reporting import sample_breakdown
 from entry_readiness import build_entry_summary
 from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
@@ -134,6 +135,7 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
         change = _number(record.get("漲跌幅"))
         samples_number = _number(record.get("Backtest_Samples"))
         samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
+        breakdown = sample_breakdown(record)
         win_rate = _number(record.get("WinRate"))
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
@@ -153,6 +155,8 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
             "change_value": change,
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
             "sample_text": "--" if samples is None else str(samples),
+            "sample_breakdown_text": breakdown["compact_text"],
+            "win_rate_label": breakdown["primary_label"],
             "credibility": credibility,
             "credibility_color": credibility_color,
             "entry_status": _clean_text(record.get("Entry_Status"), "條件未提供"),
@@ -196,6 +200,7 @@ def build_executable_display_rows(
         target = _number(record.get("Entry_Target"))
         samples_number = _number(record.get("Backtest_Samples"))
         samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
+        breakdown = sample_breakdown(record)
         win_rate = _number(record.get("WinRate"))
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
@@ -233,9 +238,10 @@ def build_executable_display_rows(
             "estimated_loss": estimated_loss,
             "estimated_loss_text": "--" if estimated_loss is None else f"${estimated_loss:,.0f}",
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
-            "sample_credibility_text": (
-                "資料缺失" if samples is None else f"樣本 {samples}｜{credibility}"
-            ),
+            "sample_credibility_text": f"{breakdown['compact_text']}｜{credibility}",
+            "sample_breakdown_text": breakdown["compact_text"],
+            "credibility_text": credibility,
+            "win_rate_label": breakdown["primary_label"],
             "credibility_color": credibility_color,
             "analysis": build_entry_summary(record),
             "mini_kbars": _normalize_mini_kbars(record.get("Mini_K")),
@@ -478,6 +484,13 @@ def build_tracking_performance_report(
         )
         sample_number = _number(row.get("entry_backtest_samples"))
         samples = int(sample_number) if sample_number is not None and sample_number >= 0 else None
+        entry_breakdown = sample_breakdown({
+            "Backtest_Schema": row.get("entry_backtest_schema"),
+            "Backtest_Samples": row.get("entry_backtest_samples"),
+            "Backtest_Overall_Samples": row.get("entry_backtest_overall_samples"),
+            "Backtest_Training_Samples": row.get("entry_backtest_training_samples"),
+            "Validation_Samples": row.get("entry_backtest_validation_samples"),
+        })
         win_rate = _number(row.get("entry_win_rate"))
         if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
             win_rate = None
@@ -507,6 +520,11 @@ def build_tracking_performance_report(
                 "--"
                 if win_rate is None
                 else f"{win_rate:.1f}% / {samples}"
+            ),
+            "backtest_sample_text": entry_breakdown["compact_text"],
+            "backtest_win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
+            "strategy_label": (
+                "區間策略" if (_number(row.get("execution_schema")) or 1) >= 2 else "舊制"
             ),
             "credibility": credibility,
             "credibility_color": credibility_color,
@@ -849,18 +867,18 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
             labels = (
                 (128, "收盤", row["close_text"], "#E2E8F0"),
                 (265, "漲跌", row["change_text"], change_color),
-                (405, "技術勝率", row["win_rate_text"], "#60A5FA"),
-                (576, "樣本", row["sample_text"], "#E2E8F0"),
-                (682, "可信度", row["credibility"], row["credibility_color"]),
-                (880, "產業", _fit_text(draw, row["industry"], _font(17, True), 115), "#A5B4FC"),
+                (405, "校正回測", row["win_rate_text"], "#60A5FA"),
+                (576, "全/訓/驗樣本", _fit_text(draw, row["sample_breakdown_text"], _font(15, True), 185), "#E2E8F0"),
+                (780, "可信度", _fit_text(draw, row["credibility"], _font(15, True), 118), row["credibility_color"]),
+                (922, "產業", _fit_text(draw, row["industry"], _font(15, True), 80), "#A5B4FC"),
             )
             for x, label, value, color in labels:
                 draw.text((x, top + 57), label, font=_font(14), fill="#64748B")
-                draw.text((x, top + 76), value, font=_font(17, True), fill=color)
+                draw.text((x, top + 76), value, font=_font(15, True), fill=color)
 
     footer_y = start_y + 10 * (CARD_HEIGHT + CARD_GAP) + 14
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 18), "技術勝率為逐步前推回測結果，不代表未來績效。缺失資料一律顯示 --。", font=_font(17), fill="#94A3B8")
+    draw.text((54, footer_y + 18), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(15), fill="#94A3B8")
     draw.text((IMAGE_WIDTH - 54, footer_y + 18), "僅供研究參考", font=_font(17, True), fill="#FBBF24", anchor="ra")
 
     output = io.BytesIO()
@@ -918,8 +936,14 @@ def render_executable_image(
             draw.text((128, top + 10), stock_text, font=stock_font, fill="#F8FAFC")
             score_x = min(350, int(128 + draw.textlength(stock_text, font=stock_font) + 14))
             draw.text((score_x, top + 12), row["score_text"], font=_font(22, True), fill="#F87171")
-            sample_text = _fit_text(draw, row["sample_credibility_text"], _font(15, True), 165)
-            draw.text((420, top + 16), sample_text, font=_font(15, True), fill=row["credibility_color"])
+            sample_text = _fit_text(draw, row["sample_breakdown_text"], _font(14, True), 170)
+            draw.text((420, top + 16), sample_text, font=_font(14, True), fill=row["credibility_color"])
+            draw.text(
+                (420, top + 34),
+                _fit_text(draw, row["credibility_text"], _font(11), 170),
+                font=_font(11),
+                fill=row["credibility_color"],
+            )
             analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
             draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
             _draw_mini_candles(
@@ -938,7 +962,7 @@ def render_executable_image(
                 (555, "估計停損淨損", row["estimated_loss_text"], "#F8FAFC"),
                 (685, "風險停損", row["stop_text"], "#4ADE80"),
                 (800, "策略目標", row["target_text"], "#F87171"),
-                (910, "技術勝率", row["win_rate_text"], "#60A5FA"),
+                (910, "校正回測", row["win_rate_text"], "#60A5FA"),
             )
             for x, label, value, color in labels:
                 draw.text((x, top + 96), label, font=_font(12), fill="#64748B")
@@ -948,6 +972,7 @@ def render_executable_image(
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
     draw.text((54, footer_y + 14), EXECUTABLE_RISK_MODEL_TEXT, font=_font(15), fill="#94A3B8")
     draw.text((54, footer_y + 43), EXECUTABLE_GAP_RISK_TEXT, font=_font(16, True), fill="#FBBF24")
+    draw.text((54, footer_y + 72), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(14), fill="#94A3B8")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -957,6 +982,17 @@ def _return_color(value: float | None) -> str:
     if value is None:
         return "#94A3B8"
     return "#F87171" if value >= 0 else "#4ADE80"
+
+
+def _tracking_strategy_footer(report: Mapping[str, Any]) -> str:
+    text = "區間策略僅次日觸區成交；單日圖可混列舊制。"
+    if report["cumulative_available"]:
+        text += " 累積模擬勝率僅計區間已結。"
+    else:
+        text += " 本日已結模擬勝率可能混列舊制與區間。"
+    if report["legacy_count"]:
+        text += " 舊制採收盤進場與固定 +15%/-10%。"
+    return text
 
 
 def render_tracking_performance_image(
@@ -1045,16 +1081,16 @@ def render_tracking_performance_image(
     draw.rounded_rectangle((42, 292, 1038, 372), radius=18, fill="#111827", outline="#1E293B", width=2)
     draw.text(
         (64, 307),
-        _fit_text(draw, action_text, _font(16, True), 610),
+        _fit_text(draw, action_text, _font(16, True), 520),
         font=_font(16, True),
         fill="#CBD5E1",
     )
     draw.text(
         (1016, 307),
         (
-            f"新版累積 {report['cumulative_strategy_count']} 筆｜勝率 {realized_text}"
+            f"區間已結 {report['cumulative_strategy_count']} 筆｜模擬勝率 {realized_text}"
             if report["cumulative_available"]
-            else f"本日結算 {report['closed_count']} 筆｜勝率 {realized_text}"
+            else f"本日已結 {report['closed_count']} 筆｜模擬勝率 {realized_text}"
         ),
         font=_font(18, True),
         fill="#60A5FA" if realized_text != "--" else "#94A3B8",
@@ -1100,10 +1136,11 @@ def render_tracking_performance_image(
             bottom = top + row_height
             outline = "#3F2631" if (row["pnl"] or 0) >= 0 else "#17392C"
             draw.rounded_rectangle((42, top, 1038, bottom), radius=16, fill="#0F172A", outline=outline, width=2)
-            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(23, True), 290)
+            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", _font(23, True), 275)
             draw.text((62, top + 9), stock_text, font=_font(23, True), fill="#F8FAFC")
-            draw.rounded_rectangle((356, top + 8, 478, top + 38), radius=14, fill="#172033")
-            draw.text((417, top + 23), _fit_text(draw, row["action"], _font(15, True), 105), font=_font(15, True), fill="#CBD5E1", anchor="mm")
+            draw.rounded_rectangle((348, top + 8, 522, top + 38), radius=14, fill="#172033")
+            action_and_strategy = f"{row['action']}·{row['strategy_label']}"
+            draw.text((435, top + 23), _fit_text(draw, action_and_strategy, _font(14, True), 157), font=_font(14, True), fill="#CBD5E1", anchor="mm")
             detail_text = f"{row['entry_date']}｜進 {row['entry_text']} → 追蹤 {row['mark_text']}"
             if row["decline_diagnostic"]:
                 detail_text += f"｜觀察：{row['decline_diagnostic']}"
@@ -1134,12 +1171,13 @@ def render_tracking_performance_image(
                 draw.text((x, top + 5), label, font=_font(12), fill="#64748B")
                 draw.text((x, top + 24), price_change, font=_font(16, True), fill=color)
                 draw.text((x, top + 47), f"({percent_change})", font=_font(15, True), fill=color)
-            draw.text((875, top + 9), "入榜勝率/樣本", font=_font(13), fill="#64748B")
-            draw.text((875, top + 35), row["backtest_text"], font=_font(18, True), fill=row["credibility_color"])
+            draw.text((875, top + 7), "入榜校正回測", font=_font(12), fill="#64748B")
+            draw.text((875, top + 26), row["backtest_win_rate_text"], font=_font(16, True), fill=row["credibility_color"])
+            draw.text((875, top + 45), _fit_text(draw, row["backtest_sample_text"], _font(11), 145), font=_font(11), fill="#94A3B8")
             if row["net_pnl_amount"] is not None or row["estimated_transaction_cost"] is not None:
                 net_text = f"淨 {row['net_pnl_text']}｜費 {row['estimated_cost_text'].replace('NT$', '')}"
                 draw.text(
-                    (875, top + 59),
+                    (875, top + 62),
                     _fit_text(draw, net_text, _font(11), 145),
                     font=_font(11),
                     fill=_return_color(row["net_pnl_amount"]),
@@ -1171,11 +1209,10 @@ def render_tracking_performance_image(
         fill="#60A5FA",
         anchor="ra",
     )
-    strategy_footer = "新版依凍結進場區、停損與目標；僅次一交易日觸區成交。"
-    if report["legacy_count"]:
-        strategy_footer += " 舊版仍沿用 +15%/-10%。"
-    draw.text((54, footer_y + 46), strategy_footer, font=_font(14, True), fill="#FBBF24")
-    draw.text((IMAGE_WIDTH - 54, footer_y + 46), "僅供研究參考", font=_font(16, True), fill="#FBBF24", anchor="ra")
+    strategy_footer = _tracking_strategy_footer(report)
+    draw.text((54, footer_y + 46), _fit_text(draw, strategy_footer, _font(14, True), 970), font=_font(14, True), fill="#FBBF24")
+    draw.text((54, footer_y + 73), "入榜校正回測勝率與後續已結模擬交易實績不同口徑，不可直接對比。", font=_font(14), fill="#94A3B8")
+    draw.text((IMAGE_WIDTH - 54, footer_y + 96), "僅供研究參考", font=_font(16, True), fill="#FBBF24", anchor="ra")
 
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
@@ -1292,7 +1329,7 @@ def send_top10_photo(
     return _send_photo_bytes(
         png,
         f"top10-{trading_date}.png",
-        f"台股每日可執行 Top 10｜{trading_date}\n僅納入現在可執行標的；技術勝率為歷史回測，僅供研究參考。",
+        f"台股每日可執行 Top 10｜{trading_date}\n僅納入現在可執行標的；全/訓/驗為樣本拆分，校正回測勝率非後續已結實績。",
         bot_token,
         chat_id,
         session,
@@ -1316,7 +1353,7 @@ def send_executable_photo(
     return _send_document_bytes(
         png,
         f"executable-{trading_date}.png",
-        f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；請依圖片停損控管風險。",
+        f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；全/訓/驗為回測樣本拆分，請依圖片停損控管風險。",
         bot_token,
         chat_id,
         session,
@@ -1368,7 +1405,7 @@ def send_tracking_performance_photo(
             (
                 f"每日追蹤績效｜{trading_date}｜第 {page_number}/{len(pages)} 頁\n"
                 f"從 {TRACKING_PERFORMANCE_START_DATE} 分析名單起；本日有損益 {report['tracked_count']} 檔、"
-                f"平均單日 {daily_average}；只採真實盤後行情。"
+                f"平均單日 {daily_average}；只採真實盤後行情；策略為模擬績效，與入榜校正回測勝率不同口徑。"
             ),
             bot_token,
             chat_id,

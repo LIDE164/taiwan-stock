@@ -55,6 +55,12 @@ class Top10TrackerTests(unittest.TestCase):
             "最高價": 130, "最低價": 70, "收盤價": 110,
             "WinRate": 54.32, "Backtest_Samples": 37,
             "Backtest_Scope": "純技術面逐步前推",
+            "Backtest_Schema": "executable_v3",
+            "Backtest_Overall_Samples": 51,
+            "Backtest_Training_Samples": 37,
+            "Validation_Samples": 14,
+            "Backtest_Raw_WinRate": 55.4,
+            "Validation_Raw_WinRate": 42.9,
             "Backtest_Net_Expectancy": 0.8,
             "Validation_Net_Expectancy": 0.4,
             "Critical_Data_Ready": True,
@@ -72,6 +78,12 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(positions[0]["entry_backtest_samples"], 37)
         self.assertEqual(positions[0]["entry_backtest_scope"], "純技術面逐步前推")
         self.assertEqual(positions[0]["entry_backtest_status"], "ok")
+        self.assertEqual(positions[0]["entry_backtest_schema"], "executable_v3")
+        self.assertEqual(positions[0]["entry_backtest_overall_samples"], 51)
+        self.assertEqual(positions[0]["entry_backtest_training_samples"], 37)
+        self.assertEqual(positions[0]["entry_backtest_validation_samples"], 14)
+        self.assertEqual(positions[0]["entry_backtest_raw_win_rate"], 55.4)
+        self.assertEqual(positions[0]["entry_backtest_validation_raw_win_rate"], 42.9)
         self.assertEqual(positions[0]["signal_snapshot"]["Backtest_Net_Expectancy"], 0.8)
         self.assertTrue(positions[0]["signal_snapshot"]["Critical_Data_Ready"])
         self.assertEqual(
@@ -80,6 +92,8 @@ class Top10TrackerTests(unittest.TestCase):
         )
         self.assertEqual(snapshots[0]["entry_win_rate"], 54.32)
         self.assertEqual(snapshots[0]["entry_backtest_samples"], 37)
+        self.assertEqual(snapshots[0]["entry_backtest_schema"], "executable_v3")
+        self.assertEqual(snapshots[0]["entry_backtest_overall_samples"], 51)
         self.assertEqual(snapshots[0]["action"], "SIGNAL")
         self.assertIsNone(snapshots[0]["pnl_pct"])
         self.assertIsNone(snapshots[0]["highest_price"])
@@ -424,17 +438,28 @@ class Top10TrackerTests(unittest.TestCase):
             "lowest_price": 100, "current_price": 100, "pnl_pct": 0,
             "entry_win_rate": 51.25, "entry_backtest_samples": 40,
             "entry_backtest_scope": "入榜日口徑", "entry_backtest_status": "ok",
+            "entry_backtest_schema": "executable_v3",
+            "entry_backtest_overall_samples": 60,
+            "entry_backtest_training_samples": 40,
+            "entry_backtest_validation_samples": 20,
+            "entry_backtest_raw_win_rate": 52.5,
+            "entry_backtest_validation_raw_win_rate": 45.0,
         }]
         top10 = [{
             "代號": "2330", "名稱": "台積電", "Rank": 1,
             "開盤價": 101, "最高價": 104, "最低價": 99, "收盤價": 103,
             "WinRate": 88.8, "Backtest_Samples": 99,
+            "Backtest_Schema": "future_v4", "Backtest_Overall_Samples": 120,
         }]
         positions, snapshots = update_positions_with_snapshots(existing, top10, {}, "2026-08-17")
         self.assertEqual(positions[0]["entry_win_rate"], 51.25)
         self.assertEqual(positions[0]["entry_backtest_samples"], 40)
         self.assertEqual(snapshots[0]["entry_win_rate"], 51.25)
         self.assertEqual(snapshots[0]["entry_backtest_samples"], 40)
+        self.assertEqual(positions[0]["entry_backtest_schema"], "executable_v3")
+        self.assertEqual(snapshots[0]["entry_backtest_overall_samples"], 60)
+        self.assertEqual(snapshots[0]["entry_backtest_training_samples"], 40)
+        self.assertEqual(snapshots[0]["entry_backtest_validation_samples"], 20)
 
     def test_missing_entry_backtest_is_explicit_and_not_shown_as_zero_win_rate(self):
         top10 = [{
@@ -954,6 +979,9 @@ class Top10TrackerTests(unittest.TestCase):
             "2026-08-14": [{
                 "代號": "2330", "WinRate": 52.6, "Backtest_Samples": 31,
                 "Backtest_Scope": "入榜日回測",
+                "Backtest_Schema": "executable_v3",
+                "Backtest_Overall_Samples": 45,
+                "Backtest_Training_Samples": 31,
             }],
             "2026-08-17": [{
                 "代號": "2330", "WinRate": 91.0, "Backtest_Samples": 80,
@@ -963,6 +991,8 @@ class Top10TrackerTests(unittest.TestCase):
         self.assertEqual(result[0]["entry_win_rate"], 52.6)
         self.assertEqual(result[0]["entry_backtest_samples"], 31)
         self.assertEqual(result[0]["entry_backtest_scope"], "入榜日回測")
+        self.assertNotIn("entry_backtest_schema", result[0])
+        self.assertNotIn("entry_backtest_overall_samples", result[0])
         self.assertNotIn("entry_win_rate", positions[0])
 
     def test_legacy_position_stays_missing_when_entry_day_source_is_unavailable(self):

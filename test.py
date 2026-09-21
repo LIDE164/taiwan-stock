@@ -18,6 +18,10 @@ from streamlit_autorefresh import st_autorefresh
 # 引入自訂繪圖函式與共用大腦核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance
 from analysis_live import fetch_analysis_live_quote
+from backtest_reporting import (
+    backtest_diagnostic_rows, backtest_record_fields, reconcile_intraday_evidence,
+    replace_backtest_snapshot, sample_breakdown, summarize_scan_evidence,
+)
 from app_security import (
     build_stock_url,
     escape_html,
@@ -1827,17 +1831,13 @@ def analyze_today(
     data['評級'] = label
     data['Reasons'] = rs
     data['Feature'] = feature
-    default_backtest = calculate_historical_performance(
-        df,
-        1.5,
-        1.0,
-        lookback_days=BACKTEST_LOOKBACK_DAYS,
-    )
-    data['WinRate'] = default_backtest.get('win_rate')
-    data['Backtest_Samples'] = default_backtest.get('closed_signals')
-    data['Backtest_Scope'] = default_backtest.get('backtest_scope')
-    data['Validation_WinRate'] = default_backtest.get('validation_win_rate')
-    data['Validation_Samples'] = default_backtest.get('validation_samples')
+    if effective_intraday and cached_doc:
+        replace_backtest_snapshot(data, cached_doc)
+    else:
+        default_backtest = calculate_historical_performance(
+            df, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS,
+        )
+        data.update(backtest_record_fields(default_backtest))
     model_confidence, model_confidence_label = build_model_confidence(
         data.get('WinRate'),
         data.get('Backtest_Samples'),
@@ -2217,7 +2217,7 @@ if st.session_state.page == "home":
         st.caption("進場條件（量化雷達適用）")
         entry_filter = st.radio(
             "進場條件：",
-            ["現在可執行", "等待確認／拉回", "全部候選"],
+            ["現在可執行", "條件符合，待驗證", "等待確認／拉回", "全部候選"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -2296,11 +2296,7 @@ if st.session_state.page == "home":
                             return None
                         cache_context = "realtime" if is_intraday else "latest"
                         analysis_cache = load_analysis_cache(ticker, LIVE_SCORE_CACHE_SECONDS, context=cache_context)
-                        cached_data = analysis_cache.get("data") if analysis_cache else None
-                        if is_intraday and isinstance(cached_data, dict) and cached_data.get("Score_Mode_Raw") == "realtime":
-                            cached_data = dict(cached_data)
-                            return annotate_intraday_score(base, cached_data)
-
+                        # Always score the just-fetched quote; reuse support data, not a stale live price.
                         if analysis_cache and analysis_cache.get("fund"):
                             fund = analysis_cache.get("fund")
                             inst_data = analysis_cache.get("inst_data", [])
@@ -2317,12 +2313,7 @@ if st.session_state.page == "home":
                         res = analyze_today(df, ticker, inst_data, False, fund, cached_doc=base, is_intraday=is_intraday)
                         if res:
                             if is_intraday:
-                                for key in (
-                                    "WinRate", "Backtest_Samples", "Validation_WinRate",
-                                    "Validation_Samples", "Backtest_Scope",
-                                ):
-                                    if isinstance(base, dict) and key in base:
-                                        res[key] = base[key]
+                                res = reconcile_intraday_evidence(base if isinstance(base, dict) else {}, res)
                             else:
                                 bt_preview = calculate_historical_performance(df, 1.5, 1.0)
                                 res["WinRate"] = bt_preview.get("win_rate", res.get("WinRate", 0.0))
@@ -2330,12 +2321,16 @@ if st.session_state.page == "home":
                                 res["Validation_WinRate"] = bt_preview.get("validation_win_rate", 0.0)
                                 res["Validation_Samples"] = bt_preview.get("validation_samples", 0)
                                 res["Backtest_Scope"] = bt_preview.get("backtest_scope", BACKTEST_SCOPE)
+                                res.update(backtest_record_fields(bt_preview))
                             res["Score_Source"] = "盤中重算" if is_intraday else "本機備援重算"
                             if is_intraday:
                                 res["Intraday_Quote_Source"] = df.attrs.get(
                                     "intraday_quote_source",
                                     "盤中延遲行情",
                                 )
+                                res["Intraday_Quote_Status"] = "realtime"
+                                res["Intraday_Quote_Time"] = str(quote.get("quote_time") or "")
+                                res["Intraday_Quote_Freshness"] = str(quote.get("freshness") or "盤中行情（可能延遲）")
                             save_analysis_cache(
                                 ticker,
                                 {"data": res, "fund": fund, "inst_data": inst_data},
@@ -2431,8 +2426,28 @@ if st.session_state.page == "home":
                 score_count = len(df_results)
                 if 'Entry_Status_Group' not in df_results.columns:
                     df_results['Entry_Status_Group'] = "watch"
+                evidence_summary = summarize_scan_evidence(df_results.to_dict('records'), intraday=is_intraday)
+                with st.expander("榜單樣本與篩選原因", expanded=evidence_summary["ready_count"] == 0):
+                    st.caption(
+                        f"目前篩選範圍 {evidence_summary['count']} 檔｜訓練／原制樣本 0 筆：{evidence_summary['zero_samples']} 檔"
+                        f"｜1 筆：{evidence_summary['one_sample']} 檔｜未提供：{evidence_summary['missing_samples']} 檔。"
+                    )
+                    st.write(
+                        f"樣本門檻達標 {evidence_summary['sample_gate_pass']} 檔；"
+                        f"完整條件可執行 {evidence_summary['ready_count']} 檔；"
+                        f"價格與風控條件符合、歷史證據未通過 {len(evidence_summary['observations'])} 檔。"
+                    )
+                    st.caption("可執行需訓練至少 15 筆、驗證至少 5 筆，另檢核勝率、成本後期望值及風控；不會用舊制樣本補新制筆數。")
+                    st.dataframe(
+                        pd.DataFrame(evidence_summary['reasons'], columns=["主要未通過原因／判定", "檔數"]),
+                        hide_index=True, use_container_width=True,
+                    )
                 if entry_filter == "現在可執行":
                     df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "ready"]
+                elif entry_filter == "條件符合，待驗證":
+                    observations = evidence_summary["observations"]
+                    df_results = pd.DataFrame(observations) if observations else df_results.iloc[0:0]
+                    st.warning("此區僅供紙上觀察，尚未通過歷史證據檢核；不列入每日可執行 Top10、預測圖或自動追蹤持倉。")
                 elif entry_filter == "等待確認／拉回":
                     df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "wait"]
             entry_count = len(df_results)
@@ -2524,7 +2539,9 @@ if st.session_state.page == "home":
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
                 if not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "現在可執行":
-                    st.info("目前沒有同時進入觀察區間、量比達標且資料完整度足夠的股票；可切換「等待確認／拉回」查看候選。")
+                    st.info("目前沒有通過完整進場與歷史證據檢核的股票。請查看上方篩選原因，或切換「條件符合，待驗證」及「等待確認／拉回」；空榜不代表 API 沒有資料。")
+                elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "條件符合，待驗證":
+                    st.info("目前沒有僅被歷史證據擋下的候選；價格、量能、資料或風控條件仍需等待。")
                 elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待確認／拉回":
                     st.info("目前沒有等待量能、觸發或拉回的候選；可切換「全部候選」查看待新掃描資料。")
                 else:
@@ -3616,6 +3633,7 @@ elif st.session_state.page == "analysis":
             and cached_score_date == analysis_price_date
         )
         if use_cached_list_score:
+            replace_backtest_snapshot(data, cached_doc)
             for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Model_Confidence", "Model_Confidence_Label", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Sell_Streak", "Foreign_Net", "Trust_Net", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Data_Completeness", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Operating_Income", "Financial_Net_Income", "Financial_Operating_Margin", "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio", "Financial_Risk_Level", "Financial_Risk_Flags"]:
                 if k in cached_doc:
                     data[k] = cached_doc[k]
@@ -3695,7 +3713,8 @@ elif st.session_state.page == "analysis":
         validation_win_rate = safe_num(backtest_stats.get("validation_win_rate"), 0)
         validation_samples = int(safe_num(backtest_stats.get("validation_samples"), 0))
         
-        # 只有當所有回測設定均為系統預設時，才採用快取的歷史勝率以加速讀取
+        # 預設策略對齊入榜日快照；不可混用舊勝率與新算出的樣本分母。
+        displayed_backtest = backtest_record_fields(backtest_stats)
         is_default_backtest = (
             atr_target_mult == 1.5 and 
             atr_stop_mult == 1.0 and 
@@ -3705,15 +3724,17 @@ elif st.session_state.page == "analysis":
             not filter_high_conflict
         )
         if use_cached_list_score and is_default_backtest:
-            win_rate = safe_num(cached_doc.get("WinRate"), win_rate)
-            closed_signals = int(safe_num(cached_doc.get("Backtest_Samples"), closed_signals))
-            validation_win_rate = safe_num(cached_doc.get("Validation_WinRate"), validation_win_rate)
-            validation_samples = int(safe_num(cached_doc.get("Validation_Samples"), validation_samples))
+            replace_backtest_snapshot(displayed_backtest, cached_doc)
+        win_rate = safe_num(displayed_backtest.get("WinRate"), 0)
+        closed_signals = int(safe_num(displayed_backtest.get("Backtest_Samples"), 0))
+        validation_win_rate = safe_num(displayed_backtest.get("Validation_WinRate"), 0)
+        validation_samples = int(safe_num(displayed_backtest.get("Validation_Samples"), 0))
+        sample_info = sample_breakdown(displayed_backtest)
         if is_intra:
-            data['WinRate'] = win_rate
-            data['Backtest_Samples'] = closed_signals
+            # 自訂回測只供本頁比較，不覆蓋正式榜單的預設策略快照。
             for row in st.session_state.get('nav_pool_data', []) or []:
                 if normalize_ticker(row.get('代號', '')) == target:
+                    replace_backtest_snapshot(row, data)
                     for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Model_Confidence", "Model_Confidence_Label", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Sell_Streak", "Foreign_Net", "Trust_Net", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Data_Completeness", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Operating_Income", "Financial_Net_Income", "Financial_Operating_Margin", "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio", "Financial_Risk_Level", "Financial_Risk_Flags", "Score_Source", "收盤價", "開盤價", "最高價", "最低價", "漲跌", "漲跌幅", "Est_Vol_Ratio", "Volume_Confirmed", "Entry_Status", "Entry_Status_Group", "Entry_Ready", "Entry_Reason", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target", "No_Chase_Price", "Intraday_Quote_Source", "Intraday_Quote_Time", "Intraday_Quote_Freshness", "Intraday_Quote_Status"]:
                         if k in data:
                             row[k] = data[k]
@@ -3725,11 +3746,23 @@ elif st.session_state.page == "analysis":
         data['RRR'] = dynamic_rrr
         render_metric_grid([
             {"label": "量化分數", "value": f"{sc}", "sub": data.get("評級", "").replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", ""), "color": "#EF4444" if sc >= 60 else "#FACC15"},
-            {"label": "技術面勝率", "value": f"{win_rate:.1f}%" if closed_signals > 0 else "--", "sub": f"全期 {closed_signals} 筆", "color": "#EF4444" if closed_signals > 0 and win_rate >= 60 else "#FACC15"},
-            {"label": "近期驗證", "value": f"{validation_win_rate:.1f}%" if validation_samples > 0 else "--", "sub": f"末 30%｜{validation_samples} 筆", "color": "#EF4444" if validation_samples > 0 and validation_win_rate >= 60 else "#FACC15"},
+            {"label": sample_info['primary_label'], "value": f"{win_rate:.1f}%" if closed_signals > 0 and optional_num(displayed_backtest.get('WinRate')) is not None else "--", "sub": sample_info['sample_text'], "color": "#EF4444" if closed_signals > 0 and win_rate >= 60 else "#FACC15"},
+            {"label": "近期驗證校正勝率", "value": f"{validation_win_rate:.1f}%" if validation_samples > 0 and optional_num(displayed_backtest.get('Validation_WinRate')) is not None else "--", "sub": f"末 30%｜{validation_samples} 筆", "color": "#EF4444" if validation_samples > 0 and validation_win_rate >= 60 else "#FACC15"},
             {"label": "風報比", "value": f"1 : {dynamic_rrr}", "sub": f"停損 {atr_stop_mult}x / 停利 {atr_target_mult}x", "color": "#60A5FA"},
         ])
-        st.caption(f"回測口徑：{BACKTEST_SCOPE}。成本假設含買賣手續費各 0.1425%、賣出證交稅 0.3%、每筆最低手續費 20 元及雙向滑價各 0.05%。反覆依同一段資料調參會使近期驗證失去樣本外意義。")
+        st.caption(f"回測口徑：{displayed_backtest.get('Backtest_Scope') or '舊資料未提供'}。成本假設含買賣手續費各 0.1425%、賣出證交稅 0.3%、每筆最低手續費 20 元及停損滑價 0.05%（舊制以當時口徑為準）。校正回測勝率不等於每日追蹤的實際模擬勝率；反覆調參會使近期驗證失去樣本外意義。")
+        with st.expander("為何回測樣本少？"):
+            funnel_rows = backtest_diagnostic_rows(displayed_backtest)
+            if funnel_rows:
+                diagnostics = displayed_backtest['Backtest_Diagnostics']
+                st.caption(f"{diagnostics.get('window_start', '--')} 至 {diagnostics.get('window_end', '--')}｜{displayed_backtest.get('Backtest_Schema', '--')}")
+                st.dataframe(pd.DataFrame(funnel_rows), hide_index=True, use_container_width=True)
+                st.caption("各階段依序篩選，不可加總。隔日觸價後仍需通過成交順序、成本與資料檢核；未完成交易不計勝率。")
+                plan_reasons = diagnostics.get('plan_rejected_reasons') or {}
+                if plan_reasons:
+                    st.dataframe(pd.DataFrame(list(plan_reasons.items()), columns=['歷史進場未通過原因', '次數']), hide_index=True, use_container_width=True)
+            else:
+                st.info("此筆雲端快照尚未保存分階段統計，待新版掃描更新；不以今日重算結果冒充入榜日資料。")
         v_c = "#22c55e" if sc < 45 else ("#facc15" if sc < 60 else "#ef4444")
         v_t = escape_html(str(data['評級']).replace('🟢 ', '').replace('🟡 ', '').replace('⚪ ', ''))
         confidence = safe_num(data.get("Data_Completeness", data.get("Confidence")), 0)

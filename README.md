@@ -41,8 +41,23 @@ The tests cover trading-date resolution, same-day scan idempotency, confidence p
 
 The backtest is explicitly a walk-forward technical-signal test. It does not claim to
 reconstruct historical EPS, monthly revenue, or institutional data. Returns include
-buy/sell commission, stock transaction tax, minimum commission, and two-sided slippage;
+buy/sell commission, stock transaction tax, minimum commission, and stop-execution slippage;
 the most recent 30% of trades is reported separately as a validation segment.
+Current `executable_v3` records explicitly preserve overall, training, and validation
+counts. The primary displayed rate is the adjusted training rate, not the overall
+or realized tracking win rate. A legacy record without a known split stays labeled
+as legacy; its validation count is not subtracted or added again. Signal-date plans
+must pass the same price, daily-change anti-chase, volume, and cost controls before
+next-session fills count. Per-stage diagnostics explain rejected plans, unfilled
+orders, unresolved execution, and incomplete trades without inventing samples.
+
+The homepage's **條件符合，待驗證** view is a separate, read-only paper-observation
+list: only historical-evidence gates are removed for this diagnostic view, while
+price, data and risk checks remain in force. Every row is explicitly non-executable
+and is never supplied to the official Top-10, Telegram prediction sheets or position
+tracker. An empty executable list is allowed; current thresholds are not lowered
+to force ten names. Daily performance rows label legacy versus next-session zone
+execution, and retain entry-time sample/rate metadata rather than today's values.
 The default stock commission/tax assumptions follow the
 [TWSE investing guide](https://www.twse.com.tw/zh/about/company/guide.html); broker-specific discounts and minimum fees can differ.
 

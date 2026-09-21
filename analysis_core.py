@@ -31,6 +31,7 @@ DEFAULT_MIN_COMMISSION = 20.0
 # The production/default backtest now sizes each trade from its stop risk.
 DEFAULT_TRADE_SHARES = 1000
 BACKTEST_MAX_LOSS_PER_TRADE = 5000.0
+BACKTEST_SCHEMA = "executable_v3"
 BACKTEST_SCOPE = (
     "純技術面可執行策略逐步前推（65 分、訊號日須位於可執行區、"
     "次一交易日觸價成交、拒絕向下跳空後回觸、成交後實際報酬風險比至少 1.30、"
@@ -316,6 +317,7 @@ def build_score_input(
         "ROC_20": roc_20,
         "訊號": t_close > safe_float(t.get("20MA"), t_close),
         "收盤價": t_close,
+        "漲跌幅": round((t_close - p_close) / p_close * 100, 2) if p_close > 0 else None,
         "最高價": t_high,
         "最低價": t_low,
         "BB_DN": safe_float(t.get("BB_DN"), t_close),
@@ -694,6 +696,42 @@ def calculate_historical_performance(
     filter_low_conf: bool = False,
     filter_high_conflict: bool = False,
 ) -> Dict[str, Any]:
+    # Every evaluated signal reaches one terminal bucket. These counts explain
+    # sparse samples without relaxing any of the execution requirements.
+    diagnostics: Dict[str, Any] = {
+        "status": "invalid_parameters",
+        "history_bars": 0 if df_slice is None else len(df_slice),
+        "window_bars": 0,
+        "window_start": None,
+        "window_end": None,
+        "evaluated": 0,
+        "skipped_overlap": 0,
+        "skipped_no_next_session": 0,
+        "signal_pass": 0,
+        "signal_rejected": 0,
+        "filter_rejected": 0,
+        "filter_rejected_reasons": {},
+        "plan_ready": 0,
+        "plan_rejected": 0,
+        "plan_rejected_reasons": {},
+        "plan_rejected_statuses": {},
+        "filled": 0,
+        "fill_rejected": 0,
+        "fill_rejected_reasons": {},
+        "execution_rejected": 0,
+        "execution_rejected_reasons": {},
+        "execution_unresolved": 0,
+        "incomplete": 0,
+        "completed": 0,
+        "training": 0,
+        "validation": 0,
+    }
+
+    def reject(stage: str, reason: str) -> None:
+        diagnostics[f"{stage}_rejected"] += 1
+        reasons = diagnostics[f"{stage}_rejected_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
     empty = {
         "win_rate": 0.0,
         "closed_signals": 0,
@@ -710,6 +748,8 @@ def calculate_historical_performance(
         "sample_confidence": "無樣本",
         "trades": [],
         "backtest_scope": BACKTEST_SCOPE,
+        "backtest_schema": BACKTEST_SCHEMA,
+        "diagnostics": diagnostics,
         "validation_win_rate": 0.0,
         "validation_samples": 0,
         "validation_avg_return": 0.0,
@@ -802,6 +842,7 @@ def calculate_historical_performance(
     )
 
     if df_slice is None or len(df_slice) < 21:
+        diagnostics["status"] = "insufficient_history"
         return empty
 
     if fund:
@@ -811,6 +852,12 @@ def calculate_historical_performance(
         )
 
     recent = df_slice.tail(lookback_days)
+    diagnostics.update({
+        "status": "complete",
+        "window_bars": len(recent),
+        "window_start": str(recent.index[0])[:10],
+        "window_end": str(recent.index[-1])[:10],
+    })
     last_buy_idx = -999
     start_idx = len(df_slice) - len(recent)
     trades: List[Dict[str, Any]] = []
@@ -819,11 +866,15 @@ def calculate_historical_performance(
 
     for idx in range(len(recent)):
         actual_idx = start_idx + idx
-        if actual_idx - last_buy_idx < min_gap_days:
+        # A signal fills on the next session, so compare entry with entry.
+        if actual_idx + 1 - last_buy_idx < min_gap_days:
+            diagnostics["skipped_overlap"] += 1
             continue
         if actual_idx + 1 >= len(df_slice):
+            diagnostics["skipped_no_next_session"] += 1
             continue
 
+        diagnostics["evaluated"] += 1
         temp_df = df_slice.iloc[: actual_idx + 1]
         signal, score, signal_data = is_strategy_signal(
             temp_df,
@@ -831,11 +882,15 @@ def calculate_historical_performance(
             score_threshold=parsed_score_threshold,
         )
         if not signal:
+            diagnostics["signal_rejected"] += 1
             continue
+        diagnostics["signal_pass"] += 1
 
         if filter_low_conf and signal_data.get("Confidence", 100) < 60:
+            reject("filter", "low_confidence")
             continue
         if filter_high_conflict and signal_data.get("Signal_Conflict") == "高":
+            reject("filter", "high_conflict")
             continue
 
         signal_row = temp_df.iloc[-1]
@@ -852,9 +907,17 @@ def calculate_historical_performance(
                 cost_model=cost_model,
             )
         except (TypeError, ValueError, ZeroDivisionError):
+            reject("plan", "invalid_plan_input")
+            statuses = diagnostics["plan_rejected_statuses"]
+            statuses["invalid_plan_input"] = statuses.get("invalid_plan_input", 0) + 1
             continue
         if entry_plan.get("Entry_Status") != READY_STATUS:
+            reject("plan", str(entry_plan.get("Entry_Reason") or "unspecified"))
+            status = str(entry_plan.get("Entry_Status") or "unspecified")
+            statuses = diagnostics["plan_rejected_statuses"]
+            statuses[status] = statuses.get(status, 0) + 1
             continue
+        diagnostics["plan_ready"] += 1
 
         entry_idx = actual_idx + 1
         entry_row = df_slice.iloc[entry_idx]
@@ -862,27 +925,31 @@ def calculate_historical_performance(
         entry_high = strict_float(entry_plan.get("Entry_High"))
         target_price = strict_float(entry_plan.get("Entry_Target"))
         stop_price = strict_float(entry_plan.get("Entry_Stop"))
-        if any(value is None for value in (entry_low, entry_high, target_price, stop_price)):
-            continue
         if entry_low is None or entry_high is None or target_price is None or stop_price is None:
+            reject("fill", "invalid_plan_levels")
             continue
         raw_entry_price, fill_rule = _next_session_plan_fill(entry_row, entry_low, entry_high)
         if raw_entry_price is None:
+            reject("fill", fill_rule)
             continue
+        diagnostics["filled"] += 1
         # Production tracking fills an observed open/zone price exactly.  The
         # conservative slippage assumption belongs to stop execution, not to
         # both entry and every possible exit.
         entry_price = raw_entry_price
         atr_val = safe_float(signal_row.get("ATR"), 0.0)
         if entry_price <= 0 or atr_val <= 0:
+            reject("execution", "invalid_entry_or_atr")
             continue
         if (
             not all(np.isfinite(value) for value in (stop_price, entry_price, target_price))
             or not 0 < stop_price < entry_price < target_price
         ):
+            reject("execution", "invalid_price_order")
             continue
         effective_reward_risk = (target_price - entry_price) / (entry_price - stop_price)
         if effective_reward_risk < BACKTEST_MIN_EFFECTIVE_REWARD_RISK:
+            reject("execution", "gross_reward_risk")
             continue
         future_df = _bars_observable_after_fill(
             df_slice.iloc[entry_idx : entry_idx + hold_days],
@@ -893,6 +960,7 @@ def calculate_historical_performance(
         )
         if future_df is None:
             execution_unresolved += 1
+            diagnostics["execution_unresolved"] += 1
             last_buy_idx = entry_idx
             continue
         risk_estimate = (
@@ -906,6 +974,7 @@ def calculate_historical_performance(
             )
         )
         if risk_estimate is None or risk_estimate.shares < 1:
+            reject("execution", "position_sizing")
             continue
         trade_shares = risk_estimate.shares
         target_net_profit = estimate_round_trip_net_profit(
@@ -919,9 +988,11 @@ def calculate_historical_performance(
             or target_net_profit <= 0
             or risk_estimate.estimated_net_loss <= 0
         ):
+            reject("execution", "invalid_net_payoff")
             continue
         effective_net_reward_risk = target_net_profit / risk_estimate.estimated_net_loss
         if effective_net_reward_risk < BACKTEST_MIN_EFFECTIVE_REWARD_RISK:
+            reject("execution", "net_reward_risk")
             continue
         result = _trade_result(
             future_df,
@@ -940,12 +1011,14 @@ def calculate_historical_performance(
             stop_mult=stop_mult,
         )
         if result is None:
+            reject("execution", "invalid_exit_data")
             continue
         # The final rows do not yet have a complete forward holding window.  Do
         # not turn those still-open observations into artificial expiry trades;
         # a target/stop hit inside the available partial window is already a
         # genuinely closed trade and remains eligible.
         if len(future_df) < hold_days and result.get("exit_reason") == "到期出場":
+            diagnostics["incomplete"] += 1
             continue
 
         last_buy_idx = entry_idx
@@ -960,6 +1033,7 @@ def calculate_historical_performance(
         result["shares"] = trade_shares
         result["planned_net_risk"] = round(risk_estimate.estimated_net_loss, 2)
         trades.append(result)
+        diagnostics["completed"] += 1
         buy_dates.append(df_slice.index[entry_idx])
 
     if not trades:
@@ -971,6 +1045,8 @@ def calculate_historical_performance(
     validation_count = min(validation_count, max(0, len(trades) - 1))
     validation_trades = trades[-validation_count:] if validation_count else []
     training_trades = trades[:-validation_count] if validation_count else trades
+    diagnostics["training"] = len(training_trades)
+    diagnostics["validation"] = validation_count
     wins = sum(1 for trade in training_trades if trade["win"])
     losses = len(training_trades) - wins
     returns = [safe_float(trade.get("return_pct")) for trade in training_trades]
@@ -1010,6 +1086,8 @@ def calculate_historical_performance(
         **winrate_stats,
         "trades": trades,
         "backtest_scope": BACKTEST_SCOPE,
+        "backtest_schema": BACKTEST_SCHEMA,
+        "diagnostics": diagnostics,
         "validation_win_rate": validation_stats["adjusted_win_rate"],
         "validation_samples": validation_count,
         "validation_avg_return": (

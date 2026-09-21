@@ -18,6 +18,7 @@ import streamlit as st
 # 引入共用核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
 from app_security import normalize_ticker
+from backtest_reporting import backtest_record_fields
 from chunked_firestore import (
     STORAGE_SCHEMA_VERSION,
     build_chunk_documents,
@@ -1533,6 +1534,7 @@ def run_daily_scan(
                 )
                 change_pct = round((t_close - p_close) / p_close * 100, 2)
                 data.update({
+                    **backtest_record_fields(backtest),
                     "Score": sc,
                     "最高價": float(t_high),
                     "最低價": float(t_low),
@@ -1552,6 +1554,7 @@ def run_daily_scan(
                 })
                 entry_plan = build_entry_readiness(data)
                 result = {
+                    **backtest_record_fields(backtest),
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Data_Date": scan_date_str,
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
