@@ -19,6 +19,7 @@ from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
     calculate_max_odd_lot_position,
 )
+from ranking_comparison import comparison_display_record
 
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
@@ -183,12 +184,18 @@ def _position_size_for_max_loss(
 def build_executable_display_rows(
     results: Sequence[Mapping[str, Any]],
     max_loss_per_trade: float = PER_TRADE_MAX_LOSS,
+    *,
+    comparison: bool = False,
 ) -> list[dict[str, Any]]:
     """Return executable records sized to a maximum NT$ loss for each individual trade."""
-    executable = [
-        record for record in results
-        if str(record.get("Entry_Status") or "").strip() == "現在可執行"
-    ][:10]
+    executable = (
+        [comparison_display_record(record) for record in results if isinstance(record, Mapping)]
+        if comparison
+        else [
+            record for record in results
+            if str(record.get("Entry_Status") or "").strip() == "現在可執行"
+        ][:10]
+    )
     rows: list[dict[str, Any]] = []
     for display_rank, record in enumerate(executable, start=1):
         score = _number(record.get("Score"))
@@ -210,6 +217,22 @@ def build_executable_display_rows(
             stop,
             max_loss_per_trade,
         )
+        versions = (
+            [str(value) for value in record.get("Execution_Versions", [])]
+            if comparison and isinstance(record.get("Execution_Versions"), list)
+            else []
+        )
+        version_label = _clean_text(record.get("Execution_Version_Label"), "比較") if comparison else ""
+        if versions == ["legacy"]:
+            analysis = _clean_text(record.get("Entry_Reason"), "舊制符合；新制原因未提供")
+            legacy_plan = record.get("Legacy_Entry_Evaluation", record.get("Legacy_Entry_Plan")) or {}
+            analysis_lines = [
+                _clean_text(legacy_plan.get("Entry_Reason"), "符合 9/9 舊制條件"),
+                _clean_text(record.get("Comparison_New_Reason"), "新制原因未提供"),
+            ]
+        else:
+            analysis = build_entry_summary(record)
+            analysis_lines = [analysis]
         rows.append({
             "display_rank": display_rank,
             "ticker": _clean_text(record.get("代號")),
@@ -243,10 +266,27 @@ def build_executable_display_rows(
             "credibility_text": credibility,
             "win_rate_label": breakdown["primary_label"],
             "credibility_color": credibility_color,
-            "analysis": build_entry_summary(record),
+            "analysis": analysis,
+            "analysis_lines": analysis_lines,
             "mini_kbars": _normalize_mini_kbars(record.get("Mini_K")),
+            "execution_versions": versions,
+            "version_label": version_label,
+            "comparison_backtest_label": _clean_text(
+                record.get("Comparison_Backtest_Label"),
+                "新制回測（非舊制回測）",
+            ) if comparison else "",
         })
     return rows
+
+
+def _comparison_version_counts(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int, int]:
+    new_count = sum("new" in row.get("execution_versions", []) for row in rows)
+    legacy_count = sum("legacy" in row.get("execution_versions", []) for row in rows)
+    overlap_count = sum(
+        "new" in row.get("execution_versions", []) and "legacy" in row.get("execution_versions", [])
+        for row in rows
+    )
+    return new_count, legacy_count, overlap_count
 
 
 def _concentration_text(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -823,7 +863,7 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
     draw.text((62, 48), "TAIWAN STOCK RADAR", font=_font(18, True), fill="#60A5FA")
-    draw.text((62, 76), "每日可執行 Top 10", font=_font(39, True), fill="#F8FAFC")
+    draw.text((62, 76), "新制可執行 Top 10", font=_font(39, True), fill="#F8FAFC")
     draw.text((IMAGE_WIDTH - 62, 53), _clean_text(trading_date), font=_font(24, True), fill="#FBBF24", anchor="ra")
     draw.text((IMAGE_WIDTH - 62, 91), f"現在可執行 {len(rows)} 檔｜依量化分數排序", font=_font(19), fill="#94A3B8", anchor="ra")
     concentration_text = _concentration_text(rows)
@@ -834,7 +874,7 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
     if not rows:
         draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
         draw.text((IMAGE_WIDTH // 2, 485), "今日沒有符合", font=_font(32, True), fill="#94A3B8", anchor="mm")
-        draw.text((IMAGE_WIDTH // 2, 555), "「現在可執行」條件的股票", font=_font(42, True), fill="#F8FAFC", anchor="mm")
+        draw.text((IMAGE_WIDTH // 2, 555), "新制完整進場條件的股票", font=_font(42, True), fill="#F8FAFC", anchor="mm")
         draw.text((IMAGE_WIDTH // 2, 645), "不會使用等待拉回、等待量能或條件不足的股票補滿 Top 10", font=_font(20), fill="#64748B", anchor="mm")
     else:
         for index, row in enumerate(rows):
@@ -891,19 +931,39 @@ def render_executable_image(
     trading_date: str,
     *,
     selected_results: Sequence[Mapping[str, Any]] | None = None,
+    comparison_results: Sequence[Mapping[str, Any]] | None = None,
 ) -> bytes:
-    """Render the exact selected Top-10 population when one is supplied."""
-    render_source = selected_results if selected_results is not None else results
-    rows = build_executable_display_rows(render_source)
-    image = Image.new("RGB", (IMAGE_WIDTH, EXECUTABLE_IMAGE_HEIGHT), "#070D1A")
+    """Render either the production Top-10 or an explicitly supplied strategy comparison."""
+    comparison_mode = comparison_results is not None
+    render_source = (
+        comparison_results
+        if comparison_mode
+        else (selected_results if selected_results is not None else results)
+    )
+    rows = build_executable_display_rows(render_source, comparison=comparison_mode)
+    content_bottom = 168 + len(rows) * (EXECUTABLE_CARD_HEIGHT + EXECUTABLE_CARD_GAP)
+    footer_y = (content_bottom + 22 if rows else 1000) if comparison_mode else max(1670, content_bottom + 22)
+    image_height = footer_y + 145 if comparison_mode else max(EXECUTABLE_IMAGE_HEIGHT, footer_y + 110)
+    image = Image.new("RGB", (IMAGE_WIDTH, image_height), "#070D1A")
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((30, 26, IMAGE_WIDTH - 30, 145), radius=28, fill="#0F172A", outline="#1E293B", width=2)
-    draw.text((62, 48), "EXECUTABLE WATCHLIST", font=_font(18, True), fill="#F87171")
+    draw.text(
+        (62, 48),
+        "NEW / LEGACY COMPARISON" if comparison_mode else "EXECUTABLE WATCHLIST",
+        font=_font(18, True),
+        fill="#F87171",
+    )
     draw.text((62, 76), prediction_title(trading_date), font=_font(39, True), fill="#F8FAFC")
     draw.text((IMAGE_WIDTH - 62, 53), f"分析日 {_clean_text(trading_date)}", font=_font(22, True), fill="#FBBF24", anchor="ra")
+    new_count, legacy_count, overlap_count = _comparison_version_counts(rows)
+    header_summary = (
+        f"聯集 {len(rows)} 檔｜新制 {new_count}・舊制 {legacy_count}・重合 {overlap_count}"
+        if comparison_mode
+        else f"{len(rows)} 檔｜每檔模型停損淨損上限 $5,000"
+    )
     draw.text(
         (IMAGE_WIDTH - 62, 91),
-        f"{len(rows)} 檔｜每檔模型停損淨損上限 $5,000",
+        header_summary,
         font=_font(19),
         fill="#94A3B8",
         anchor="ra",
@@ -915,8 +975,20 @@ def render_executable_image(
     if not rows:
         draw.rounded_rectangle((70, 245, IMAGE_WIDTH - 70, 950), radius=36, fill="#0F172A", outline="#1E293B", width=2)
         draw.text((IMAGE_WIDTH // 2, 485), "今日沒有符合", font=_font(32, True), fill="#94A3B8", anchor="mm")
-        draw.text((IMAGE_WIDTH // 2, 555), "「現在可執行」條件的股票", font=_font(42, True), fill="#F8FAFC", anchor="mm")
-        draw.text((IMAGE_WIDTH // 2, 645), "系統不會把等待拉回、等待量能或條件不足的股票塞入名單", font=_font(20), fill="#64748B", anchor="mm")
+        draw.text(
+            (IMAGE_WIDTH // 2, 555),
+            "新制或舊制可執行條件的股票" if comparison_mode else "「現在可執行」條件的股票",
+            font=_font(36 if comparison_mode else 42, True),
+            fill="#F8FAFC",
+            anchor="mm",
+        )
+        draw.text(
+            (IMAGE_WIDTH // 2, 645),
+            "兩套規則皆不以條件不足標的補滿榜單" if comparison_mode else "系統不會把等待拉回、等待量能或條件不足的股票塞入名單",
+            font=_font(20),
+            fill="#64748B",
+            anchor="mm",
+        )
     else:
         start_y = 168
         for index, row in enumerate(rows):
@@ -931,21 +1003,53 @@ def render_executable_image(
             )
             draw.ellipse((58, top + 20, 108, top + 70), fill="#7F1D1D")
             draw.text((83, top + 45), str(row["display_rank"]), font=_font(23, True), fill="#FECACA", anchor="mm")
-            stock_font = _font(25, True)
-            stock_text = _fit_text(draw, f"{row['ticker']}  {row['name']}", stock_font, 210)
+            stock_font = _font(22 if comparison_mode else 25, True)
+            stock_text = _fit_text(
+                draw,
+                f"{row['ticker']}  {row['name']}",
+                stock_font,
+                185 if comparison_mode else 210,
+            )
             draw.text((128, top + 10), stock_text, font=stock_font, fill="#F8FAFC")
-            score_x = min(350, int(128 + draw.textlength(stock_text, font=stock_font) + 14))
-            draw.text((score_x, top + 12), row["score_text"], font=_font(22, True), fill="#F87171")
-            sample_text = _fit_text(draw, row["sample_breakdown_text"], _font(14, True), 170)
-            draw.text((420, top + 16), sample_text, font=_font(14, True), fill=row["credibility_color"])
+            if comparison_mode:
+                version_color = (
+                    "#C4B5FD" if len(row["execution_versions"]) > 1
+                    else ("#60A5FA" if "new" in row["execution_versions"] else "#FBBF24")
+                )
+                draw.rounded_rectangle((318, top + 10, 403, top + 38), radius=12, fill="#172033", outline=version_color)
+                draw.text(
+                    (360, top + 24),
+                    _fit_text(draw, row["version_label"], _font(12, True), 75),
+                    font=_font(12, True),
+                    fill=version_color,
+                    anchor="mm",
+                )
+                draw.text((412, top + 13), row["score_text"], font=_font(18, True), fill="#F87171")
+                sample_x, sample_width = 478, 112
+            else:
+                score_x = min(350, int(128 + draw.textlength(stock_text, font=stock_font) + 14))
+                draw.text((score_x, top + 12), row["score_text"], font=_font(22, True), fill="#F87171")
+                sample_x, sample_width = 420, 170
+            sample_text = _fit_text(draw, row["sample_breakdown_text"], _font(14, True), sample_width)
+            draw.text((sample_x, top + 16), sample_text, font=_font(14, True), fill=row["credibility_color"])
             draw.text(
-                (420, top + 34),
-                _fit_text(draw, row["credibility_text"], _font(11), 170),
+                (sample_x, top + 34),
+                _fit_text(draw, row["credibility_text"], _font(11), sample_width),
                 font=_font(11),
                 fill=row["credibility_color"],
             )
-            analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
-            draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
+            if comparison_mode:
+                for line_index, line in enumerate(row["analysis_lines"][:2]):
+                    prefix = "解析｜" if line_index == 0 else "新制｜"
+                    draw.text(
+                        (128, top + 47 + line_index * 17),
+                        _fit_text(draw, f"{prefix}{line}", _font(11, True), 455),
+                        font=_font(11, True),
+                        fill="#CBD5E1" if line_index == 0 else "#94A3B8",
+                    )
+            else:
+                analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
+                draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
             _draw_mini_candles(
                 draw,
                 row["mini_kbars"],
@@ -968,11 +1072,14 @@ def render_executable_image(
                 draw.text((x, top + 96), label, font=_font(12), fill="#64748B")
                 draw.text((x, top + 116), value, font=_font(15, True), fill=color)
 
-    footer_y = 1670
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
     draw.text((54, footer_y + 14), EXECUTABLE_RISK_MODEL_TEXT, font=_font(15), fill="#94A3B8")
     draw.text((54, footer_y + 43), EXECUTABLE_GAP_RISK_TEXT, font=_font(16, True), fill="#FBBF24")
-    draw.text((54, footer_y + 72), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(14), fill="#94A3B8")
+    if comparison_mode:
+        draw.text((54, footer_y + 72), "舊制＝9/9 進場規則，僅比較、不納入新制自動追蹤；重合採新制區間。", font=_font(14, True), fill="#FBBF24")
+        draw.text((54, footer_y + 99), "圖中勝率與全/訓/驗樣本均為新制回測，並非舊制績效或舊制回測。", font=_font(14), fill="#94A3B8")
+    else:
+        draw.text((54, footer_y + 72), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(14), fill="#94A3B8")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -1329,7 +1436,7 @@ def send_top10_photo(
     return _send_photo_bytes(
         png,
         f"top10-{trading_date}.png",
-        f"台股每日可執行 Top 10｜{trading_date}\n僅納入現在可執行標的；全/訓/驗為樣本拆分，校正回測勝率非後續已結實績。",
+        f"台股每日新制可執行 Top 10｜{trading_date}\n僅納入新制現在可執行標的；舊制另見比較圖。全/訓/驗為樣本拆分，校正回測勝率非後續已結實績。",
         bot_token,
         chat_id,
         session,
@@ -1343,17 +1450,36 @@ def send_executable_photo(
     chat_id: Any,
     *,
     selected_results: Sequence[Mapping[str, Any]] | None = None,
+    comparison_results: Sequence[Mapping[str, Any]] | None = None,
     session: requests.Session | None = None,
 ) -> int | None:
     """Send the executable prediction as a lossless PNG document."""
-    render_source = selected_results if selected_results is not None else results
-    rows = build_executable_display_rows(render_source)
-    png = render_executable_image(results, trading_date, selected_results=selected_results)
-    count_text = f"共 {len(rows)} 檔" if rows else "今日無符合標的"
+    comparison_mode = comparison_results is not None
+    render_source = (
+        comparison_results
+        if comparison_mode
+        else (selected_results if selected_results is not None else results)
+    )
+    rows = build_executable_display_rows(render_source, comparison=comparison_mode)
+    png = render_executable_image(
+        results,
+        trading_date,
+        selected_results=selected_results,
+        comparison_results=comparison_results,
+    )
+    if comparison_mode:
+        new_count, legacy_count, overlap_count = _comparison_version_counts(rows)
+        count_text = (
+            f"聯集 {len(rows)} 檔｜新制 {new_count}、舊制 {legacy_count}、重合 {overlap_count}；"
+            "舊制為 9/9 入場規則，僅供比較且不納入新制自動追蹤。"
+        )
+    else:
+        count_text = f"共 {len(rows)} 檔" if rows else "今日無符合標的"
     return _send_document_bytes(
         png,
         f"executable-{trading_date}.png",
-        f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；全/訓/驗為回測樣本拆分，請依圖片停損控管風險。",
+        f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；"
+        "全/訓/驗及勝率皆為新制回測，請依圖片停損控管風險。",
         bot_token,
         chat_id,
         session,

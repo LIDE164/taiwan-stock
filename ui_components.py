@@ -4,6 +4,7 @@ import streamlit as st
 
 from app_security import build_stock_url, escape_html, safe_css_color
 from backtest_reporting import sample_breakdown
+from ranking_comparison import comparison_display_record
 
 
 def render_app_style(is_light_mode=False):
@@ -372,6 +373,11 @@ def generate_cards_html(
 
     for _, r in df_disp.iterrows():
         record = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+        # Never place these display-only legacy levels into navigation or tracking state.
+        record = comparison_display_record(record)
+        versions = record.get("Execution_Versions")
+        version_label = str(record.get("Execution_Version_Label") or "") if isinstance(versions, list) and versions else ""
+        legacy_only = record.get("Execution_Versions") == ["legacy"]
         p_val = optional_number(record.get("漲跌"))
         change_pct = optional_number(record.get("漲跌幅"))
         p_col = "#94a3b8" if p_val is None else ("#ef4444" if p_val >= 0 else "#22c55e")
@@ -381,6 +387,8 @@ def generate_cards_html(
         score_value = score if score is not None else 0
         s_col = "#ef4444" if score_value >= 60 else ("#facc15" if score_value >= 45 else "#22c55e")
         rating = str(record.get("評級", "⚪ 忽略")).replace("🟢 ", "").replace("🟡 ", "").replace("⚪ ", "")
+        if legacy_only:
+            rating = "舊制比較・非新制訊號"
         score_mode = str(record.get("Score_Mode", score_mode_label))
         score_source = str(record.get("Score_Source", ""))
         original_score = optional_number(record.get("Original_Score"))
@@ -426,6 +434,7 @@ def generate_cards_html(
             "等待觸發": ("#bfdbfe", "rgba(96,165,250,0.15)", "rgba(96,165,250,0.4)"),
             "條件不足": ("#cbd5e1", "rgba(148,163,184,0.13)", "rgba(148,163,184,0.35)"),
             "待新掃描": ("#cbd5e1", "rgba(148,163,184,0.13)", "rgba(148,163,184,0.35)"),
+            "舊制可執行（比較）": ("#fde68a", "rgba(250,204,21,0.15)", "rgba(250,204,21,0.4)"),
         }
 
         cards_html += "<div style='background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; margin-bottom: 12px; position: relative; overflow: hidden;'>"
@@ -450,7 +459,9 @@ def generate_cards_html(
         else:
             streak_badge = f"<span style='background-color: rgba(148,163,184,0.2); color: #cbd5e1; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; border: 1px solid rgba(148,163,184,0.3); margin-left: 4px;'>➖ 持平</span>"
             
-        cards_html += f"<div style='display:flex; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{escape_html(ticker_code)} {escape_html(disp_name)}{fav_mark}{sim_mark}{streak_badge}</span>{adv_badge}"
+        version_color = "#FACC15" if legacy_only else "#60A5FA"
+        version_badge = f"<span style='color:{version_color}; font-size:0.78rem; white-space:nowrap;'>【{escape_html(version_label)}】</span>" if version_label else ""
+        cards_html += f"<div style='display:flex; flex-wrap:wrap; align-items:center; gap:8px;'><span class='stock-name-hover' style='color: #f8fafc; font-weight: 950; font-size: 1.12rem; transition: color 0.2s;'>{escape_html(ticker_code)} {escape_html(disp_name)}{version_badge}{fav_mark}{sim_mark}{streak_badge}</span>{adv_badge}"
 
         raw_industry = str(record.get("產業") or "").strip()
         industry_name = escape_html("未分類" if raw_industry in ("", "一般產業", "無") else raw_industry)
@@ -478,6 +489,8 @@ def generate_cards_html(
             cards_html += f"<div style='text-align:right;'><div style='color:{s_col}; font-size:1.45rem; font-weight:950;'>{score_display}</div><div style='color:{r_col}; font-size:0.82rem; font-weight:900;'>{rating}</div>{intraday_compare}</div></div>"
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
+        if version_label:
+            cards_html += "<div style='color:#94a3b8; font-size:0.72rem; margin-bottom:9px;'>分數與回測均採目前版本；舊制僅比較進場認定，不納入新制自動追蹤。</div>"
 
         if entry_status and not no_score:
             has_entry_levels = all(value is not None for value in (entry_low, entry_high, entry_stop, entry_target))

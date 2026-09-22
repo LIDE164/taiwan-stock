@@ -20,6 +20,8 @@ source = [
     "entry_readiness",
     "execution_costs",
     "intraday_ranking",
+    "legacy_entry_readiness",
+    "ranking_comparison",
     "market_http",
     "scan_state",
     "scanner",

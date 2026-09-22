@@ -58,6 +58,21 @@ and is never supplied to the official Top-10, Telegram prediction sheets or posi
 tracker. An empty executable list is allowed; current thresholds are not lowered
 to force ten names. Daily performance rows label legacy versus next-session zone
 execution, and retain entry-time sample/rate metadata rather than today's values.
+
+The homepage defaults to **新舊制可執行** and the detailed Telegram prediction sheet
+shows the deduplicated union of each version's top ten. Names carry **新制**,
+**舊制**, or **新制・舊制** labels. The legacy comparison freezes the September 9
+entry rules and uncapped-industry selector from `027f459`; the new selector keeps
+its two-per-industry limit and all current risk/evidence gates. Both use today's
+saved quantitative scores and backtest evidence: this is not a reconstruction of
+legacy scores, legacy backtest rates, or legacy realized returns. Legacy-only
+cards show legacy entry prices and the reason the current rules reject them;
+overlaps use current prices. A separate rendering copy prevents legacy prices
+from becoming the canonical analysis plan. Intraday legacy checks require a
+saved legacy post-close plan and a valid realtime quote; they never move its
+levels. Only current approvals enter the official Top-10 history and automatic
+performance tracker; the overview image is explicitly labeled **新制**.
+
 The default stock commission/tax assumptions follow the
 [TWSE investing guide](https://www.twse.com.tw/zh/about/company/guide.html); broker-specific discounts and minimum fees can differ.
 

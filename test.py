@@ -40,6 +40,7 @@ from data_providers import (
     fetch_revenue_growth,
 )
 from entry_readiness import build_entry_readiness, ensure_entry_readiness
+from ranking_comparison import build_comparison_rows, refresh_comparison_labels
 from market_http import call_with_backoff, http_get
 from intraday_ranking import (
     annotate_intraday_score,
@@ -137,6 +138,9 @@ except Exception as ui_import_error:
         for _, row in df_disp.iterrows():
             code = normalize_ticker(row.get("代號", ""))
             name = escape_html(row.get("名稱", ""))
+            version = escape_html(row.get("Execution_Version_Label") or "")
+            if version:
+                name += f"（{version}）"
             score = row.get("Score", 0)
             score_text = "形態觀察" if no_score else f"{score}分"
             card_html += (
@@ -2217,7 +2221,7 @@ if st.session_state.page == "home":
         st.caption("進場條件（量化雷達適用）")
         entry_filter = st.radio(
             "進場條件：",
-            ["現在可執行", "條件符合，待驗證", "等待確認／拉回", "全部候選"],
+            ["新舊制可執行", "僅新制可執行", "僅舊制可執行", "條件符合，待驗證", "等待確認／拉回", "全部候選"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -2394,6 +2398,9 @@ if st.session_state.page == "home":
             
         is_pattern_mode = (list_type == "形態選股 (不列入評分)")
         is_adv_pattern_mode = (list_type == "進階形態選股")
+        is_comparison_view = not (is_pattern_mode or is_adv_pattern_mode) and entry_filter in {
+            "新舊制可執行", "僅新制可執行", "僅舊制可執行",
+        }
         # 刪除金融股
         if not df_results.empty and '代號' in df_results.columns:
             is_fin_mask = df_results.apply(lambda r: is_financial_stock(r.get('代號'), r.get('產業')), axis=1)
@@ -2442,8 +2449,25 @@ if st.session_state.page == "home":
                         pd.DataFrame(evidence_summary['reasons'], columns=["主要未通過原因／判定", "檔數"]),
                         hide_index=True, use_container_width=True,
                     )
-                if entry_filter == "現在可執行":
-                    df_results = df_results[df_results['Entry_Status_Group'].astype(str) == "ready"]
+                if is_comparison_view:
+                    comparison_rows = build_comparison_rows(df_results.to_dict('records'), intraday=is_intraday)
+                    new_count = sum("new" in row["Execution_Versions"] for row in comparison_rows)
+                    legacy_count = sum("legacy" in row["Execution_Versions"] for row in comparison_rows)
+                    st.caption(
+                        f"新制 {new_count} 檔｜舊制 {legacy_count} 檔｜合併去重 {len(comparison_rows)} 檔。"
+                        "兩制各取前 10；新制每產業最多 2 檔，舊制依當時規則不限制產業。"
+                    )
+                    st.info(
+                        "舊制採 9/9 版進場規則，僅供比較，不加入新制自動追蹤。"
+                        "兩制使用同一份目前分數與新制回測，並非重跑舊版評分或舊版勝率。"
+                        "舊制限定項目顯示舊制區間；雙制符合採新制區間，點擊解析仍採新制。"
+                    )
+                    if is_intraday:
+                        st.caption("盤中舊制沿用已保存的盤後舊制區間；缺少舊制基準或有效即時行情時不列入。")
+                    requested_version = {"僅新制可執行": "new", "僅舊制可執行": "legacy"}.get(entry_filter)
+                    if requested_version:
+                        comparison_rows = [row for row in comparison_rows if requested_version in row["Execution_Versions"]]
+                    df_results = pd.DataFrame(comparison_rows) if comparison_rows else df_results.iloc[0:0]
                 elif entry_filter == "條件符合，待驗證":
                     observations = evidence_summary["observations"]
                     df_results = pd.DataFrame(observations) if observations else df_results.iloc[0:0]
@@ -2457,7 +2481,8 @@ if st.session_state.page == "home":
                 "技術面勝率": ["WinRate", "Score", "漲跌幅"],
                 "資料完整度": ["Confidence", "Score", "漲跌幅"],
             }
-            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(10)
+            display_limit = 20 if is_comparison_view else 10
+            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(display_limit)
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -2477,7 +2502,7 @@ if st.session_state.page == "home":
                     ]
                     render_home_side_panel("市場總覽", market_rows)
                 with mid_dash:
-                    title_label = "形態選股清單 (不計分)" if is_pattern_mode else "量化雷達清單"
+                    title_label = entry_filter if is_comparison_view else ("形態選股清單 (不計分)" if is_pattern_mode else "量化雷達清單")
                     st.markdown(f"<div class='section-title'>{title_label}</div>", unsafe_allow_html=True)
                     st.markdown(generate_cards_html(df_disp, is_intraday, no_score=is_pattern_mode), unsafe_allow_html=True)
                 with right_dash:
@@ -2538,8 +2563,8 @@ if st.session_state.page == "home":
                     render_home_side_panel("今日異動", mover_rows)
                     render_home_side_panel("模擬交易提醒", order_rows, "目前沒有模擬交易")
             else:
-                if not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "現在可執行":
-                    st.info("目前沒有通過完整進場與歷史證據檢核的股票。請查看上方篩選原因，或切換「條件符合，待驗證」及「等待確認／拉回」；空榜不代表 API 沒有資料。")
+                if is_comparison_view:
+                    st.info(f"目前「{entry_filter}」沒有符合的股票。請查看上方各制數量與篩選原因；空榜不代表 API 沒有資料，也不會以其他候選補足。")
                 elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "條件符合，待驗證":
                     st.info("目前沒有僅被歷史證據擋下的候選；價格、量能、資料或風控條件仍需等待。")
                 elif not (is_pattern_mode or is_adv_pattern_mode) and entry_filter == "等待確認／拉回":
@@ -3738,6 +3763,14 @@ elif st.session_state.page == "analysis":
                     for k in ["Score", "評級", "Reasons", "Feature", "WinRate", "Backtest_Samples", "Validation_WinRate", "Validation_Samples", "Backtest_Scope", "Model_Confidence", "Model_Confidence_Label", "Score_Mode", "Score_Mode_Raw", "Whale_Net", "Whale_Net_Days", "Institutional_Sell_Streak", "Foreign_Net", "Trust_Net", "Institutional_Days", "Institutional_Status", "Institutional_Source", "Confidence", "Data_Completeness", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Operating_Income", "Financial_Net_Income", "Financial_Operating_Margin", "Financial_Net_Margin", "Financial_Debt_Ratio", "Financial_Current_Ratio", "Financial_Risk_Level", "Financial_Risk_Flags", "Score_Source", "收盤價", "開盤價", "最高價", "最低價", "漲跌", "漲跌幅", "Est_Vol_Ratio", "Volume_Confirmed", "Entry_Status", "Entry_Status_Group", "Entry_Ready", "Entry_Reason", "Entry_Low", "Entry_High", "Entry_Stop", "Entry_Target", "No_Chase_Price", "Intraday_Quote_Source", "Intraday_Quote_Time", "Intraday_Quote_Freshness", "Intraday_Quote_Status"]:
                         if k in data:
                             row[k] = data[k]
+                    for key in ("RSI", "BIAS", "BB_UP", "Signal_Conflict", "Entry_Pattern", "20MA", "ATR"):
+                        if key in data:
+                            row[key] = data[key]
+                    # Recheck badges without ever copying legacy display levels
+                    # into the canonical analysis/trading baseline.
+                    refreshed = refresh_comparison_labels(row, intraday=True)
+                    row.clear()
+                    row.update(refreshed)
                     break
         
         curr_atr = float(df_slice['ATR'].iloc[-1])

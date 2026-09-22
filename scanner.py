@@ -27,6 +27,8 @@ from chunked_firestore import (
 )
 from data_providers import fetch_financial_quality, fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import READY_STATUS, build_entry_readiness
+from legacy_entry_readiness import build_legacy_entry_plan
+from ranking_comparison import build_comparison_rows
 from market_http import call_with_backoff, http_get
 from scan_state import (
     build_model_confidence,
@@ -885,8 +887,9 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     if db is None:
         raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
     selected_top10 = select_executable_top10(scan_results)
-    executable_rows = build_executable_display_rows(selected_top10)
-    fingerprint_payload = {"date": str(trading_date), "rows": executable_rows}
+    comparison_results = build_comparison_rows(scan_results)
+    executable_rows = build_executable_display_rows(comparison_results, comparison=True)
+    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_v1", "rows": executable_rows}
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -914,6 +917,7 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
             token,
             chat_id,
             selected_results=selected_top10,
+            comparison_results=comparison_results,
         )
     except Exception as exc:
         notification_ref.set({
@@ -928,13 +932,16 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
         "status": "sent",
         "fingerprint": fingerprint,
         "message_id": message_id,
-        "executable_count": len(executable_rows),
+        "executable_count": len(selected_top10),
+        "comparison_count": len(executable_rows),
+        "legacy_count": sum("legacy" in row["Execution_Versions"] for row in comparison_results),
+        "ranking_type": "new_legacy_comparison",
         "attempt_count": attempt_count,
         "last_error": "",
         "sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
     logging.info(
-        "✅ %s 可馬上執行圖片已發送至 Telegram（%d 檔，message_id=%s）。",
+        "✅ %s 新舊制比較圖片已發送至 Telegram（%d 檔，message_id=%s）。",
         trading_date,
         len(executable_rows),
         message_id,
@@ -1639,6 +1646,7 @@ def run_daily_scan(
                     "Prev_Rank": previous_ranks.get(stock, 999),
                 }
                 result.update(entry_plan)
+                result["Legacy_Entry_Plan"] = build_legacy_entry_plan(result)
                 return result
         return None
 
@@ -1657,13 +1665,13 @@ def run_daily_scan(
         if not scan_results:
             raise RuntimeError("掃描結果為空，保留既有 daily_scan，避免以空資料覆寫")
 
-        top10_tickers = {
+        chart_tickers = {
             str(row.get("代號") or "")
-            for row in select_executable_top10(scan_results)
+            for row in build_comparison_rows(scan_results)
         }
         for result in scan_results:
             mini_k = result.pop("_Mini_K", [])
-            if str(result.get("代號") or "") in top10_tickers:
+            if str(result.get("代號") or "") in chart_tickers:
                 result["Mini_K"] = mini_k
 
         if db is None:
