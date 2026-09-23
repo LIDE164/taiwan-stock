@@ -24,7 +24,7 @@ from ranking_comparison import comparison_display_record
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
 EXECUTABLE_IMAGE_HEIGHT = 1800
-EXECUTABLE_CARD_HEIGHT = 140
+EXECUTABLE_CARD_HEIGHT = 168
 EXECUTABLE_CARD_GAP = 8
 CARD_LEFT = 42
 CARD_WIDTH = 996
@@ -1020,37 +1020,38 @@ def render_executable_image(
                     fill=version_color,
                     anchor="mm",
                 )
-                draw.text((412, top + 13), row["score_text"], font=_font(18, True), fill="#F87171")
-                sample_x, sample_width = 478, 112
-            else:
-                score_x = min(350, int(128 + draw.textlength(stock_text, font=stock_font) + 14))
-                draw.text((score_x, top + 12), row["score_text"], font=_font(22, True), fill="#F87171")
-                sample_x, sample_width = 420, 170
-            sample_text = _fit_text(draw, row["sample_breakdown_text"], _font(14, True), sample_width)
-            draw.text((sample_x, top + 16), sample_text, font=_font(14, True), fill=row["credibility_color"])
+
+            # Keep all decision evidence together directly below the stock name.
+            draw.rounded_rectangle((128, top + 42, 590, top + 68), radius=7, fill="#172033")
+            draw.text((138, top + 45), row["score_text"], font=_font(18, True), fill="#F87171")
             draw.text(
-                (sample_x, top + 34),
-                _fit_text(draw, row["credibility_text"], _font(11), sample_width),
-                font=_font(11),
+                (216, top + 48),
+                _fit_text(draw, f"舊制技術回測 {row['win_rate_text']}", _font(15, True), 174),
+                font=_font(15, True), fill="#60A5FA",
+            )
+            draw.text(
+                (400, top + 48),
+                _fit_text(draw, row["sample_credibility_text"], _font(15, True), 180),
+                font=_font(15, True),
                 fill=row["credibility_color"],
             )
             if comparison_mode:
                 for line_index, line in enumerate(row["analysis_lines"][:2]):
                     prefix = "解析｜" if line_index == 0 else "新制｜"
                     draw.text(
-                        (128, top + 47 + line_index * 17),
+                        (128, top + 70 + line_index * 17),
                         _fit_text(draw, f"{prefix}{line}", _font(11, True), 455),
                         font=_font(11, True),
                         fill="#CBD5E1" if line_index == 0 else "#94A3B8",
                     )
             else:
                 analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
-                draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
-            draw.text((128, top + 81), row["current_sample_text"], font=_font(11), fill="#94A3B8")
+                draw.text((128, top + 72), analysis, font=_font(15, True), fill="#CBD5E1")
+            draw.text((128, top + 104), row["current_sample_text"], font=_font(11), fill="#94A3B8")
             _draw_mini_candles(
                 draw,
                 row["mini_kbars"],
-                (600, top + 8, 1018, top + 88),
+                (600, top + 8, 1018, top + 112),
                 row["close_value"],
             )
 
@@ -1062,12 +1063,11 @@ def render_executable_image(
                 (430, "建議零股", row["suggested_shares_text"], "#FBBF24"),
                 (555, "估計停損淨損", row["estimated_loss_text"], "#F8FAFC"),
                 (685, "風險停損", row["stop_text"], "#4ADE80"),
-                (800, "策略目標", row["target_text"], "#F87171"),
-                (910, "舊制技術回測", row["win_rate_text"], "#60A5FA"),
+                (880, "策略目標", row["target_text"], "#F87171"),
             )
             for x, label, value, color in labels:
-                draw.text((x, top + 96), label, font=_font(12), fill="#64748B")
-                draw.text((x, top + 116), value, font=_font(15, True), fill=color)
+                draw.text((x, top + 123), label, font=_font(12), fill="#64748B")
+                draw.text((x, top + 143), value, font=_font(15, True), fill=color)
 
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
     draw.text((54, footer_y + 14), EXECUTABLE_RISK_MODEL_TEXT, font=_font(15), fill="#94A3B8")

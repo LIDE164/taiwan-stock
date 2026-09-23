@@ -890,7 +890,7 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     selected_top10 = select_executable_top10(scan_results)
     comparison_results = build_comparison_rows(scan_results)
     executable_rows = build_executable_display_rows(comparison_results, comparison=True)
-    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_old_backtest_v2", "rows": executable_rows}
+    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_grouped_metrics_v3", "rows": executable_rows}
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
