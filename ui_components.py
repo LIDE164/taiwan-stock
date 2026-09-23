@@ -3,7 +3,7 @@ import math
 import streamlit as st
 
 from app_security import build_stock_url, escape_html, safe_css_color
-from backtest_reporting import sample_breakdown
+from backtest_reporting import primary_backtest_display
 from ranking_comparison import comparison_display_record
 
 
@@ -409,15 +409,9 @@ def generate_cards_html(
             disp_name = get_stock_name(record.get("代號", ""))
         fav_mark = " ⭐" if ticker_code in favorite_set else ""
         sim_mark = " 🛒" if ticker_code in simulated_set else ""
-        sample_count = record.get("Backtest_Samples", record.get("closed_signals", record.get("ClosedSignals", "--")))
-        sample_info = sample_breakdown(record)
-        cred_text, cred_color = credibility_label(sample_count)
-        model_confidence = optional_number(record.get("Model_Confidence"))
-        model_label = str(record.get("Model_Confidence_Label") or "").strip()
-        if model_label:
-            cred_text = model_label
-            if model_confidence is not None:
-                cred_color = "#4ADE80" if model_confidence >= 75 else ("#60A5FA" if model_confidence >= 55 else "#FACC15")
+        sample_info = primary_backtest_display(record)
+        sample_count = sample_info["samples"] if sample_info["available"] else "--"
+        cred_text, cred_color = sample_info["credibility"], sample_info["credibility_color"]
         main_signal = escape_html(record.get("Feature") or "資料不足")
         rrr = optional_number(record.get("Entry_RRR", record.get("RRR")))
         entry_status = str(record.get("Entry_Status") or "").strip()
@@ -490,7 +484,7 @@ def generate_cards_html(
 
         cards_html += f"<div style='font-size:0.84rem; color:#E2E8F0; font-weight:800; margin-bottom:9px;'>主訊號：{main_signal}</div>"
         if version_label:
-            cards_html += "<div style='color:#94a3b8; font-size:0.72rem; margin-bottom:9px;'>分數與回測均採目前版本；舊制僅比較進場認定，不納入新制自動追蹤。</div>"
+            cards_html += "<div style='color:#94a3b8; font-size:0.72rem; margin-bottom:9px;'>分數採目前版本；勝率／樣本採 9/15 舊制回測。舊制入榜僅比較，不納入新制自動追蹤。</div>"
 
         if entry_status and not no_score:
             has_entry_levels = all(value is not None for value in (entry_low, entry_high, entry_stop, entry_target))
@@ -509,7 +503,7 @@ def generate_cards_html(
             cards_html += "</div>"
 
         sample_value = optional_number(sample_count)
-        wr_val = optional_number(record.get("WinRate"))
+        wr_val = sample_info["win_rate"]
         if sample_value is None or sample_value <= 0 or wr_val is None or not 0 <= wr_val <= 100:
             wr_text = "--"
             wr_col = "#94a3b8"
@@ -531,15 +525,15 @@ def generate_cards_html(
             whale_label = f"法人{whale_days}日"
 
         cards_html += "<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background-color: rgba(30,41,59,0.4); border: 1px solid rgba(51,65,85,0.5); padding: 10px; border-radius: 8px; font-size: 0.75rem; margin-bottom: 10px; position: relative; z-index: 10;'>"
-        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>{escape_html(sample_info['primary_label'])}</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_text}</span></div>"
+        cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>{escape_html(sample_info['label'])}</span><span style='color: {wr_col}; font-weight: bold; font-family: monospace;'>{wr_text}</span></div>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>樣本 / 可信度</span><span style='color: {cred_color}; font-weight: bold; font-family: monospace;'>{escape_html(sample_count)}｜{escape_html(cred_text)}</span></div>"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>{whale_label}</span><span style='color: {w_col}; font-weight: bold; font-family: monospace;'>{whale_str}</span></div>"
         rrr_text = "--" if rrr is None else f"1 : {rrr:g}"
         cards_html += f"<div style='display: flex; flex-direction: column;'><span style='color: #64748b; margin-bottom: 4px;'>策略 RRR</span><span style='color: #60A5FA; font-weight: bold; font-family: monospace;'>{rrr_text}</span></div></div>"
         source_text = f"{score_mode}｜{score_source}" if score_source else score_mode
-        cards_html += f"<div style='font-size:0.75rem; color:#94a3b8;'>{escape_html(sample_info['sample_text'])} 筆｜校正回測勝率，不等於每日追蹤實績。</div>"
+        cards_html += f"<div style='font-size:0.75rem; color:#94a3b8;'>{escape_html(sample_info['current_sample_text'])} 筆｜主欄為舊制技術回測，非實際獲利機率；新制獨立累積。</div>"
         backtest_scope = record.get("Backtest_Scope", "純技術面逐步前推")
-        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{escape_html(source_text)}｜回測：{escape_html(backtest_scope)}</div>"
+        cards_html += f"<div style='font-size:0.72rem; color:#64748b; margin-top:6px;'>分數來源：{escape_html(source_text)}｜新制回測：{escape_html(backtest_scope)}</div>"
         cards_html += "</div>"
 
     return cards_html

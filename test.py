@@ -17,10 +17,11 @@ from streamlit_autorefresh import st_autorefresh
 
 # 引入自訂繪圖函式與共用大腦核心演算法
 from analysis_core import BACKTEST_LOOKBACK_DAYS, BACKTEST_SCOPE, ENG_TO_TW_INDUSTRY, apply_technical_indicators, calculate_historical_performance
+from legacy_backtest import calculate_legacy_backtest
 from analysis_live import fetch_analysis_live_quote
 from backtest_reporting import (
     backtest_diagnostic_rows, backtest_record_fields, reconcile_intraday_evidence,
-    replace_backtest_snapshot, sample_breakdown, summarize_scan_evidence,
+    replace_backtest_snapshot, sample_breakdown, summarize_scan_evidence, primary_backtest_display,
 )
 from app_security import (
     build_stock_url,
@@ -143,11 +144,15 @@ except Exception as ui_import_error:
                 name += f"（{version}）"
             score = row.get("Score", 0)
             score_text = "形態觀察" if no_score else f"{score}分"
+            evidence = primary_backtest_display(row)
+            legacy_rate = evidence["win_rate"]
+            legacy_rate_text = "--" if legacy_rate is None else f"{legacy_rate:.1f}%"
             card_html += (
                 f"<a href='{build_stock_url(code)}' class='stock-card-link'>"
                 "<div style='background:#0F172A; border:1px solid #1E293B; border-radius:10px; padding:14px; margin-bottom:10px; color:#E2E8F0;'>"
                 f"<b>{escape_html(code)} {name}</b><span style='float:right; color:#60A5FA; font-weight:900;'>{escape_html(score_text)}</span><br>"
-                f"<span style='color:#94A3B8;'>技術面勝率 {escape_html(row.get('WinRate', '--'))}%｜樣本 {escape_html(row.get('Backtest_Samples', '--'))}</span></div></a>"
+                f"<span style='color:#94A3B8;'>{escape_html(evidence['label'])} {legacy_rate_text}｜{escape_html(evidence['sample_text'])}｜{escape_html(evidence['credibility'])}</span><br>"
+                f"<span style='color:#94A3B8;'>{escape_html(evidence['current_sample_text'])}</span></div></a>"
             )
         return card_html
 
@@ -165,7 +170,7 @@ FINMIND_TOKEN = get_secret("FINMIND_TOKEN")
 FUGLE_API_KEY = get_secret("FUGLE_API_KEY")
 LIVE_SCORE_CACHE_SECONDS = 30
 POST_ANALYSIS_CACHE_SECONDS = 21600
-ANALYSIS_CACHE_SCHEMA_VERSION = 4
+ANALYSIS_CACHE_SCHEMA_VERSION = 5
 DEFAULT_RADAR_TICKERS = ["2330", "2317", "2454", "2308", "2382", "3231", "6176", "3094"]
 LOW_FIREBASE_READ_MODE = True
 CLOUD_READ_TTL_SECONDS = {
@@ -1842,6 +1847,14 @@ def analyze_today(
             df, 1.5, 1.0, lookback_days=BACKTEST_LOOKBACK_DAYS,
         )
         data.update(backtest_record_fields(default_backtest))
+        legacy_history = df
+        if effective_intraday:
+            legacy_dates = df.index.tz_localize(None).normalize()
+            live_date = pd.Timestamp(latest_trading_date(df.index))
+            legacy_history = df.loc[legacy_dates < live_date]
+        legacy_date = latest_trading_date(legacy_history.index)
+        data["Legacy_Backtest"] = calculate_legacy_backtest(legacy_history, as_of_date=legacy_date)
+        data["Legacy_Backtest_As_Of_Date"] = legacy_date
     model_confidence, model_confidence_label = build_model_confidence(
         data.get('WinRate'),
         data.get('Backtest_Samples'),
@@ -2391,7 +2404,7 @@ if st.session_state.page == "home":
             selected_theme = st.radio("產業過濾：", available_themes, horizontal=True, label_visibility="collapsed")
         with col_f2:
             st.caption("排序")
-            sort_mode = st.radio("排序：", ["量化分數", "技術面勝率", "資料完整度"], horizontal=True, label_visibility="collapsed")
+            sort_mode = st.radio("排序：", ["量化分數", "舊制技術勝率", "資料完整度"], horizontal=True, label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
         if selected_theme != "全部產業": df_results = df_results[df_results['產業'] == selected_theme]
         industry_count = len(df_results)
@@ -2459,7 +2472,7 @@ if st.session_state.page == "home":
                     )
                     st.info(
                         "舊制採 9/9 版進場規則，僅供比較，不加入新制自動追蹤。"
-                        "兩制使用同一份目前分數與新制回測，並非重跑舊版評分或舊版勝率。"
+                        "兩制使用同一份目前分數；主欄勝率／樣本採 9/15 舊制技術回測。新制另行累積，不取代進場風控。"
                         "舊制限定項目顯示舊制區間；雙制符合採新制區間，點擊解析仍採新制。"
                     )
                     if is_intraday:
@@ -2478,11 +2491,15 @@ if st.session_state.page == "home":
                 
             sort_map = {
                 "量化分數": ["Score", "漲跌幅"],
-                "技術面勝率": ["WinRate", "Score", "漲跌幅"],
+                "舊制技術勝率": ["_legacy_display_winrate", "Score", "漲跌幅"],
                 "資料完整度": ["Confidence", "Score", "漲跌幅"],
             }
             display_limit = 20 if is_comparison_view else 10
-            df_disp = df_results.sort_values(by=sort_map.get(sort_mode, ["Score", "漲跌幅"]), ascending=[False] * len(sort_map.get(sort_mode, ["Score", "漲跌幅"]))).head(display_limit)
+            df_sort = df_results.assign(_legacy_display_winrate=[
+                primary_backtest_display(record)["win_rate"] for record in df_results.to_dict("records")
+            ])
+            sort_columns = sort_map.get(sort_mode, ["Score", "漲跌幅"])
+            df_disp = df_sort.sort_values(by=sort_columns, ascending=[False] * len(sort_columns)).head(display_limit).drop(columns="_legacy_display_winrate")
             
             st.session_state.nav_pool = df_disp['代號'].tolist()
             st.session_state.nav_pool_data = df_disp.to_dict('records') 
@@ -3703,7 +3720,11 @@ elif st.session_state.page == "analysis":
             st.rerun()
         st.markdown("---")
         
-        st.markdown("##### 策略回測實驗室")
+        legacy_display = primary_backtest_display(data)
+        legacy_rate = legacy_display["win_rate"]
+        legacy_rate_text = "--" if legacy_rate is None else f"{legacy_rate:.1f}%"
+        st.caption(f"榜單主欄：舊制技術回測 {legacy_rate_text}｜{legacy_display['sample_text']}｜{legacy_display['credibility']}。以下實驗室為新制／自訂回測，兩者不混用。")
+        st.markdown("##### 新制策略回測實驗室")
         
         # 建立控制欄位讓使用者調整參數
         col_bt1, col_bt2, col_bt3 = st.columns(3)

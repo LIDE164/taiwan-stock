@@ -159,7 +159,7 @@ class RankingComparisonTests(unittest.TestCase):
         self.assertEqual(display["Entry_High"], row["Legacy_Entry_Plan"]["Entry_High"])
         self.assertNotIn("Entry_Net_RRR", display)
         self.assertIn("策略回測樣本未達 15 筆", display["Entry_Reason"])
-        self.assertIn("新制回測（非舊制回測）", display["Entry_Reason"])
+        self.assertIn("舊制技術回測；新制獨立累積", display["Entry_Reason"])
         self.assertEqual(display["WinRate"], row["WinRate"])
         self.assertEqual(display["Backtest_Samples"], row["Backtest_Samples"])
         self.assertEqual(row, original)

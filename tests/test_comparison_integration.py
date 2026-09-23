@@ -45,7 +45,7 @@ class ComparisonIntegrationTests(unittest.TestCase):
         self.assertIn("100–100.5", html)
         self.assertIn("樣本不足 &lt;script&gt;bad&lt;/script&gt;", html)
         self.assertNotIn("<script>bad</script>", html)
-        self.assertIn("回測均採目前版本", html)
+        self.assertIn("勝率／樣本採 9/15 舊制回測", html)
         self.assertEqual(rows[0]["Entry_High"], 100.5)
 
     def test_new_only_badge_and_noncomparison_nan_badges(self):
@@ -71,7 +71,8 @@ class ComparisonIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["entry_zone_text"], "100–102")
         self.assertEqual(rows[1]["entry_zone_text"], "100–100.5")
         self.assertIn("樣本不足", rows[0]["analysis_lines"][1])
-        self.assertEqual(rows[0]["win_rate_text"], "56.1%")
+        self.assertEqual(rows[0]["win_rate_text"], "--")
+        self.assertEqual(rows[0]["sample_breakdown_text"], "舊制待回補")
         self.assertLessEqual(rows[0]["estimated_loss"], 5000)
         self.assertEqual(union, before)
         self.assertEqual(len(build_executable_display_rows(union)), 1)

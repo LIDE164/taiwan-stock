@@ -109,13 +109,14 @@ class Top10TelegramTests(unittest.TestCase):
             "代號": "2317", "名稱": "鴻海", "WinRate": 0, "Backtest_Samples": 0,
         }])
         self.assertEqual(rows[0]["win_rate_text"], "--")
-        self.assertEqual(rows[0]["sample_text"], "0")
-        self.assertEqual(rows[0]["credibility"], "樣本嚴重不足")
+        self.assertEqual(rows[0]["sample_text"], "--")
+        self.assertEqual(rows[0]["sample_breakdown_text"], "舊制待回補")
+        self.assertEqual(rows[0]["credibility"], "資料未提供")
 
         missing = build_top10_display_rows([{"代號": "2454", "名稱": "聯發科"}])
         self.assertEqual(missing[0]["win_rate_text"], "--")
         self.assertEqual(missing[0]["sample_text"], "--")
-        self.assertEqual(missing[0]["credibility"], "資料缺失")
+        self.assertEqual(missing[0]["credibility"], "資料未提供")
 
     def test_prediction_rows_distinguish_total_training_validation_from_legacy(self):
         split = dict(
@@ -126,17 +127,19 @@ class Top10TelegramTests(unittest.TestCase):
         )
         top = build_top10_display_rows([split])[0]
         executable = build_executable_display_rows([split])[0]
-        self.assertEqual(top["sample_breakdown_text"], "全2/訓1/驗1")
-        self.assertEqual(executable["sample_breakdown_text"], "全2/訓1/驗1")
-        self.assertIn("樣本嚴重不足", executable["sample_credibility_text"])
-        self.assertEqual(executable["credibility_text"], "樣本嚴重不足")
-        self.assertEqual(top["win_rate_label"], "訓練校正勝率")
+        self.assertEqual(top["current_sample_text"], "新制 全2/訓1/驗1")
+        self.assertEqual(executable["current_sample_text"], "新制 全2/訓1/驗1")
+        self.assertEqual(top["sample_breakdown_text"], "舊制待回補")
+        self.assertIn("舊制待回補", executable["sample_credibility_text"])
+        self.assertEqual(executable["credibility_text"], "資料未提供")
+        self.assertEqual(top["win_rate_label"], "舊制技術回測")
 
         legacy = build_executable_display_rows([
             dict(self.rows[0], Entry_Status="現在可執行")
         ])[0]
-        self.assertEqual(legacy["sample_breakdown_text"], "原制42/驗--")
-        self.assertEqual(legacy["win_rate_label"], "原制校正勝率")
+        self.assertEqual(legacy["current_sample_text"], "新制 原制42/驗--")
+        self.assertEqual(legacy["sample_breakdown_text"], "舊制待回補")
+        self.assertEqual(legacy["win_rate_label"], "舊制技術回測")
 
     def test_renderer_returns_a_valid_mobile_png(self):
         png = render_top10_image(self.rows * 10, "2026-08-27")

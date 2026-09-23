@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-import math
+from copy import deepcopy
+from datetime import date as calendar_date
 from typing import Any
 
 from entry_readiness import (
-    MIN_BACKTEST_SAMPLES, MIN_EXECUTION_SCORE, MIN_VALIDATION_SAMPLES, READY_STATUS, build_entry_readiness,
+    MIN_BACKTEST_SAMPLES,
+    MIN_EXECUTION_SCORE,
+    MIN_VALIDATION_SAMPLES,
+    READY_STATUS,
+    build_entry_readiness,
 )
-
 
 BACKTEST_FIELD_MAP = {
     "WinRate": "win_rate",
@@ -34,7 +39,10 @@ BACKTEST_FIELD_MAP = {
     "Validation_Raw_WinRate": "validation_raw_win_rate",
     "Backtest_Diagnostics": "diagnostics",
 }
-BACKTEST_SNAPSHOT_KEYS = (*BACKTEST_FIELD_MAP, "Model_Confidence", "Model_Confidence_Label")
+BACKTEST_SNAPSHOT_KEYS = (
+    *BACKTEST_FIELD_MAP, "Model_Confidence", "Model_Confidence_Label",
+    "Legacy_Backtest", "Legacy_Backtest_As_Of_Date",
+)
 
 
 def _count(value: Any) -> int | None:
@@ -55,9 +63,17 @@ def backtest_record_fields(stats: Mapping[str, Any]) -> dict[str, Any]:
 def replace_backtest_snapshot(record: dict[str, Any], source: Mapping[str, Any]) -> None:
     """Replace as a unit: never attach today's split/diagnostics to a legacy rate."""
     snapshot = {key: source[key] for key in BACKTEST_SNAPSHOT_KEYS if key in source}
+    legacy = primary_backtest_display(source)
+    if legacy["available"]:
+        # Live price dates advance; the validated historical evidence date does not.
+        snapshot["Legacy_Backtest_As_Of_Date"] = legacy["as_of_date"]
+    else:
+        # A mismatched source must not become valid merely by moving to a new date.
+        snapshot.pop("Legacy_Backtest", None)
+        snapshot.pop("Legacy_Backtest_As_Of_Date", None)
     for key in BACKTEST_SNAPSHOT_KEYS:
         record.pop(key, None)
-    record.update(snapshot)
+    record.update(deepcopy(snapshot))
 
 
 def reconcile_intraday_evidence(baseline: Mapping[str, Any], live: Mapping[str, Any]) -> dict[str, Any]:
@@ -106,6 +122,69 @@ def sample_breakdown(record: Mapping[str, Any]) -> dict[str, Any]:
             if known_split else f"原制{text(primary)}/驗{text(validation)}"
         ),
     }
+
+
+def primary_backtest_display(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Read legacy display evidence, never substitute current or stale statistics."""
+    current = sample_breakdown(record)
+    result: dict[str, Any] = {
+        "available": False, "win_rate": None, "samples": None,
+        "label": "舊制技術回測", "sample_text": "舊制待回補",
+        "credibility": "資料未提供", "credibility_color": "#94A3B8",
+        "current_sample_text": "新制：" + current["sample_text"],
+        "current_compact_text": "新制 " + current["compact_text"],
+    }
+    snapshot = record.get("Legacy_Backtest")
+    if not isinstance(snapshot, Mapping):
+        return result
+    date = snapshot.get("as_of_date")
+    try:
+        if not isinstance(date, str) or calendar_date.fromisoformat(date).isoformat() != date:
+            return result
+        price_date = record.get("Data_Date")
+        if price_date not in (None, ""):
+            if not isinstance(price_date, str) or calendar_date.fromisoformat(price_date).isoformat() != price_date:
+                return result
+            if date > price_date:
+                return result
+    except (TypeError, ValueError):
+        return result
+    evidence_date = record.get("Legacy_Backtest_As_Of_Date", price_date)
+    if (
+        snapshot.get("schema") != "legacy_2026_09_15"
+        or snapshot.get("source_commit") != "027f459fdea2a79d04c77979f74c0b936cdbe370"
+        or snapshot.get("status") != "complete"
+        or snapshot.get("data_through") != date
+        or (evidence_date is not None and evidence_date != "" and evidence_date != date)
+        or ("Legacy_Backtest_As_Of_Date" in record and evidence_date != date)
+    ):
+        return result
+    samples, wins, losses = (_count(snapshot.get(key)) for key in ("samples", "wins", "losses"))
+    if samples is None or wins is None or losses is None or wins + losses != samples:
+        return result
+    rate = snapshot.get("win_rate")
+    if samples:
+        if rate is None:
+            return result
+        try:
+            rate = float(rate)
+        except (TypeError, ValueError, OverflowError):
+            return result
+        if not math.isfinite(rate) or not 0 <= rate <= 100:
+            return result
+    else:
+        rate = None
+    credibility = (
+        "無樣本" if samples == 0 else "樣本嚴重不足" if samples < 10
+        else "僅供參考" if samples < 30 else "中等可信" if samples < 50 else "統計較穩定"
+    )
+    result.update({
+        "available": True, "win_rate": rate, "samples": samples,
+        "sample_text": f"舊樣本 {samples}", "credibility": credibility,
+        "credibility_color": "#94A3B8" if not samples else "#FACC15" if samples < 30 else "#60A5FA" if samples < 50 else "#4ADE80",
+        "schema": snapshot["schema"], "as_of_date": date,
+    })
+    return result
 
 
 def backtest_diagnostic_rows(record: Mapping[str, Any]) -> list[dict[str, Any]]:

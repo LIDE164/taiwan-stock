@@ -17,7 +17,7 @@ from entry_readiness import READY_STATUS
 from legacy_entry_readiness import build_legacy_entry_plan
 
 
-COMPARISON_BACKTEST_LABEL = "新制回測（非舊制回測）"
+COMPARISON_BACKTEST_LABEL = "舊制技術回測；新制獨立累積"
 _VERSION_LABELS = {"new": "新制", "legacy": "舊制"}
 
 

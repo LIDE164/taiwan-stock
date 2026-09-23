@@ -13,7 +13,7 @@ from typing import Any
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-from backtest_reporting import sample_breakdown
+from backtest_reporting import primary_backtest_display, sample_breakdown
 from entry_readiness import build_entry_summary
 from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
@@ -134,13 +134,10 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
         score = _number(record.get("Score"))
         close = _number(record.get("收盤價"))
         change = _number(record.get("漲跌幅"))
-        samples_number = _number(record.get("Backtest_Samples"))
-        samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
-        breakdown = sample_breakdown(record)
-        win_rate = _number(record.get("WinRate"))
-        if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
-            win_rate = None
-        credibility, credibility_color = _record_credibility(record, samples)
+        evidence = primary_backtest_display(record)
+        samples = evidence["samples"]
+        win_rate = evidence["win_rate"]
+        credibility, credibility_color = evidence["credibility"], evidence["credibility_color"]
         rating = _clean_text(record.get("評級"), "觀察")
         for marker in ("🟢", "🟡", "⚪", "🔴"):
             rating = rating.replace(marker, "").strip()
@@ -156,8 +153,9 @@ def build_top10_display_rows(results: Sequence[Mapping[str, Any]]) -> list[dict[
             "change_value": change,
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
             "sample_text": "--" if samples is None else str(samples),
-            "sample_breakdown_text": breakdown["compact_text"],
-            "win_rate_label": breakdown["primary_label"],
+            "sample_breakdown_text": evidence["sample_text"],
+            "current_sample_text": evidence["current_compact_text"],
+            "win_rate_label": evidence["label"],
             "credibility": credibility,
             "credibility_color": credibility_color,
             "entry_status": _clean_text(record.get("Entry_Status"), "條件未提供"),
@@ -205,13 +203,10 @@ def build_executable_display_rows(
         high = _number(record.get("Entry_High"))
         stop = _number(record.get("Entry_Stop"))
         target = _number(record.get("Entry_Target"))
-        samples_number = _number(record.get("Backtest_Samples"))
-        samples = int(samples_number) if samples_number is not None and samples_number >= 0 else None
-        breakdown = sample_breakdown(record)
-        win_rate = _number(record.get("WinRate"))
-        if samples is None or samples <= 0 or win_rate is None or not 0 <= win_rate <= 100:
-            win_rate = None
-        credibility, credibility_color = _record_credibility(record, samples)
+        evidence = primary_backtest_display(record)
+        samples = evidence["samples"]
+        win_rate = evidence["win_rate"]
+        credibility, credibility_color = evidence["credibility"], evidence["credibility_color"]
         shares, risk_per_share, estimated_loss = _position_size_for_max_loss(
             high,
             stop,
@@ -261,10 +256,11 @@ def build_executable_display_rows(
             "estimated_loss": estimated_loss,
             "estimated_loss_text": "--" if estimated_loss is None else f"${estimated_loss:,.0f}",
             "win_rate_text": "--" if win_rate is None else f"{win_rate:.1f}%",
-            "sample_credibility_text": f"{breakdown['compact_text']}｜{credibility}",
-            "sample_breakdown_text": breakdown["compact_text"],
+            "sample_credibility_text": f"{evidence['sample_text']}｜{credibility}",
+            "sample_breakdown_text": evidence["sample_text"],
+            "current_sample_text": evidence["current_compact_text"],
             "credibility_text": credibility,
-            "win_rate_label": breakdown["primary_label"],
+            "win_rate_label": evidence["label"],
             "credibility_color": credibility_color,
             "analysis": analysis,
             "analysis_lines": analysis_lines,
@@ -273,7 +269,7 @@ def build_executable_display_rows(
             "version_label": version_label,
             "comparison_backtest_label": _clean_text(
                 record.get("Comparison_Backtest_Label"),
-                "新制回測（非舊制回測）",
+                "舊制技術回測；新制獨立累積",
             ) if comparison else "",
         })
     return rows
@@ -907,8 +903,8 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
             labels = (
                 (128, "收盤", row["close_text"], "#E2E8F0"),
                 (265, "漲跌", row["change_text"], change_color),
-                (405, "校正回測", row["win_rate_text"], "#60A5FA"),
-                (576, "全/訓/驗樣本", _fit_text(draw, row["sample_breakdown_text"], _font(15, True), 185), "#E2E8F0"),
+                (405, "舊制技術回測", row["win_rate_text"], "#60A5FA"),
+                (576, "舊制樣本", _fit_text(draw, row["sample_breakdown_text"], _font(15, True), 185), "#E2E8F0"),
                 (780, "可信度", _fit_text(draw, row["credibility"], _font(15, True), 118), row["credibility_color"]),
                 (922, "產業", _fit_text(draw, row["industry"], _font(15, True), 80), "#A5B4FC"),
             )
@@ -918,7 +914,7 @@ def render_top10_image(results: Sequence[Mapping[str, Any]], trading_date: str) 
 
     footer_y = start_y + 10 * (CARD_HEIGHT + CARD_GAP) + 14
     draw.line((54, footer_y, IMAGE_WIDTH - 54, footer_y), fill="#1E293B", width=2)
-    draw.text((54, footer_y + 18), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(15), fill="#94A3B8")
+    draw.text((54, footer_y + 18), "主欄為 9/15 舊制技術回測（非實績）；新制獨立累積，不改進場限制。", font=_font(15), fill="#94A3B8")
     draw.text((IMAGE_WIDTH - 54, footer_y + 18), "僅供研究參考", font=_font(17, True), fill="#FBBF24", anchor="ra")
 
     output = io.BytesIO()
@@ -1050,6 +1046,7 @@ def render_executable_image(
             else:
                 analysis = _fit_text(draw, f"解析｜{row['analysis']}", _font(15, True), 455)
                 draw.text((128, top + 49), analysis, font=_font(15, True), fill="#CBD5E1")
+            draw.text((128, top + 81), row["current_sample_text"], font=_font(11), fill="#94A3B8")
             _draw_mini_candles(
                 draw,
                 row["mini_kbars"],
@@ -1066,7 +1063,7 @@ def render_executable_image(
                 (555, "估計停損淨損", row["estimated_loss_text"], "#F8FAFC"),
                 (685, "風險停損", row["stop_text"], "#4ADE80"),
                 (800, "策略目標", row["target_text"], "#F87171"),
-                (910, "校正回測", row["win_rate_text"], "#60A5FA"),
+                (910, "舊制技術回測", row["win_rate_text"], "#60A5FA"),
             )
             for x, label, value, color in labels:
                 draw.text((x, top + 96), label, font=_font(12), fill="#64748B")
@@ -1077,9 +1074,9 @@ def render_executable_image(
     draw.text((54, footer_y + 43), EXECUTABLE_GAP_RISK_TEXT, font=_font(16, True), fill="#FBBF24")
     if comparison_mode:
         draw.text((54, footer_y + 72), "舊制＝9/9 進場規則，僅比較、不納入新制自動追蹤；重合採新制區間。", font=_font(14, True), fill="#FBBF24")
-        draw.text((54, footer_y + 99), "圖中勝率與全/訓/驗樣本均為新制回測，並非舊制績效或舊制回測。", font=_font(14), fill="#94A3B8")
+        draw.text((54, footer_y + 99), "勝率／樣本採 9/15 舊制回測；新制全/訓/驗獨立累積，皆非實際獲利機率。", font=_font(14), fill="#94A3B8")
     else:
-        draw.text((54, footer_y + 72), "全/訓/驗為全期/訓練/驗證；原制未分離。校正回測勝率不等於已結實績。", font=_font(14), fill="#94A3B8")
+        draw.text((54, footer_y + 72), "主欄為 9/15 舊制技術回測（非實績）；新制獨立累積，不改進場限制。", font=_font(14), fill="#94A3B8")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -1436,7 +1433,7 @@ def send_top10_photo(
     return _send_photo_bytes(
         png,
         f"top10-{trading_date}.png",
-        f"台股每日新制可執行 Top 10｜{trading_date}\n僅納入新制現在可執行標的；舊制另見比較圖。全/訓/驗為樣本拆分，校正回測勝率非後續已結實績。",
+        f"台股每日新制可執行 Top 10｜{trading_date}\n僅納入新制現在可執行標的；舊制另見比較圖。主欄顯示舊制技術回測勝率／樣本；新制獨立累積，回測非後續實績。",
         bot_token,
         chat_id,
         session,
@@ -1479,7 +1476,7 @@ def send_executable_photo(
         png,
         f"executable-{trading_date}.png",
         f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；"
-        "全/訓/驗及勝率皆為新制回測，請依圖片停損控管風險。",
+        "主欄為舊制技術回測勝率／樣本；新制全/訓/驗繼續獨立累積，不放寬風控。回測非獲利保證。",
         bot_token,
         chat_id,
         session,

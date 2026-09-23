@@ -44,8 +44,9 @@ reconstruct historical EPS, monthly revenue, or institutional data. Returns incl
 buy/sell commission, stock transaction tax, minimum commission, and stop-execution slippage;
 the most recent 30% of trades is reported separately as a validation segment.
 Current `executable_v3` records explicitly preserve overall, training, and validation
-counts. The primary displayed rate is the adjusted training rate, not the overall
-or realized tracking win rate. A legacy record without a known split stays labeled
+counts. Its canonical rate and analysis-laboratory rate are the adjusted training
+rate, not the overall or realized tracking win rate; the separate legacy headline
+display is described below. A legacy record without a known split stays labeled
 as legacy; its validation count is not subtracted or added again. Signal-date plans
 must pass the same price, daily-change anti-chase, volume, and cost controls before
 next-session fills count. Per-stage diagnostics explain rejected plans, unfilled
@@ -64,14 +65,37 @@ shows the deduplicated union of each version's top ten. Names carry **新制**,
 **舊制**, or **新制・舊制** labels. The legacy comparison freezes the September 9
 entry rules and uncapped-industry selector from `027f459`; the new selector keeps
 its two-per-industry limit and all current risk/evidence gates. Both use today's
-saved quantitative scores and backtest evidence: this is not a reconstruction of
-legacy scores, legacy backtest rates, or legacy realized returns. Legacy-only
+saved quantitative scores. Legacy-only
 cards show legacy entry prices and the reason the current rules reject them;
 overlaps use current prices. A separate rendering copy prevents legacy prices
 from becoming the canonical analysis plan. Intraday legacy checks require a
 saved legacy post-close plan and a valid realtime quote; they never move its
 levels. Only current approvals enter the official Top-10 history and automatic
 performance tracker; the overview image is explicitly labeled **新制**.
+
+The headline win rate/sample/credibility in homepage cards and prediction images
+now uses **舊制技術回測**, independently replayed from the model used on September 15
+(`027f459`, frozen core, scoring and pattern modules). It uses 380 signal sessions,
+a score threshold of 60, next-open entry, 1.5 ATR target / 1 ATR stop, nine-session
+non-overlapping holding windows, completed trades only, and the original trading
+costs. The primary sample is **all completed old-model trades**, not the current
+model's training subset. The old rate retains its original small-sample adjustment;
+credibility labels are sample-count heuristics, not out-of-sample guarantees.
+
+`Legacy_Backtest` has its own schema, source commit and as-of date. Missing/stale
+legacy evidence displays **舊制待回補**, never the current rate disguised as old.
+Current `WinRate`, `Backtest_Samples`, validation evidence, execution gates and
+tracking accumulation are unchanged. Secondary **新制 全/訓/驗** text reports
+current overall/training/validation counts. The analysis laboratory explicitly
+remains current/custom-model evidence. Neither rate is an actual profit probability.
+Intraday displays retain the previous completed-close evidence and its date.
+
+For existing latest scans, `backfill_legacy_backtest.py --prepare OUTPUT_JSON`
+downloads real history and creates a local review bundle plus PNG without cloud
+writes. `--apply OUTPUT_JSON` adds only same-date legacy evidence and verified
+mini-K bars, with transactional scan-lock/date/revision checks. It preserves scan
+metadata and all canonical current fields; old chunks remain recoverable. It does
+not rewrite entry, position or performance histories, and does not send Telegram.
 
 The default stock commission/tax assumptions follow the
 [TWSE investing guide](https://www.twse.com.tw/zh/about/company/guide.html); broker-specific discounts and minimum fees can differ.

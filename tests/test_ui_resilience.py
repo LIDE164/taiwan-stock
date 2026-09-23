@@ -51,7 +51,7 @@ class UiResilienceTests(unittest.TestCase):
         }])
         html = generate_cards_html(frame, safe_num=lambda value, default=0: float(value or default))
         self.assertIn('全期 2｜訓練 1｜驗證 1', html)
-        self.assertIn('訓練校正勝率', html)
+        self.assertIn('舊制技術回測', html)
         self.assertIn('條件符合，待驗證', html)
         self.assertNotIn('>0.0%</span>', html)
         self.assertNotIn('nan%', html)

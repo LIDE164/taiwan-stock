@@ -21,6 +21,7 @@ source = [
     "execution_costs",
     "intraday_ranking",
     "legacy_entry_readiness",
+    "legacy_backtest",
     "ranking_comparison",
     "market_http",
     "scan_state",

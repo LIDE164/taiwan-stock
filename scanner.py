@@ -19,6 +19,7 @@ import streamlit as st
 from analysis_core import BACKTEST_LOOKBACK_DAYS, ENG_TO_TW_INDUSTRY, apply_technical_indicators, build_score_input, calculate_historical_performance
 from app_security import normalize_ticker
 from backtest_reporting import backtest_record_fields
+from legacy_backtest import calculate_legacy_backtest
 from chunked_firestore import (
     STORAGE_SCHEMA_VERSION,
     build_chunk_documents,
@@ -889,7 +890,7 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     selected_top10 = select_executable_top10(scan_results)
     comparison_results = build_comparison_rows(scan_results)
     executable_rows = build_executable_display_rows(comparison_results, comparison=True)
-    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_v1", "rows": executable_rows}
+    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_old_backtest_v2", "rows": executable_rows}
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -1647,6 +1648,7 @@ def run_daily_scan(
                 }
                 result.update(entry_plan)
                 result["Legacy_Entry_Plan"] = build_legacy_entry_plan(result)
+                result["Legacy_Backtest"] = calculate_legacy_backtest(df, as_of_date=scan_date_str)
                 return result
         return None
 
