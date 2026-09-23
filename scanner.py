@@ -735,6 +735,111 @@ def _telegram_credentials() -> tuple[Any, Any]:
     return token, chat_id
 
 
+def _benchmark_date(value: Any) -> str:
+    text = str(value or "")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat() if len(text) == 10 else ""
+    except ValueError:
+        return ""
+
+
+def _load_saved_benchmarks(trading_date: str) -> list[dict[str, Any]]:
+    """Read a bounded set of already persisted index observations, never infer sessions."""
+    if db is None:
+        return []
+    document = db.collection("market_data").document("top10_tracker").get()
+    if not document.exists:
+        return []
+    raw = document.to_dict() or {}
+    payload = raw.get("data", raw)
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("已保存大盤資料格式錯誤")
+    saved: list[dict[str, Any]] = []
+
+    def append_context(context: Any, expected_date: str, source: str) -> None:
+        if not context:
+            return
+        if not isinstance(context, Mapping) or context.get("date") != expected_date:
+            raise RuntimeError("已保存大盤資料與文件日期不一致")
+        if context.get("symbol") != "TAIEX":
+            raise RuntimeError("已保存大盤資料不是 TAIEX")
+        saved.append(dict(context, source=source))
+
+    latest_date = _benchmark_date(payload.get("latest_date"))
+    if latest_date and latest_date < trading_date:
+        append_context(payload.get("latest_benchmark"), latest_date, "market_data/top10_tracker")
+    history_dates = payload.get("history_dates", [])
+    if not isinstance(history_dates, list):
+        raise RuntimeError("已保存大盤歷史日期格式錯誤")
+    dates = sorted({
+        text for item in history_dates
+        if (text := _benchmark_date(item)) and text < trading_date
+    }, reverse=True)[:4]
+    for day in dates:
+        history = db.collection("top10_tracking_history").document(day).get()
+        if not history.exists:
+            continue
+        raw_history = history.to_dict() or {}
+        history_payload = raw_history.get("data", raw_history)
+        if not isinstance(history_payload, Mapping) or history_payload.get("date") != day:
+            raise RuntimeError("已保存大盤歷史文件日期不一致")
+        append_context(history_payload.get("benchmark"), day, f"top10_tracking_history/{day}")
+    return saved
+
+
+def reconcile_benchmark_history(
+    frame: pd.DataFrame, saved_benchmarks: list[dict[str, Any]],
+) -> pd.DataFrame:
+    """Restore missing real Open/Close observations; never synthesize full OHLC bars."""
+    if frame.empty or "Close" not in frame.columns:
+        raise ValueError("大盤行情缺少收盤價")
+    result = frame.copy(deep=True)
+    try:
+        dates = [_benchmark_date(pd.Timestamp(item).date().isoformat()) for item in result.index]
+    except (ValueError, TypeError):
+        raise ValueError("大盤行情日期無法辨識") from None
+    if not all(dates) or dates != sorted(set(dates)):
+        raise ValueError("大盤行情日期必須依序且不能重複")
+    first_date, trading_date = dates[0], dates[-1]
+    positions = dict(zip(dates, result.index))
+    restored: list[dict[str, str]] = []
+    for context in saved_benchmarks:
+        day = _benchmark_date(context.get("date"))
+        if not day or context.get("symbol") != "TAIEX":
+            raise ValueError("已保存大盤日期或代號無效")
+        # Prior observations cannot replace the current bar or extend the provider window.
+        if day < first_date or day >= trading_date:
+            continue
+        try:
+            close, open_price = float(context["close"]), float(context["open"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("已保存大盤價位不完整") from None
+        if not all(math.isfinite(value) and value > 0 for value in (close, open_price)):
+            raise ValueError("已保存大盤價位無效")
+        if day in positions:
+            provider = result.loc[positions[day]]
+            # Saved contexts use two decimals; permit rounding, not a changed price.
+            if any(
+                key not in provider or not math.isfinite(float(provider[key]))
+                or abs(float(provider[key]) - value) > 0.011
+                for key, value in (("Close", close), ("Open", open_price))
+            ):
+                raise ValueError(f"大盤 {day} 既有與保存價位不一致，本次不寫入")
+            continue
+        stamp = pd.Timestamp(day)
+        if isinstance(result.index, pd.DatetimeIndex) and result.index.tz is not None:
+            stamp = stamp.tz_localize(result.index.tz)
+        # All other columns remain NaN: saved contexts do not prove High/Low/Volume.
+        result.loc[stamp, ["Open", "Close"]] = [open_price, close]
+        positions[day] = stamp
+        restored.append({"date": day, "source": str(context.get("source") or "saved_benchmark")})
+    result = result.sort_index()
+    result["MA20"] = result["Close"].rolling(20).mean()
+    result["MA60"] = result["Close"].rolling(60).mean()
+    result.attrs["restored_benchmark_observations"] = restored
+    return result
+
+
 def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
     """Build same-day TAIEX context without inventing values when data is missing."""
     if frame is None or len(frame) < 2 or "Close" not in frame.columns:
@@ -755,7 +860,7 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
         regime = "空頭"
     else:
         regime = "震盪"
-    return {
+    context = {
         "symbol": "TAIEX",
         "date": latest_trading_date(frame.index),
         "previous_trading_date": latest_trading_date(frame.index[:-1]),
@@ -768,6 +873,11 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
         "ma60": round(ma60, 2),
         "regime": regime,
     }
+    restored = frame.attrs.get("restored_benchmark_observations")
+    if restored:
+        context["source"] = "Yahoo ^TWII + saved benchmark observations"
+        context["restored_observations"] = restored
+    return context
 
 
 def _top10_notification_fingerprint(top10_results, trading_date):
@@ -1344,19 +1454,24 @@ def run_daily_scan(
     twii_df = None
     try:
         twii_df = call_with_backoff(lambda: yf.Ticker("^TWII").history(period="4mo"), attempts=3)
-        if not twii_df.empty and len(twii_df) >= 60:
-            twii_df['MA20'] = twii_df['Close'].rolling(20).mean()
-            twii_df['MA60'] = twii_df['Close'].rolling(60).mean()
-            twii_close = float(twii_df['Close'].iloc[-1])
-            twii_ma20 = float(twii_df['MA20'].iloc[-1])
-            twii_ma60 = float(twii_df['MA60'].iloc[-1])
     except Exception as e:
         logging.error("雷達獲取大盤加權指數失敗: %s", e)
 
     scan_date_str = latest_trading_date(twii_df.index) if twii_df is not None and not twii_df.empty else ""
-    if not scan_date_str or twii_close <= 0:
+    if not scan_date_str:
+        raise RuntimeError("無法確認最新實際交易日，本次不寫入掃描結果")
+    # Reconcile before acquiring the lease or writing any scan/tracker data. A stale
+    # provider predecessor must not permanently exclude already tracked positions.
+    twii_df = reconcile_benchmark_history(twii_df, _load_saved_benchmarks(scan_date_str))
+    if len(twii_df) >= 60:
+        twii_close = float(twii_df['Close'].iloc[-1])
+        twii_ma20 = float(twii_df['MA20'].iloc[-1])
+        twii_ma60 = float(twii_df['MA60'].iloc[-1])
+    if not all(math.isfinite(value) and value > 0 for value in (twii_close, twii_ma20, twii_ma60)):
         raise RuntimeError("無法確認最新實際交易日，本次不寫入掃描結果")
     benchmark_context = build_benchmark_context(twii_df)
+    if not benchmark_context:
+        raise RuntimeError("無法確認大盤基準行情，本次不寫入掃描結果")
 
     previous_payload = _load_daily_scan_doc()
     if not _acquire_scan_lease(scan_date_str, force=force):

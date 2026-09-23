@@ -1073,6 +1073,35 @@ def update_positions_with_snapshots(
     confirmed_previous_session = _iso_date(
         benchmark_context.get("previous_trading_date")
     )
+    if benchmark_session == current_session and current_session is not None:
+        if (
+            confirmed_previous_session is not None
+            and confirmed_previous_session >= current_session
+        ):
+            raise ValueError(
+                "大盤交易日序列矛盾：前一交易日 "
+                f"{confirmed_previous_session.isoformat()} 不早於 {trading_date}，停止追蹤結算"
+            )
+        if confirmed_previous_session is not None:
+            for position in updated:
+                if str(position.get("status") or "") not in {"OPEN", "PENDING"}:
+                    continue
+                for field in ("last_tracked_date", "signal_date", "entry_date"):
+                    known_session = _iso_date(position.get(field))
+                    if (
+                        known_session is not None
+                        and confirmed_previous_session < known_session < current_session
+                    ):
+                        # A saved later tracking/signal session disproves the
+                        # benchmark predecessor.  Reject the whole update before
+                        # any settlement: neither a permanent stock-data gap nor
+                        # a one-day market return can be inferred from this bar.
+                        raise ValueError(
+                            "大盤交易日序列矛盾：前一交易日 "
+                            f"{confirmed_previous_session.isoformat()} 早於 "
+                            f"{position.get('ticker', '')} 已記錄的 {field} "
+                            f"{known_session.isoformat()}，停止追蹤結算"
+                        )
 
     def make_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return _attach_benchmark(_snapshot(*args, **kwargs), benchmark)
@@ -1139,7 +1168,10 @@ def update_positions_with_snapshots(
             and current_session is not None
             and benchmark_session == current_session
             and confirmed_previous_session is not None
-            and previous_tracked_session != confirmed_previous_session
+            and (
+                previous_tracked_session is None
+                or previous_tracked_session < confirmed_previous_session
+            )
         )
         has_unrepaired_open_data_gap = (
             status == "OPEN"
