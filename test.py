@@ -455,6 +455,11 @@ if st.sidebar.button("🏆 Top 10 自動追蹤績效", width="stretch"):
     st.session_state.page = "top10_tracking"; st.rerun()
 if st.sidebar.button("📝 交易日誌分析師", width="stretch"):
     st.session_state.page = "trade_journal"; st.rerun()
+if st.sidebar.button("🔬 交易研究工作台", width="stretch"):
+    # A stock deep link otherwise routes every rerun back to the analysis page.
+    for research_query_key in ("stock", "query", "mode", "target_date"):
+        st.query_params.pop(research_query_key, None)
+    st.session_state.page = "research_workspace"; st.rerun()
 
 st.sidebar.divider()
 fav_sidebar_slot = st.sidebar.empty()
@@ -2597,6 +2602,20 @@ if st.session_state.page == "home":
 # ==========================================
 # 📊 模擬交易中心 2.0：經理人績效儀表板
 # ==========================================
+elif st.session_state.page == "research_workspace":
+    if st.button("⬅ 返回首頁", key="research_back_home"):
+        st.session_state.page = "home"; st.rerun()
+    # Lazy import and explicit navigation keep research isolated from daily views.
+    from research_ui import render_research_workspace
+    research_records = hydrate_scan_results()
+    render_research_workspace(
+        scan_records=research_records,
+        scan_date=st.session_state.get("scan_date", ""),
+        scan_stale=st.session_state.get("scan_results_stale", True),
+        load_history=_get_ohlcv_base,
+        stock_names=CURRENT_STOCK_NAMES,
+    )
+
 elif st.session_state.page == "simulated_orders":
     st.markdown("<h2 style='text-align: center; color: #818cf8; margin-bottom: 20px;'>📊 經理人績效儀表板 2.0</h2>", unsafe_allow_html=True)
     

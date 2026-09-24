@@ -29,6 +29,43 @@ Historical gaps can be audited with `python backfill_top10.py` and applied only 
 
 The app does not generate substitute market values when a required source fails. Missing revenue, institutional flow, quotes, and backtest samples remain missing in storage and display as `--` or `資料不足`, rather than `0`. A score is emitted only when every required technical field is present and finite. Historical snapshot mode truncates OHLCV to the requested date, uses a date-scoped cache, and does not reuse current macro, revenue, or institutional data. Rule-based risk and valuation indicators are labeled as heuristics, not probabilities or market consensus.
 
+## Independent trading research workspace
+
+The sidebar **交易研究工作台** combines the six research prompts in
+[`docs/trading_research_prompt.md`](docs/trading_research_prompt.md). It is opt-in,
+read-only, and does not change the existing daily rankings, new/legacy evidence,
+performance images, scanner thresholds, Telegram jobs, or historical entries.
+No paid AI API, new scheduler, or automated broker orders are introduced.
+
+- Up to five current-rule candidates from the dated saved scan; insufficient or
+  stale evidence never creates replacement picks. Entry, invalidation, gross/net
+  reward/risk, and NT$5,000 modeled-loss share sizing are shown only here.
+- Daily and completed-week technical checks, timestamped observations, rolling
+  support/resistance and explicitly defined moving averages/momentum.
+- On-demand [TWSE](https://openapi.twse.com.tw/) and
+  [TPEx](https://www.tpex.org.tw/openapi/) official material announcements. This is
+  not a complete media-news or historical news service. Publication and event
+  dates are separate; source failures stay unavailable. Keyword-based review
+  questions are conditional, never a forecast generated from a headline.
+- Read-only current-model, MA-cross and RSI-rebound research backtests. RSI
+  rebound is not divergence. Costs, completed/non-overlapping trades, chronological
+  splits and limitations are disclosed. Below 30 trades headline rates are hidden;
+  raw proportions remain in the research appendix. The original daily image
+  evidence display is deliberately unchanged. Drawdown is a closed-trade return
+  sequence, not a fully marked-to-market capital-account drawdown.
+- User-entered real portfolio allocations only, with cash, stock/sector
+  concentration, common-date correlation samples, and an explicitly hypothetical
+  all-stocks-minus-20% stress test. Reduction/cash proposals are illustrative and
+  execute no trades. Entries stay session-local unless manually exported.
+- A time-stamped **manual** checklist. The exchange holiday calendar still needs
+  confirmation; the checklist neither schedules jobs nor assumes a next session.
+
+Cash flow, receivables/inventory quality, complete media coverage, event-study
+price forecasts and derivative hedge sizing are not silently inferred when their
+data is absent. These remain explicitly disclosed research gaps. The workspace
+supports Taiwan equities; index technical analysis is available, but stock taxes
+are not misapplied to an untradeable index backtest.
+
 ## Tests
 
 Run the deterministic unit tests without contacting market-data services:
