@@ -6,7 +6,6 @@ import io
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -19,6 +18,7 @@ from execution_costs import (
     DEFAULT_TAIWAN_STOCK_COST_MODEL,
     calculate_max_odd_lot_position,
 )
+from market_calendar import next_scheduled_session
 from ranking_comparison import comparison_display_record
 
 IMAGE_WIDTH = 1080
@@ -59,14 +59,10 @@ def _clean_text(value: Any, fallback: str = "--") -> str:
 
 
 def prediction_title(analysis_date: Any) -> str:
-    """Format the next weekday after an ISO analysis date as an M/D prediction title."""
-    try:
-        parsed = date.fromisoformat(str(analysis_date).strip()[:10])
-    except (TypeError, ValueError):
+    """Use the next officially scheduled session; never label a known holiday."""
+    prediction_date = next_scheduled_session(analysis_date)
+    if prediction_date is None:
         return "下一交易日股票預測"
-    prediction_date = parsed + timedelta(days=1)
-    while prediction_date.weekday() >= 5:
-        prediction_date += timedelta(days=1)
     return f"{prediction_date.month}/{prediction_date.day}股票預測"
 
 

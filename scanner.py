@@ -55,6 +55,7 @@ from top10_telegram import (
     send_executable_photo,
     send_top10_photo,
     send_tracking_performance_photo,
+    prediction_title,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1000,7 +1001,8 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     selected_top10 = select_executable_top10(scan_results)
     comparison_results = build_comparison_rows(scan_results)
     executable_rows = build_executable_display_rows(comparison_results, comparison=True)
-    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_grouped_metrics_v3", "rows": executable_rows}
+    fingerprint_payload = {"date": str(trading_date), "format": "new_legacy_grouped_metrics_v3",
+                           "title": prediction_title(trading_date), "rows": executable_rows}
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -1202,6 +1204,47 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
     return True
 
 
+def send_daily_research_notification(scan_results, trading_date, *, resend=False):
+    """Add a separate six-part report; never change execution/tracking state."""
+    from daily_research_report import build_daily_research_report, format_research_messages
+    from research_delivery import FirestoreReportStore, deliver_report, telegram_send_text
+    from research_news import fetch_company_events
+
+    if db is None:
+        raise RuntimeError("Firestore 未初始化，無法確認研究通知狀態")
+    lock = db.collection("system_locks").document("daily_scan").get()
+    lock_data = lock.to_dict() or {} if lock.exists else {}
+    latest = _load_daily_scan_doc()
+    if (lock_data.get("status") != "completed"
+            or lock_data.get("trading_date") != str(trading_date)
+            or latest.get("scan_date") != str(trading_date)
+            or _records_content_hash(scan_results) != _records_content_hash(latest.get("data", []))):
+        raise RuntimeError("研究通知只能使用已完成且一致的最新盤後榜單")
+
+    def build_messages():
+        report = build_daily_research_report(
+            scan_results, str(trading_date), load_history=get_stock_data,
+            load_news=lambda ticker, cutoff: fetch_company_events(ticker, as_of=cutoff),
+        )
+        return format_research_messages(report), {
+            key: report.get(key) for key in (
+                "schema", "analysis_date", "forecast_date", "generated_at",
+                "stock_count", "new_count", "legacy_count",
+            )
+        }
+
+    def send_text(message):
+        token, chat_id = _telegram_credentials()
+        return telegram_send_text(token, chat_id, message)
+
+    sent = deliver_report(
+        FirestoreReportStore(db, str(trading_date)), scan_results, str(trading_date),
+        build_messages=build_messages, send_text=send_text, resend=resend,
+    )
+    logging.info("%s 研究分析通知：%s。", trading_date, "已送達" if sent else "略過重複或寄送中")
+    return sent
+
+
 def send_daily_notifications(scan_results, trading_date, *, resend=False):
     """Attempt every daily Telegram artifact and fail only after all were tried."""
     failures = []
@@ -1217,6 +1260,10 @@ def send_daily_notifications(scan_results, trading_date, *, resend=False):
         (
             "每日追蹤績效",
             lambda: send_daily_tracking_performance_notification(trading_date, resend=resend),
+        ),
+        (
+            "可執行榜單研究分析",
+            lambda: send_daily_research_notification(scan_results, trading_date, resend=resend),
         ),
     )
     for label, sender in tasks:

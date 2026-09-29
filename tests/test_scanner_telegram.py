@@ -212,6 +212,7 @@ class ScannerTelegramTests(unittest.TestCase):
                 scanner,
                 "send_daily_tracking_performance_notification",
             ) as tracking_sender,
+            patch.object(scanner, "send_daily_research_notification") as research_sender,
         ):
             with self.assertRaisesRegex(RuntimeError, "可執行 Top10: ValueError"):
                 scanner.send_daily_notifications(
@@ -223,6 +224,42 @@ class ScannerTelegramTests(unittest.TestCase):
         top10_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
         executable_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
         tracking_sender.assert_called_once_with("2026-08-27", resend=True)
+        research_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
+
+    def test_research_refuses_running_or_mismatched_scan(self):
+        lock = self.db.collection("system_locks").document("daily_scan")
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_load_daily_scan_doc", return_value={
+                "scan_date": "2026-08-27", "data": self.rows,
+            }),
+            patch("research_delivery.deliver_report") as send,
+        ):
+            for state in (
+                {"status": "running", "trading_date": "2026-08-27"},
+                {"status": "completed", "trading_date": "2026-08-26"},
+            ):
+                lock.set(state)
+                with self.assertRaisesRegex(RuntimeError, "已完成且一致"):
+                    scanner.send_daily_research_notification(self.rows, "2026-08-27")
+            lock.set({"status": "completed", "trading_date": "2026-08-27"})
+            with self.assertRaisesRegex(RuntimeError, "已完成且一致"):
+                scanner.send_daily_research_notification([], "2026-08-27")
+        send.assert_not_called()
+
+    def test_research_sends_only_completed_matching_scan(self):
+        self.db.collection("system_locks").document("daily_scan").set({
+            "status": "completed", "trading_date": "2026-08-27",
+        })
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_load_daily_scan_doc", return_value={
+                "scan_date": "2026-08-27", "data": self.rows,
+            }),
+            patch("research_delivery.deliver_report", return_value=True) as send,
+        ):
+            self.assertTrue(scanner.send_daily_research_notification(self.rows, "2026-08-27"))
+        self.assertEqual(send.call_args.args[1:], (self.rows, "2026-08-27"))
 
 
 if __name__ == "__main__":

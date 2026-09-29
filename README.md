@@ -31,15 +31,48 @@ The app does not generate substitute market values when a required source fails.
 
 ## Independent trading research workspace
 
+### Automatic daily Telegram research
+
+After the existing ranking and performance images, the same completed scan now
+also produces a **separate six-part text report**. It takes the saved new/legacy
+comparison list (up to 20 names), explicitly labels each version, independently
+checks cost-aware sizing and risk/reward, and reports daily/completed-week
+technicals, current-model research backtests, dated official announcements,
+candidate concentration and a manual session checklist. Legacy candidates never
+become current-rule approvals, and the existing tracking rules are unchanged.
+An empty list remains empty. Below 30 completed research trades, the report does
+not publish a precise headline win rate; original image metrics remain unchanged.
+
+Technical inputs stop at the analysis date. Newly queried announcements have a
+separate retrieval/publication time and are never inserted into historical tests.
+The candidate list is **not** the user's portfolio: personal weights, portfolio
+stress loss and hedge quantities remain unavailable without actual holdings.
+No paid AI API or broker orders are used. Prices are not intraday approvals.
+
+The fourth artifact has its own `notifications/daily_research_<date>` state,
+transactional lease, frozen message parts and confirmed Telegram message IDs.
+Scheduled retries skip confirmed parts without recomputing the news or report.
+An ambiguous POST/timeout stops automatic resends and requires confirmation;
+an explicit `--resend-telegram` intentionally requests another delivery.
+Research failures do not prevent the original three artifacts from being tried.
+
+Prediction titles use the verified 2026 TWSE scheduled-session calendar, including
+settlement-only closures; for example, the September 24 scan predicts September
+29. Unknown calendar years are labeled without guessing a date. Temporary weather
+closures still require confirmation from dated market data.
+
+### On-demand research workspace
+
 The sidebar **交易研究工作台** combines the six research prompts in
 [`docs/trading_research_prompt.md`](docs/trading_research_prompt.md). It is opt-in,
 read-only, and does not change the existing daily rankings, new/legacy evidence,
-performance images, scanner thresholds, Telegram jobs, or historical entries.
+performance images, scanner thresholds, or historical entries. The independent
+daily text delivery described above is enabled separately by the scanner.
 No paid AI API, new scheduler, or automated broker orders are introduced.
 
 - Up to five current-rule candidates from the dated saved scan; insufficient or
   stale evidence never creates replacement picks. Entry, invalidation, gross/net
-  reward/risk, and NT$5,000 modeled-loss share sizing are shown only here.
+  reward/risk, and NT$5,000 modeled-loss share sizing are research-only outputs.
 - Daily and completed-week technical checks, timestamped observations, rolling
   support/resistance and explicitly defined moving averages/momentum.
 - On-demand [TWSE](https://openapi.twse.com.tw/) and

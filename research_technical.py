@@ -61,11 +61,13 @@ def _observations(frame: pd.DataFrame, as_of: Any) -> tuple[pd.DataFrame, pd.Tim
         raise ValueError("行情含無效價格或成交量")
     # Permit only machine precision noise, not erroneous candle envelopes.
     tolerance = np.maximum(result.High.to_numpy(), 1.0) * np.finfo(float).eps * 8
-    if (
-        (result.High.to_numpy() + tolerance < result[["Open", "Low", "Close"]].max(axis=1).to_numpy()).any()
-        or (result.Low.to_numpy() - tolerance > result[["Open", "High", "Close"]].min(axis=1).to_numpy()).any()
-    ):
-        raise ValueError("OHLC 高低價格矛盾，無法分析")
+    invalid_envelope = (
+        (result.High.to_numpy() + tolerance < result[["Open", "Low", "Close"]].max(axis=1).to_numpy())
+        | (result.Low.to_numpy() - tolerance > result[["Open", "High", "Close"]].min(axis=1).to_numpy())
+    )
+    if invalid_envelope.any():
+        dates = "、".join(str(value.date()) for value in result.index[invalid_envelope][:3])
+        raise ValueError(f"OHLC 高低價格矛盾（{dates}），無法分析；不修造或刪除異常行情")
     return result, cutoff
 
 
