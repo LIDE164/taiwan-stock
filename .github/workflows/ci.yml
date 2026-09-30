@@ -29,6 +29,7 @@ jobs:
           intraday_ranking.py market_http.py scan_state.py top10_tracker.py
           trade_journal.py backtest_reporting.py legacy_entry_readiness.py ranking_comparison.py legacy_backtest.py
           market_calendar.py research_technical.py daily_research_report.py research_delivery.py
+          research_decision.py research_summary.py
       - name: Run tests with coverage
         run: |
           coverage run -m unittest discover -s tests -v

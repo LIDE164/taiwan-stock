@@ -34,7 +34,7 @@ The app does not generate substitute market values when a required source fails.
 ### Automatic daily Telegram research
 
 After the existing ranking and performance images, the same completed scan now
-also produces a **separate six-part text report**. It takes the saved new/legacy
+also produces a **separate decision-first summary**. It takes the saved new/legacy
 comparison list (up to 20 names), explicitly labels each version, independently
 checks cost-aware sizing and risk/reward, and reports daily/completed-week
 technicals, current-model research backtests, dated official announcements,
@@ -42,6 +42,23 @@ candidate concentration and a manual session checklist. Legacy candidates never
 become current-rule approvals, and the existing tracking rules are unchanged.
 An empty list remains empty. Below 30 completed research trades, the report does
 not publish a precise headline win rate; original image metrics remain unchanged.
+
+Telegram now shows **買（限價、條件式） / 不買**, at most two short reasons,
+one next check, and the analysis link. Only a conditional buy includes the entry
+zone, stop, target and cost-aware share cap. The full six-part calculations and
+`format_detailed_research_messages()` remain available for audit; the message
+does not repeat the full indicators or time-by-time checklist.
+
+A positive summary requires the saved current-schema new-rule approval AND a
+read-only recheck with the unchanged entry rules. It also checks consistent dated
+prices, cost-aware risk/reward and the NT$5,000 modeled-loss cap, valid daily/weekly
+research without a weakening signal, complete fundamentals/institutional inputs,
+and sufficient profitable training/validation research. Missing announcement
+coverage or an unreviewed official announcement holds the summary at **不買**;
+it never guesses news sentiment. This report layer can hold a candidate, but can
+never promote a legacy candidate or change ranking/tracking rules. Unknown dates
+and expired sessions cannot produce buy labels. A positive label is a conditional
+limit-price plan, not a live market order or a guarantee of profit.
 
 Technical inputs stop at the analysis date. Newly queried announcements have a
 separate retrieval/publication time and are never inserted into historical tests.

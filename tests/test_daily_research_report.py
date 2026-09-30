@@ -9,7 +9,7 @@ import pandas as pd
 
 from daily_research_report import (
     MAX_MESSAGE_UNITS, _candidate_correlations, _split_units,
-    build_daily_research_report, format_research_messages,
+    build_daily_research_report, format_detailed_research_messages as format_research_messages,
 )
 from execution_costs import estimate_stop_loss
 from research_news import SOURCES
@@ -94,6 +94,25 @@ class DailyResearchReportTests(unittest.TestCase):
         self.assertEqual(report["items"][0]["versions"], ["new", "legacy"])
         self.assertEqual((report["new_count"], report["legacy_count"]), (1, 1))
         self.assertEqual(self.backtest.call_count, 1)
+
+    def test_default_telegram_view_is_compact_and_uses_actual_decision(self):
+        from daily_research_report import format_research_messages as default_format
+        report = self.build()
+        frozen = deepcopy(report)
+        messages = default_format(report)
+        self.assertIn("精簡版", messages[0])
+        self.assertTrue(messages[1].startswith("不買｜2330"))
+        self.assertNotIn("1. 交易計畫", "\n".join(messages))
+        self.assertEqual(report, frozen)
+
+    def test_recheck_cannot_promote_incomplete_saved_approval(self):
+        from research_decision import build_trade_decision
+        report = self.build([record(Entry_Status="現在可執行", Entry_Ready=True,
+                                    Entry_Schema=3, Critical_Data_Ready=True)])
+        item = report["items"][0]
+        self.assertTrue(item["new_approved"])
+        self.assertNotEqual(item["execution_evidence"]["rechecked_status"], "現在可執行")
+        self.assertEqual(build_trade_decision(item, report)["code"], "no_buy")
 
     def test_only_same_date_rows_and_no_fabricated_empty_candidates(self):
         loader = Mock()

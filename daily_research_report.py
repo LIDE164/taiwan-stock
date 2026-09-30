@@ -17,6 +17,7 @@ import pandas as pd
 
 from backtest_reporting import primary_backtest_display, sample_breakdown
 from execution_costs import calculate_max_odd_lot_position, estimate_round_trip_net_profit
+from entry_readiness import build_entry_readiness
 from ranking_comparison import build_comparison_rows, comparison_display_record
 from research_news import SOURCES, classify_event
 from research_portfolio import build_daily_checklist
@@ -204,6 +205,7 @@ def build_daily_research_report(records, trading_date, *, load_history, load_new
     for row in rows:
         ticker = row["代號"]
         display = comparison_display_record(row)
+        rechecked = build_entry_readiness(row)
         evidence = primary_backtest_display(row)
         if evidence.get("samples") is None or evidence["samples"] < MIN_SAMPLES:
             evidence["win_rate"] = None
@@ -212,6 +214,13 @@ def build_daily_research_report(records, trading_date, *, load_history, load_new
             "industry": _text(row.get("產業") or "未分類", 50), "score": _number(row.get("Score")),
             "versions": list(row["Execution_Versions"]), "version_label": row["Execution_Version_Label"],
             "new_approved": "new" in row["Execution_Versions"],
+            "execution_evidence": {
+                "schema": row.get("Entry_Schema"), "ready": row.get("Entry_Ready"),
+                "status": row.get("Entry_Status"), "critical_ready": row.get("Critical_Data_Ready"),
+                "critical_issues": row.get("Critical_Data_Issues"),
+                "rechecked_status": rechecked.get("Entry_Status"),
+                "rechecked_reason": rechecked.get("Entry_Reason"),
+            },
             "original_new_reason": _text(row.get("Comparison_New_Reason") or row.get("Entry_Reason"), 180),
             "saved_close": _number(row.get("收盤價")), "price_date": analysis_date,
             "plan": _risk_plan(display), "legacy_evidence": evidence,
@@ -395,7 +404,7 @@ def _split_units(text, limit=MAX_MESSAGE_UNITS):
     return chunks
 
 
-def format_research_messages(report):
+def format_detailed_research_messages(report):
     """Return separate additive plain-text Telegram messages; no sending here."""
     if report.get("schema") != SCHEMA:
         raise ValueError("不支援的研究報告版本")
@@ -436,3 +445,12 @@ def format_research_messages(report):
     lines.append("回測改進檢核：持續分開累積訓練／驗證與實際績效，檢查成本後優勢及落差；樣本不足不微調到漂亮勝率，也不為補滿名單放寬風控。")
     messages.append("\n".join(lines))
     return [chunk for message in messages for chunk in _split_units(message)]
+
+
+def format_research_messages(report):
+    """Default Telegram view: short decision first; full research stays intact."""
+    from research_summary import format_compact_research_messages
+
+    if report.get("schema") != SCHEMA:
+        raise ValueError("不支援的研究報告版本")
+    return format_compact_research_messages(report)
