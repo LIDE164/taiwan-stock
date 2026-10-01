@@ -31,6 +31,7 @@ source = [
     "daily_research_report",
     "research_decision",
     "research_summary",
+    "research_facets",
     "research_delivery",
     "market_calendar",
     "market_http",

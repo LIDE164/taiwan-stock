@@ -95,15 +95,27 @@ class DailyResearchReportTests(unittest.TestCase):
         self.assertEqual((report["new_count"], report["legacy_count"]), (1, 1))
         self.assertEqual(self.backtest.call_count, 1)
 
-    def test_default_telegram_view_is_compact_and_uses_actual_decision(self):
+    def test_default_telegram_view_is_compact_and_uses_three_facets(self):
         from daily_research_report import format_research_messages as default_format
         report = self.build()
         frozen = deepcopy(report)
         messages = default_format(report)
         self.assertIn("精簡版", messages[0])
         self.assertTrue(messages[1].startswith("不買｜2330"))
+        for facet in ("技術面", "籌碼面", "基本面"):
+            self.assertIn(facet + "｜優點：", messages[1])
+        self.assertIn("缺點／限制：", messages[1])
         self.assertNotIn("1. 交易計畫", "\n".join(messages))
         self.assertEqual(report, frozen)
+
+    def test_financial_facet_metadata_is_copied_from_snapshot_without_invention(self):
+        row = record(Financial_Expected_Period="2026-Q2", Financial_Risk_Flags=["營業損失"])
+        funds = self.build([row])["items"][0]["fundamentals"]
+        self.assertEqual(funds["Financial_Expected_Period"], "2026-Q2")
+        self.assertEqual(funds["Financial_Risk_Flags"], ["營業損失"])
+        missing = self.build()["items"][0]["fundamentals"]
+        self.assertIsNone(missing["Financial_Expected_Period"])
+        self.assertIsNone(missing["Financial_Risk_Flags"])
 
     def test_recheck_cannot_promote_incomplete_saved_approval(self):
         from research_decision import build_trade_decision

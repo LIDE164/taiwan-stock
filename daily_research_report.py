@@ -227,7 +227,8 @@ def build_daily_research_report(records, trading_date, *, load_history, load_new
             "saved_current_samples": sample_breakdown(row),
             "fundamentals": {key: row.get(key) for key in (
                 "EPS", "EPS_Period", "EPS_Source", "YoY", "MoM", "Revenue_Period", "Revenue_Status",
-                "Revenue_Expected_Period", "Financial_Period", "Financial_Source", "Financial_Status", "Financial_Risk_Level",
+                "Revenue_Expected_Period", "Financial_Period", "Financial_Expected_Period",
+                "Financial_Source", "Financial_Status", "Financial_Risk_Level", "Financial_Risk_Flags",
                 "Financial_Operating_Margin", "Financial_Debt_Ratio")},
             "institutional": {key: row.get(key) for key in (
                 "Whale_Net", "Whale_Net_Days", "Institutional_Status", "Institutional_Latest_Date", "Institutional_Source")},
@@ -448,7 +449,7 @@ def format_detailed_research_messages(report):
 
 
 def format_research_messages(report):
-    """Default Telegram view: short decision first; full research stays intact."""
+    """Default Telegram view: three-facet pros/cons; full research stays intact."""
     from research_summary import format_compact_research_messages
 
     if report.get("schema") != SCHEMA:

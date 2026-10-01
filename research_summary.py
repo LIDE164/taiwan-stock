@@ -1,4 +1,4 @@
-"""Short, decision-first Telegram presentation; no data loading or delivery."""
+"""Concise three-facet Telegram presentation; no data loading or delivery."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import date
 import math
 
 from research_decision import build_trade_decision
+from research_facets import build_research_facets
 
 REPORT_SCHEMA = "daily_executable_research_v1"
 MAX_MESSAGE_UNITS = 3500
@@ -14,21 +15,6 @@ MAX_MESSAGE_UNITS = 3500
 
 def _text(value, limit=180):
     return " ".join(str(value or "").split())[:limit]
-
-
-def _number(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _price(value):
-    number = _number(value)
-    return "未提供" if number is None else f"{number:,.2f}".rstrip("0").rstrip(".")
 
 
 def _date(value):
@@ -39,44 +25,19 @@ def _date(value):
 
 
 def _plan_is_displayable(plan):
-    """Do not print a buy instruction if its required price fields are absent."""
     if not isinstance(plan, Mapping) or plan.get("status") != "ok":
         return False
-    values = [_number(plan.get(key)) for key in (
-        "entry_low", "entry_high", "stop", "target", "shares", "modeled_stop_loss")]
-    if any(value is None for value in values):
+    values = [plan.get(key) for key in (
+        "entry_low", "entry_high", "stop", "target", "shares", "modeled_stop_loss", "max_modeled_loss")]
+    if any(isinstance(value, bool) for value in values):
         return False
-    low, high, stop, target, shares, loss = values
-    return (0 < stop < low <= high < target and shares >= 1 and shares.is_integer()
-            and 0 < loss <= 5000 and _number(plan.get("max_modeled_loss")) == 5000)
-
-
-def _display_decision(item, report):
-    decision = build_trade_decision(item, report)
-    if not isinstance(decision, Mapping):
-        decision = {}
-    code = "buy" if decision.get("code") == "buy" else "no_buy"
-    reasons = decision.get("reasons", [])
-    if not isinstance(reasons, (list, tuple)):
-        reasons = []
-    reasons = [_text(reason, 100) for reason in reasons if _text(reason, 100)][:2]
-    next_step = _text(decision.get("next_step"), 140) or "等待資料補齊後重新判定，不先下單。"
-    # Presentation is defensive as well: historical or undated reports must
-    # never carry actionable-looking order quantities, even if malformed.
-    if report.get("forecast_period_elapsed"):
-        code, reasons = "no_buy", ["此名單適用時段已過，只能回顧，不能當作今日買進訊號。"]
-        next_step = "等待最新盤後榜單，重新確認價格與資格。"
-    elif not _date(report.get("forecast_date")) or not _date(report.get("analysis_date")):
-        code, reasons = "no_buy", ["分析日或適用交易日未確認，資訊不足。"]
-        next_step = "確認資料日期與下一交易日後再判斷。"
-    elif code == "buy" and not _plan_is_displayable(item.get("plan")):
-        code, reasons = "no_buy", ["進場、停損、目標或含成本股數資料不完整，無法核算風險。"]
-        next_step = "先補齊並核對價格及風險計算，不先下單。"
-    elif code == "buy" and not reasons:
-        code, reasons = "no_buy", ["買進理由未提供，資訊不足。"]
-        next_step = "先取得可核對的買進依據，不先下單。"
-    return {"code": code, "label": "買（限價、條件式）" if code == "buy" else "不買",
-            "reasons": reasons or ["資訊不足，尚無可驗證的買進依據。"], "next_step": next_step}
+    try:
+        low, high, stop, target, shares, loss, cap = [float(value) for value in values if value is not None]
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (all(math.isfinite(value) for value in (low, high, stop, target, shares, loss, cap))
+            and 0 < stop < low <= high < target and shares >= 1 and shares.is_integer()
+            and 0 < loss <= 5000 and cap == 5000)
 
 
 def _versions(item):
@@ -95,56 +56,86 @@ def _version_label(item):
     return "制度未確認"
 
 
-def _item_message(item, decision, forecast_date):
-    lines = [f"{decision['label']}｜{_text(item.get('ticker'), 12)} {_text(item.get('name'), 40)}｜{_version_label(item)}",
-             f"適用 {forecast_date or '未確認'}｜盤後計畫，非即時"]
-    lines.extend("原因：" + reason for reason in decision["reasons"])
-    if decision["code"] == "buy":
-        plan = item["plan"]
-        lines.extend([
-            f"限價區 {_price(plan['entry_low'])}–{_price(plan['entry_high'])}｜停損 {_price(plan['stop'])}｜目標 {_price(plan['target'])}",
-            f"股數上限 {int(plan['shares']):,} 股（依區間上限）；含成本模型停損 NT${_price(plan['modeled_stop_loss'])}／每檔上限 5,000",
-        ])
-    lines.append("下一步：" + decision["next_step"])
-    analysis_url = _text(item.get("analysis_url"), 900)
+def _points(facet, field, fallback):
+    values = facet.get(field, []) if isinstance(facet, Mapping) else []
+    if not isinstance(values, (list, tuple)):
+        return fallback
+    values = [_text(value, 70) for value in values if _text(value, 70)][:2]
+    return "、".join(values) or fallback
+
+
+def _decision_label(item, report):
+    # Keep the existing conclusion rules. Facet positives never create an
+    # approval, and malformed/expired input cannot produce a buy headline.
+    if (report.get("forecast_period_elapsed") or not _date(report.get("analysis_date"))
+            or not _date(report.get("forecast_date"))):
+        return "不買"
+    try:
+        decision = build_trade_decision(item, report)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return "不買"
+    if (not isinstance(decision, Mapping) or decision.get("code") != "buy"
+            or not _plan_is_displayable(item.get("plan"))):
+        return "不買"
+    return "買（限價、條件式）"
+
+
+def _item_message(item, report, conclusion):
+    analysis_date = _date(report.get("analysis_date"))
+    forecast_date = _date(report.get("forecast_date"))
+    timing = "盤後資料，非即時"
+    if report.get("forecast_period_elapsed"):
+        timing = "已過期，僅供回顧"
+    elif not analysis_date or not forecast_date:
+        timing = "日期未確認，不作進場依據"
+    lines = [
+        f"{conclusion}｜{_text(item.get('ticker'), 12)} {_text(item.get('name'), 40)}｜{_version_label(item)}",
+        f"分析 {analysis_date or '未確認'}｜適用 {forecast_date or '未確認'}｜{timing}",
+    ]
+    facets = build_research_facets(item, report)
+    for key, label in (("technical", "技術面"), ("institutional", "籌碼面"), ("fundamental", "基本面")):
+        facet: Mapping[str, object] = facets.get(key, {})
+        advantages = _points(facet, "advantages", "暫無明確優點")
+        risks = _points(facet, "risks", "已查指標未見明顯弱點，非無風險")
+        lines.append(f"{label}｜優點：{advantages}；缺點／限制：{risks}")
+    analysis_url = _text(item.get("analysis_url"), 700)
     lines.append("解析（開啟為最新頁面）：" + (analysis_url or "連結未提供"))
     return "\n".join(lines)
 
 
 def format_compact_research_messages(report):
-    """One short summary plus one self-contained decision per candidate.
+    """One summary plus one dated pros/cons message per candidate.
 
-    Full research calculations remain in the report; this pure formatter does
-    not change ranking eligibility, risk rules, holdings, or the saved report.
+    Full research calculations remain in the report. This presentation never
+    changes eligibility, risk rules, holdings, images, or the input report.
     """
     if report.get("schema") != REPORT_SCHEMA:
         raise ValueError("不支援的研究報告版本")
     items = report.get("items")
     if not isinstance(items, list) or any(not isinstance(item, Mapping) for item in items):
         raise ValueError("研究報告缺少有效個股資料")
-    decisions = [_display_decision(item, report) for item in items]
-    buys = sum(decision["code"] == "buy" for decision in decisions)
     new_count = sum("new" in _versions(item) for item in items)
     legacy_count = sum("legacy" in _versions(item) for item in items)
+    conclusions = [_decision_label(item, report) for item in items]
+    buys = sum(value == "買（限價、條件式）" for value in conclusions)
     analysis_date, forecast_date = _date(report.get("analysis_date")), _date(report.get("forecast_date"))
-    title = "交易結論｜精簡版"
+    title = "三面優缺點｜精簡版"
     if report.get("forecast_period_elapsed"):
-        title = "⚠️ 名單已過期｜僅供回顧，全部不買"
+        title = "⚠️ 名單已過期｜三面優缺點僅供回顧"
     elif not forecast_date or not analysis_date:
-        title = "⚠️ 日期未確認｜資訊不足，全部不買"
-    counts = (f"條件式買 {buys} 檔／不買 {len(items) - buys} 檔；新制 {new_count}、舊制 {legacy_count}（重疊只列一次）"
-              if items else "沒有符合名單：不買，等待下一次掃描。")
+        title = "⚠️ 日期未確認｜三面優缺點不作進場依據"
+    counts = (f"條件式買 {buys}／不買 {len(items) - buys} 檔；新制 {new_count}、舊制 {legacy_count}（重疊只列一次）"
+              if items else "沒有符合名單；不另補股票。")
     messages = ["\n".join([
         title,
         f"分析日 {analysis_date or '未確認'}｜適用日 {forecast_date or '未確認'}",
         counts,
-        "模型判定，非獲利保證；盤後資料非即時，進場前重驗價格與新制資格。",
-        "每檔 NT$5,000 是含成本模型停損，跳空或流動性不足仍可能超額。",
+        "僅列可核對的優缺點，缺資料明示；非即時訊號，亦非買進指令。",
+        "原榜單資格與風控不變；每檔 NT$5,000 為模型停損，跳空仍可能超額。",
         "候選並非實際持倉；不自動下單。",
     ])]
-    messages.extend(_item_message(item, decision, forecast_date) for item, decision in zip(items, decisions))
-    # Each stock remains a single message. Fixed field bounds above preserve
-    # complete decision context instead of splitting buy/stop instructions.
+    messages.extend(_item_message(item, report, conclusion) for item, conclusion in zip(items, conclusions))
+    # Keep the advantages and limitations together in one bounded stock part.
     if any(len(message.encode("utf-16-le")) // 2 > MAX_MESSAGE_UNITS for message in messages):
         raise ValueError("精簡研究訊息超過長度上限")
     return messages

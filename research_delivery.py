@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import requests
 
-FORMAT_VERSION = "daily_research_compact_decision_v2"
+FORMAT_VERSION = "daily_research_three_facets_v3"
 
 
 class DeliveryUncertain(RuntimeError):

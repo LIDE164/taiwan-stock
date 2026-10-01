@@ -280,6 +280,17 @@ class ResearchDeliveryTests(unittest.TestCase):
         self.assertNotEqual(baseline, report_fingerprint([{"a": 1, "b": 3}], self.date))
         self.assertNotEqual(baseline, report_fingerprint([{"a": 1, "b": 2}], "2026-09-29"))
 
+    def test_three_facet_revision_replaces_sent_decision_text_once(self):
+        with patch("research_delivery.FORMAT_VERSION", "daily_research_compact_decision_v2"):
+            self.assertTrue(self.deliver(Mock(return_value=(["舊買賣判斷"], {})), Mock(return_value=101)))
+        sender = Mock(return_value=201)
+        builder = Mock(return_value=(["技術面／籌碼面／基本面優缺點"], {}))
+        self.assertTrue(self.deliver(builder, sender))
+        self.assertEqual(self.state["format"], "daily_research_three_facets_v3")
+        self.assertEqual(self.state["sent_parts"], {"1": 201})
+        self.assertFalse(self.deliver(builder, sender))
+        sender.assert_called_once()
+
 
 class TelegramTextTransportTests(unittest.TestCase):
     def response(self, payload, *, ok=True):
