@@ -60,12 +60,13 @@ def telegram_send_text(token, chat_id, message):
 class FirestoreReportStore:
     """Transactional per-date ownership prevents overlapping jobs from sending."""
 
-    def __init__(self, db, trading_date):
+    def __init__(self, db, trading_date, *, namespace="daily_research", format_version=FORMAT_VERSION):
         from firebase_admin import firestore
 
         self.db = db
         self.firestore = firestore
-        self.ref = db.collection("notifications").document(f"daily_research_{trading_date}")
+        self.format_version = format_version
+        self.ref = db.collection("notifications").document(f"{namespace}_{trading_date}")
 
     def acquire(self, fingerprint, owner, *, resend=False):
         now = datetime.now(timezone.utc)
@@ -87,7 +88,7 @@ class FirestoreReportStore:
                 return None
             state = previous if same and not resend else {"sent_parts": {}, "parts": []}
             state.update({
-                "fingerprint": fingerprint, "format": FORMAT_VERSION,
+                "fingerprint": fingerprint, "format": self.format_version,
                 "owner": owner, "lease_until": now + timedelta(minutes=30),
                 "status": "preparing", "in_flight": "", "last_error": "",
                 "attempted_at": now,
@@ -114,14 +115,14 @@ class FirestoreReportStore:
         update(self.db.transaction())
 
 
-def deliver_report(store, records, trading_date, *, build_messages, send_text, resend=False):
+def deliver_report(store, records, trading_date, *, build_messages, send_text, resend=False, fingerprint=None):
     """Freeze text before first send, resume explicit failures, deduplicate success.
 
     build_messages is called only for a new payload and returns (parts, metadata).
     Dependency injection keeps tests fully offline and unable to send real texts.
     """
     owner = uuid4().hex
-    state = store.acquire(report_fingerprint(records, trading_date), owner, resend=resend)
+    state = store.acquire(fingerprint or report_fingerprint(records, trading_date), owner, resend=resend)
     if state is None:
         return False
     in_flight = ""

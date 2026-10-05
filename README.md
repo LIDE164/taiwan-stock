@@ -75,6 +75,39 @@ An ambiguous POST/timeout stops automatic resends and requires confirmation;
 an explicit `--resend-telegram` intentionally requests another delivery.
 Research failures do not prevent the original three artifacts from being tried.
 
+### Prediction-list hourly Telegram prices
+
+`prediction_prices.yml` tracks the same new/legacy union used in the prediction
+image, frozen on first use in `prediction_watchlists/<forecast-date>`. It never
+re-scores stocks, replaces them intraday, changes entry approval, or writes to
+ranking/performance records. The prior scan must be completed and its next
+verified trading session must be today; stale lists and unknown calendar years
+are rejected. Empty prediction lists do not generate hourly empty messages.
+
+Taipei-time targets are **09:05 opening**, **10:05 / 11:05 / 12:05 / 13:05**
+intraday and **13:35 closing**. The :20 attempts are deduplicated backups, not
+additional notifications. A 09:35 opening retry covers the public quote source's
+roughly twenty-minute delay; before then an entirely missing opening report
+waits. Closing data is retried at 13:50, 14:05 and 14:20;
+before 14:05 an unconfirmed close waits, then remaining missing closes are
+explicitly reported as unconfirmed. GitHub Actions may queue/delay scheduled
+runs, and public quotes can also lag; exact on-the-minute delivery is not
+guaranteed. Messages carry actual quote and retrieval times. Holidays/weekends
+are skipped; emergency closures yield no fabricated prices.
+
+Each stock shows that day's reported open, latest/confirmed closing price,
+change from open and (when verified) previous close, with its source and timestamp.
+No prior close, bid/ask midpoint, or predicted price substitutes for missing
+market data. Delayed observations are labeled. Each day/slot has a separate
+`notifications/prediction_prices_<date>_<slot>` receipt record and transactional
+lease; changing prices never bypass deduplication. Ambiguous POST results stop
+automatic repeats. Failed explicit rejections resume only unsent message parts.
+
+`python prediction_notifications.py` is a read-only preview; `--send` delivers
+the current slot using the existing Firebase and Telegram secrets. Missed hours
+are not reconstructed using later prices. New scheduling needs no new data or
+AI subscription; the existing hosting/Actions account's limits still apply.
+
 Prediction titles use the verified 2026 TWSE scheduled-session calendar, including
 settlement-only closures; for example, the September 24 scan predicts September
 29. Unknown calendar years are labeled without guessing a date. Temporary weather

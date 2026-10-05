@@ -1,0 +1,48 @@
+name: 預測名單開盤與每小時行情
+
+on:
+  schedule:
+    # Taiwan 09:05–13:05; :20 is a deduplicated backup for queue/source delays.
+    - cron: '5,20 1-5 * * 1-5'
+    # Opening quotes from the public source can lag by about twenty minutes.
+    - cron: '35 1 * * 1-5'
+    # Close at 13:35, with delayed-data retries at 13:50, 14:05 and 14:20.
+    - cron: '35,50 5 * * 1-5'
+    - cron: '5,20 6 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prediction-hourly-prices
+  cancel-in-progress: false
+
+jobs:
+  notify-prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+      - name: 安裝既有專案相依套件
+        run: python -m pip install -r requirements.lock
+      - name: 載入既有 Firebase 設定
+        env:
+          SECRETS_CONTENT: ${{ secrets.STREAMLIT_SECRETS }}
+        run: |
+          if [ -z "$SECRETS_CONTENT" ]; then
+            echo "STREAMLIT_SECRETS is not configured" >&2
+            exit 1
+          fi
+          mkdir -p .streamlit
+          printf '%s' "$SECRETS_CONTENT" > .streamlit/secrets.toml
+      - name: 發送當時段行情（交易日核對、固定名單、防重複）
+        env:
+          PYTHONUNBUFFERED: '1'
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python prediction_notifications.py --send
