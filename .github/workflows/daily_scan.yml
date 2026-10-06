@@ -1,6 +1,7 @@
 name: 台股盤後自動掃描雷達
 
-# 避開 GitHub Actions 整點高負載；15:17 主排程、16:17 快速備援、22:17 最後備援。
+# 避開 GitHub Actions 整點高負載；15:17 主排程、16:17 快速備援、22:17 晚間備援。
+# 延遲至午夜–08:29 可安全補掃上一已完成交易日；不得在盤中補造昨晚榜單。
 # 週一至週四掃描成交量前 300，週五擴大為 500；同日由 Firestore lease 保證冪等。
 on:
   schedule:
@@ -10,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       scan_limit:
-        description: 手動掃描範圍（僅台北時間 14:30 後可寫入；auto 依交易日選擇）
+        description: 手動掃描範圍（盤後或午夜至08:29盤前補掃；auto 依分析日選擇）
         required: false
         default: auto
         type: choice

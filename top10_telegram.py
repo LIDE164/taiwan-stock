@@ -1422,6 +1422,7 @@ def send_top10_photo(
     bot_token: Any,
     chat_id: Any,
     *,
+    publication_note: str = "",
     session: requests.Session | None = None,
 ) -> int | None:
     """Send the rendered ranking through Telegram's sendPhoto API."""
@@ -1429,7 +1430,8 @@ def send_top10_photo(
     return _send_photo_bytes(
         png,
         f"top10-{trading_date}.png",
-        f"台股每日新制可執行 Top 10｜{trading_date}\n僅納入新制現在可執行標的；舊制另見比較圖。主欄顯示舊制技術回測勝率／樣本；新制獨立累積，回測非後續實績。",
+        f"台股每日新制可執行 Top 10｜{trading_date}\n僅納入新制現在可執行標的；舊制另見比較圖。主欄顯示舊制技術回測勝率／樣本；新制獨立累積，回測非後續實績。"
+        + (f"\n{_clean_text(publication_note)[:240]}" if publication_note else ""),
         bot_token,
         chat_id,
         session,
@@ -1444,6 +1446,7 @@ def send_executable_photo(
     *,
     selected_results: Sequence[Mapping[str, Any]] | None = None,
     comparison_results: Sequence[Mapping[str, Any]] | None = None,
+    publication_note: str = "",
     session: requests.Session | None = None,
 ) -> int | None:
     """Send the executable prediction as a lossless PNG document."""
@@ -1472,7 +1475,8 @@ def send_executable_photo(
         png,
         f"executable-{trading_date}.png",
         f"{prediction_title(trading_date)}｜分析日 {trading_date}\n{count_text}；"
-        "主欄為舊制技術回測勝率／樣本；新制全/訓/驗繼續獨立累積，不放寬風控。回測非獲利保證。",
+        "主欄為舊制技術回測勝率／樣本；新制全/訓/驗繼續獨立累積，不放寬風控。回測非獲利保證。"
+        + (f"\n{_clean_text(publication_note)[:240]}" if publication_note else ""),
         bot_token,
         chat_id,
         session,

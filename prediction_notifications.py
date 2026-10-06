@@ -5,14 +5,16 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 from importlib import import_module
 import json
 import logging
+import os
 
 from app_security import normalize_ticker
-from market_calendar import next_scheduled_session
+from market_calendar import is_scheduled_session, next_scheduled_session
+from prediction_health_checks import has_completed_due_notifications
 from prediction_quotes import fetch_prediction_quotes
 from prediction_watch import notification_slot, select_prediction_rows, format_prediction_messages
 from research_delivery import DeliveryRejected, FirestoreReportStore, deliver_report, telegram_send_text
@@ -28,6 +30,27 @@ class QuotesPending(RuntimeError):
 
 class SlotExpired(DeliveryRejected):
     """No POST was attempted: the current clock left this notification slot."""
+
+
+def _safe_date(value):
+    try:
+        return value if isinstance(value, str) and date.fromisoformat(value).isoformat() == value else "unknown"
+    except ValueError:
+        return "unknown"
+
+
+class PredictionNotReady(ValueError):
+    """Safe structured diagnostics; never include source payloads or secrets."""
+
+    def __init__(self, reason, manifest, lock, now):
+        analysis = _safe_date(manifest.get("scan_date")) if isinstance(manifest, Mapping) else "unknown"
+        forecast = next_scheduled_session(analysis) if analysis != "unknown" else None
+        status = lock.get("status") if isinstance(lock, Mapping) else None
+        self.details = {"reason": reason, "analysis_date": analysis,
+                        "forecast_date": forecast.isoformat() if forecast else "unknown",
+                        "today": now.astimezone(TPE).date().isoformat(),
+                        "scan_status": status if status in ("completed", "running", "failed") else "unknown"}
+        super().__init__(reason)
 
 
 def _compact_rows(rows):
@@ -57,9 +80,11 @@ def _validate_watchlist(value, trading_date):
 
 
 def _prepare_watchlist(manifest, lock, now):
-    if (not isinstance(lock, Mapping) or lock.get("status") != "completed"
+    if (not isinstance(manifest, Mapping) or not isinstance(lock, Mapping) or lock.get("status") != "completed"
             or lock.get("trading_date") != manifest.get("scan_date")):
-        raise ValueError("僅可追蹤已完成盤後掃描的預測名單")
+        raise PredictionNotReady("scan_incomplete", manifest, lock, now)
+    if next_scheduled_session(manifest.get("scan_date")) != now.astimezone(TPE).date():
+        raise PredictionNotReady("prediction_date_mismatch", manifest, lock, now)
     rows = select_prediction_rows(manifest, now)
     value = {"schema": WATCH_SCHEMA, "trading_date": now.astimezone(TPE).date().isoformat(),
              "analysis_date": manifest["scan_date"], "rows": _compact_rows(rows),
@@ -162,9 +187,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--send", action="store_true", help="Send the current slot; default is read-only preview")
     args = parser.parse_args()
-    # Do not initialize credentials/network clients outside scheduled sessions.
-    if notification_slot(datetime.now(TPE)) is None:
-        print(json.dumps({"status": "outside_session"}))
+    # A delayed scheduled job is not a successful delivery. Holidays and manual
+    # previews still skip quietly; the workflow handles failure alerts separately.
+    now = datetime.now(TPE)
+    if notification_slot(now) is None:
+        missed = (args.send and os.getenv("GITHUB_EVENT_NAME") == "schedule"
+                  and is_scheduled_session(now.date()) is not False)
+        if missed:
+            try:
+                scanner = import_module("scanner")
+                completed = has_completed_due_notifications(scanner.db, now)
+            except Exception:
+                completed = False
+            if completed:
+                print(json.dumps({"status": "already_delivered", "checked_at": now.isoformat()}))
+                return
+            print(json.dumps({"status": "missed_window", "checked_at": now.isoformat()}))
+            logging.error("行情排程到達時已不在可寄送時段，或交易日曆未確認；未補造過時行情")
+            raise SystemExit(1)
+        print(json.dumps({"status": "outside_session", "checked_at": now.isoformat()}))
         return
     scanner = import_module("scanner")
 
@@ -179,11 +220,16 @@ def main():
     try:
         result = run_prediction_notifications(db=scanner.db, load_manifest=scanner._load_daily_scan_doc,
                                               load_lock=load_lock, send_text=sender, dry_run=not args.send)
+    except PredictionNotReady as exc:
+        logging.error("行情通知名單未就緒：%s", json.dumps(exc.details, ensure_ascii=False))
+        raise SystemExit(1) from None
     except Exception as exc:
         # A public-data/client exception must not expose credentials or URLs.
         logging.error("預測名單行情通知失敗（%s）；不自動強制重送", type(exc).__name__)
         raise SystemExit(1) from None
     print(json.dumps(result, ensure_ascii=False, default=str))
+    if args.send and result["status"] == "slot_expired":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

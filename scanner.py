@@ -31,6 +31,9 @@ from entry_readiness import READY_STATUS, build_entry_readiness
 from legacy_entry_readiness import build_legacy_entry_plan
 from ranking_comparison import build_comparison_rows
 from market_http import call_with_backoff, http_get
+from market_calendar import is_scheduled_session
+from scan_schedule import TPE, delayed_publication_note, ensure_publish_allowed, execution_metadata, scan_window
+from scan_completion import completed_source_rows, complete_daily_receipts, complete_performance_receipt
 from scan_state import (
     build_model_confidence,
     build_scan_quality,
@@ -567,11 +570,50 @@ def build_mini_kbars(frame, limit=30):
     return bars
 
 def should_run_postclose_scan(now_tpe=None):
-    now_tpe = now_tpe or datetime.now(timezone(timedelta(hours=8)))
-    if now_tpe.weekday() >= 5:
-        return False
-    postclose_time = now_tpe.replace(hour=14, minute=30, second=0, microsecond=0)
-    return now_tpe >= postclose_time
+    """Include bounded pre-open recovery, never ordinary intraday publishing."""
+    return scan_window(now_tpe or datetime.now(TPE)) is not None
+
+
+def _completed_late_backup_rows(now):
+    """Read-only exception to a missed-window error when every artifact is done."""
+    if db is None:
+        return None
+    try:
+        manifest = _load_daily_scan_doc()
+        snapshot = db.collection("system_locks").document("daily_scan").get()
+        lock = snapshot.to_dict() if snapshot.exists else {}
+        rows = completed_source_rows(manifest, lock, now)
+        if rows is None:
+            return None
+        day = manifest["scan_date"]
+        receipts = {}
+        for kind in ("daily_top10", "daily_executable", "daily_tracking_performance", "daily_research"):
+            snapshot = db.collection("notifications").document(f"{kind}_{day}").get()
+            receipts[kind] = snapshot.to_dict() if snapshot.exists else {}
+        performance_is_empty = False
+        if not complete_performance_receipt(receipts["daily_tracking_performance"], day):
+            history = db.collection("top10_tracking_history").document(day).get()
+            history_document = history.to_dict() if history.exists else None
+            history_data = (history_document.get("data", history_document)
+                            if isinstance(history_document, Mapping) else None)
+            tracker = db.collection("market_data").document("top10_tracker").get()
+            tracker_document = tracker.to_dict() if tracker.exists else None
+            tracker_data = (tracker_document.get("data", tracker_document)
+                            if isinstance(tracker_document, Mapping) else None)
+            latest_date = tracker_data.get("latest_date") if isinstance(tracker_data, Mapping) else None
+            if (not isinstance(history_data, Mapping) or history_data.get("date") != day
+                    or not isinstance(history_data.get("records"), list)
+                    or not isinstance(latest_date, str) or latest_date < day
+                    or is_scheduled_session(latest_date) is not True):
+                return None
+            records, positions, cumulative = _load_tracking_performance_data(day)
+            report = build_tracking_performance_report(records, positions, day, cumulative_summary=cumulative)
+            count = report.get("tracked_count")
+            performance_is_empty = isinstance(count, int) and not isinstance(count, bool) and count == 0
+        return rows if complete_daily_receipts(receipts, day, performance_is_empty=performance_is_empty) else None
+    except Exception:
+        # Missing, ambiguous or inaccessible state is not evidence of delivery.
+        return None
 
 
 def _load_daily_scan_doc():
@@ -611,7 +653,8 @@ def _records_content_hash(records):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size, scan_profile, previous=None):
+def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size, scan_profile, previous=None,
+                          execution=None, publish_guard=None):
     documents = build_chunk_documents(
         scan_results,
         prefix="daily_scan",
@@ -643,6 +686,7 @@ def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size,
         "universe_sources": dict(UNIVERSE_SOURCE_COUNTS),
         "scan_profile": str(scan_profile),
         "update_time": firestore.SERVER_TIMESTAMP,
+        **(execution or {}),
     }
     batch.set(db.collection("market_data").document("daily_scan"), manifest)
     batch.set(db.collection("daily_scan_history").document(str(scan_date)), {
@@ -658,7 +702,10 @@ def _write_daily_scan_doc(scan_results, *, scan_date, scan_limit, universe_size,
         "scan_profile": str(scan_profile),
         "snapshot_scope": "point_in_time_full_scan",
         "update_time": firestore.SERVER_TIMESTAMP,
+        **(execution or {}),
     })
+    if publish_guard is not None:
+        publish_guard()
     batch.commit()
 
 
@@ -970,7 +1017,9 @@ def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
     }, merge=True)
     token, chat_id = _telegram_credentials()
     try:
-        message_id = send_top10_photo(top10, trading_date, token, chat_id)
+        note = delayed_publication_note(scan_results, str(trading_date), now=datetime.now(TPE))
+        note_kwargs: dict[str, Any] = {"publication_note": note} if note else {}
+        message_id = send_top10_photo(top10, trading_date, token, chat_id, **note_kwargs)
     except Exception as exc:
         notification_ref.set({
             "status": "failed",
@@ -1024,6 +1073,8 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     }, merge=True)
     token, chat_id = _telegram_credentials()
     try:
+        note = delayed_publication_note(scan_results, str(trading_date), now=datetime.now(TPE))
+        note_kwargs: dict[str, Any] = {"publication_note": note} if note else {}
         message_id = send_executable_photo(
             scan_results,
             trading_date,
@@ -1031,6 +1082,7 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
             chat_id,
             selected_results=selected_top10,
             comparison_results=comparison_results,
+            **note_kwargs,
         )
     except Exception as exc:
         notification_ref.set({
@@ -1276,7 +1328,7 @@ def send_daily_notifications(scan_results, trading_date, *, resend=False):
         raise RuntimeError("Telegram 通知未完整送達（" + "；".join(failures) + "）")
 
 
-def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
+def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None, execution=None, publish_guard=None):
     if db is None: return
     try:
         date_str = trading_date or datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
@@ -1413,6 +1465,7 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
         cumulative_performance = build_cumulative_performance_summary(all_positions, date_str)
 
         tracker_payload = {
+            **(execution or {}),
             "storage_schema": STORAGE_SCHEMA_VERSION,
             "position_chunk_collection": TRACKER_CHUNK_COLLECTION,
             "position_chunk_ids": [],
@@ -1430,6 +1483,7 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
             "cumulative_performance": cumulative_performance,
         }
         history_payload = {
+            **(execution or {}),
             "date": date_str,
             "records": daily_snapshots,
             "benchmark": dict(benchmark) if isinstance(benchmark, Mapping) else {},
@@ -1467,6 +1521,8 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None):
         )
         batch.set(tracker_ref, {"data": tracker_payload, "update_time": firestore.SERVER_TIMESTAMP})
         batch.set(history_ref, {"data": history_payload, "update_time": firestore.SERVER_TIMESTAMP})
+        if publish_guard is not None:
+            publish_guard()
         batch.commit()
         logging.info("自動追蹤紀錄已更新，目前未平倉檔數: %d", len([p for p in all_positions if p.get("status")=="OPEN"]))
     except Exception as e:
@@ -1480,22 +1536,38 @@ def run_daily_scan(
     send_telegram=True,
     resend_telegram=False,
     allow_intraday=False,
+    clock=None,
 ):
     """Run the authoritative post-close scan.
 
     ``force`` only bypasses the completed lease.  It deliberately does not
-    bypass the market-close boundary; otherwise a manual Actions run could
+    bypass the safe publication window; otherwise a manual Actions run could
     publish an incomplete intraday bar as the official daily result.
     ``allow_intraday`` exists only for deterministic local tests.
     """
     force = bool(force or os.getenv("FORCE_SCAN") == "1")
+    clock = clock or (lambda: datetime.now(TPE))
+    started_at = clock()
     if db is None and not allow_local:
         raise RuntimeError("Firestore 初始化失敗；排程掃描已中止，避免 GitHub Actions 誤判成功")
-    if not allow_intraday and not should_run_postclose_scan():
+    if not allow_intraday and not should_run_postclose_scan(started_at):
+        if (os.getenv("GITHUB_EVENT_NAME") == "schedule"
+                and is_scheduled_session(started_at.astimezone(TPE).date()) is True):
+            completed_rows = _completed_late_backup_rows(started_at)
+            if completed_rows is not None:
+                logging.info("已完成備援延遲，唯讀略過；既有盤後榜單及四類通知收件均已核實。")
+                return completed_rows
+            raise RuntimeError("每日掃描排程延誤，已錯過安全補掃時段；未更新榜單，不沿用舊榜宣告成功")
         if force:
-            raise RuntimeError("盤中禁止寫入正式每日榜單；請於台北時間 14:30 後重試")
-        logging.info("尚未到台北時間 14:30 盤後掃描時間，本次略過。")
+            raise RuntimeError("盤中禁止寫入正式每日榜單；僅交易日 14:30 後或 08:30 前盤前補掃可執行")
+        logging.info("非安全掃描時段或休市白天，本次略過；允許交易日 14:30 後及 08:30 前盤前補掃。")
         return []
+    window = None if allow_intraday else scan_window(started_at)
+
+    def publish_guard():
+        if window is not None:
+            return ensure_publish_allowed(window, clock())
+        return clock()
 
     twii_close, twii_ma20, twii_ma60 = 0.0, 0.0, 0.0
     twii_df = None
@@ -1507,6 +1579,11 @@ def run_daily_scan(
     scan_date_str = latest_trading_date(twii_df.index) if twii_df is not None and not twii_df.empty else ""
     if not scan_date_str:
         raise RuntimeError("無法確認最新實際交易日，本次不寫入掃描結果")
+    if window is not None and scan_date_str != window.analysis_date.isoformat():
+        raise RuntimeError(
+            f"大盤行情日期不符：預期 {window.analysis_date.isoformat()}，取得 {scan_date_str}；"
+            "保留既有榜單並等待備援，不沿用舊榜宣告成功"
+        )
     # Reconcile before acquiring the lease or writing any scan/tracker data. A stale
     # provider predecessor must not permanently exclude already tracked positions.
     twii_df = reconcile_benchmark_history(twii_df, _load_saved_benchmarks(scan_date_str))
@@ -1521,10 +1598,12 @@ def run_daily_scan(
         raise RuntimeError("無法確認大盤基準行情，本次不寫入掃描結果")
 
     previous_payload = _load_daily_scan_doc()
+    publish_guard()
     if not _acquire_scan_lease(scan_date_str, force=force):
         if previous_payload.get("scan_date") == scan_date_str:
             logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
             if send_telegram:
+                publish_guard()
                 send_daily_notifications(
                     previous_payload.get("data", []),
                     scan_date_str,
@@ -1537,6 +1616,9 @@ def run_daily_scan(
     universe_limit = scan_universe_limit(scan_date_str, get_secret("SCAN_LIMIT", ""))
     scan_profile = "weekly_500" if universe_limit == 500 else f"daily_{universe_limit}"
     logging.info("🚀 開始執行 %s 雷達掃描（%s 檔，%s）...", scan_date_str, universe_limit, scan_profile)
+    if window is not None and window.started_at.date() > window.analysis_date:
+        logging.warning("延遲盤前補掃：分析日 %s，實際開始 %s；不回填分析日晚間的可用時間。",
+                        scan_date_str, window.started_at.isoformat())
     try:
         ranked_tickers = fetch_top_stocks(universe_limit)
         if len(ranked_tickers) < universe_limit:
@@ -1842,6 +1924,14 @@ def run_daily_scan(
             logging.warning("allow_local=True：Firestore 未初始化，僅回傳本機掃描結果。")
             return scan_results
 
+        generated_at = publish_guard()
+        execution = execution_metadata(window, generated_at) if window is not None else {}
+        for result in scan_results:
+            if execution:
+                result["Scan_Generated_At"] = execution["generated_at"]
+                result["Scan_Mode"] = execution["scan_mode"]
+                result["Scan_Delayed_Recovery"] = execution["delayed_recovery"]
+
         _write_daily_scan_doc(
             scan_results,
             scan_date=scan_date_str,
@@ -1849,10 +1939,13 @@ def run_daily_scan(
             universe_size=len(pool),
             scan_profile=scan_profile,
             previous=previous_payload,
+            execution=execution,
+            publish_guard=publish_guard,
         )
 
         top10 = select_executable_top10(scan_results)
         history_data = build_top10_history_rows(top10)
+        publish_guard()
         db.collection("top10_history").document(scan_date_str).set({
             "data": history_data,
             "scan_date": scan_date_str,
@@ -1861,9 +1954,12 @@ def run_daily_scan(
             "ranking_type": "executable",
             "ranking_count": len(top10),
             "update_time": firestore.SERVER_TIMESTAMP,
+            **execution,
         })
         logging.info("已記錄 %s 可執行 Top10 榜單（%d 檔）", scan_date_str, len(top10))
-        update_top10_tracker(top10, scan_date_str, benchmark=benchmark_context)
+        update_top10_tracker(top10, scan_date_str, benchmark=benchmark_context,
+                             execution=execution, publish_guard=publish_guard)
+        publish_guard()
     except Exception as e:
         _finish_scan_lease(scan_date_str, "failed", len(scan_results), e)
         logging.exception("全市場掃描失敗: %s", e)
@@ -1871,6 +1967,7 @@ def run_daily_scan(
 
     _finish_scan_lease(scan_date_str, "completed", len(scan_results))
     if send_telegram:
+        publish_guard()
         send_daily_notifications(scan_results, scan_date_str, resend=resend_telegram)
     logging.info(f"✅ 掃描完成！共篩選出 {len(scan_results)} 檔標的。")
     return scan_results

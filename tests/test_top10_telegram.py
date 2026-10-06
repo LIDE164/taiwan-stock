@@ -414,6 +414,13 @@ class Top10TelegramTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "TELEGRAM_BOT_TOKEN"):
             send_top10_photo(self.rows, "2026-08-27", "", "12345")
 
+    def test_delayed_publication_note_is_visible_on_both_prediction_senders(self):
+        note = "延遲盤前補掃｜分析日2026-10-05｜實際生成2026-10-06 06:00台北；非昨晚已發布"
+        for sender in (send_top10_photo, send_executable_photo):
+            session = _Session()
+            sender(self.rows, "2026-10-05", "token", "chat", session=session, publication_note=note)
+            self.assertIn(note, session.calls[0][1]["data"]["caption"])
+
     def test_executable_sender_uses_a_separate_filename_and_caption(self):
         session = _Session()
         ready = dict(self.rows[0], Entry_Status="現在可執行")

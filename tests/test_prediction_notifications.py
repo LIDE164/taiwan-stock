@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import Mock, patch
 
-from prediction_notifications import run_prediction_notifications, WATCH_SCHEMA
+from prediction_notifications import main, run_prediction_notifications, PredictionNotReady, WATCH_SCHEMA
 from research_delivery import DeliveryRejected, DeliveryUncertain
 from tests.test_research_delivery import _Database, _transactional
 
@@ -114,6 +114,23 @@ class PredictionNotificationTests(unittest.TestCase):
         self.assertFalse(self.db.documents)
         self.sender.assert_not_called()
 
+    def test_stale_scan_reports_sanitized_dates_and_never_freezes(self):
+        self.clock.return_value = moment().replace(day=6)
+        with self.assertRaises(PredictionNotReady) as error:
+            self.run_task(dry_run=False)
+        self.assertEqual(error.exception.details, {
+            "reason": "prediction_date_mismatch", "analysis_date": "2026-10-02",
+            "forecast_date": "2026-10-05", "today": "2026-10-06", "scan_status": "completed"})
+        self.assertFalse(self.db.documents)
+        self.sender.assert_not_called()
+
+    def test_readiness_error_never_copies_arbitrary_lock_status(self):
+        self.lock.return_value["status"] = "secret-provider-payload"
+        with self.assertRaises(PredictionNotReady) as error:
+            self.run_task(dry_run=False)
+        self.assertEqual(error.exception.details["scan_status"], "unknown")
+        self.assertNotIn("secret-provider-payload", str(error.exception.details))
+
     def test_empty_list_stays_empty_without_hourly_spam(self):
         self.selector.return_value = []
         self.assertEqual(self.run_task(dry_run=False)["status"], "empty_prediction")
@@ -168,6 +185,43 @@ class PredictionNotificationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_task(dry_run=False)
         self.sender.assert_not_called()
+
+
+class PredictionCliTests(unittest.TestCase):
+    def call_main(self, now, *, send=True, event="schedule"):
+        with patch("sys.argv", ["prediction_notifications.py", *(["--send"] if send else [])]), \
+                patch("prediction_notifications.datetime") as clock, \
+                patch.dict("os.environ", {"GITHUB_EVENT_NAME": event}), \
+                patch("builtins.print"):
+            clock.now.return_value = now
+            main()
+
+    def test_late_scheduled_delivery_no_longer_silently_succeeds(self):
+        with patch("prediction_notifications.import_module"), \
+                patch("prediction_notifications.has_completed_due_notifications", return_value=False):
+            with self.assertRaises(SystemExit) as result:
+                self.call_main(moment(18))
+        self.assertEqual(result.exception.code, 1)
+
+    def test_late_backup_does_not_fail_if_all_due_messages_were_delivered(self):
+        with patch("prediction_notifications.import_module"), \
+                patch("prediction_notifications.has_completed_due_notifications", return_value=True) as check:
+            self.call_main(moment(18))
+        check.assert_called_once()
+
+    def test_holiday_manual_and_dry_runs_still_skip(self):
+        with patch("prediction_notifications.import_module") as imports:
+            self.call_main(moment(18), event="workflow_dispatch")
+            self.call_main(moment(18), send=False)
+            self.call_main(moment(18).replace(day=9))
+        imports.assert_not_called()
+
+    def test_slot_expired_during_work_is_failure(self):
+        with patch("prediction_notifications.import_module"), \
+                patch("prediction_notifications.run_prediction_notifications", return_value={"status": "slot_expired"}):
+            with self.assertRaises(SystemExit) as result:
+                self.call_main(moment())
+        self.assertEqual(result.exception.code, 1)
 
 
 if __name__ == "__main__":

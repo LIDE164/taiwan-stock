@@ -13,7 +13,7 @@ Never commit `.streamlit/secrets.toml`; it is intentionally ignored by Git.
 
 ## Daily scan
 
-`.github/workflows/daily_scan.yml` runs at 15:17 Asia/Taipei on weekdays, with 16:17 and 22:17 recovery runs. Monday through Thursday use the top 300 stocks by daily trading volume; Friday expands the same run to 500. `SCAN_LIMIT=300` or `SCAN_LIMIT=500` can explicitly override this for a manual run. The scanner derives the trading date from the latest TWII bar, rejects stock bars from a different date, and uses a 45-minute Firestore lease plus a 40-minute job timeout so a crashed primary run cannot block the recovery schedule.
+`.github/workflows/daily_scan.yml` targets 15:17 Asia/Taipei on weekdays, with 16:17 and 22:17 recovery runs (GitHub may delay execution). Monday through Thursday use the top 300 stocks by daily trading volume; Friday expands the same run to 500. `SCAN_LIMIT=300` or `SCAN_LIMIT=500` can explicitly override this for a manual run. The scanner requires the latest TWII bar to match the calendar-verified completed trading date, rejects stock bars from a different date, and uses a 45-minute Firestore lease plus a 40-minute job timeout so a crashed primary run cannot block the recovery schedule.
 
 The configured `CORE_TICKERS` (default `2330,2317,2454`) are always retained without increasing the selected universe size. The Streamlit app only reads `market_data/daily_scan`; it never starts a broad scan from a user session. Large scan rows and tracker positions use schema-v2 manifests with bounded documents in `daily_scan_chunks` and `top10_tracker_chunks`; all readers remain compatible with legacy inline documents and reject missing/partial chunks instead of calculating from incomplete data.
 
@@ -107,6 +107,35 @@ automatic repeats. Failed explicit rejections resume only unsent message parts.
 the current slot using the existing Firebase and Telegram secrets. Missed hours
 are not reconstructed using later prices. New scheduling needs no new data or
 AI subscription; the existing hosting/Actions account's limits still apply.
+
+Scheduled runs that miss an eligible delivery window now fail visibly instead
+of reporting a successful `outside_session` skip (normal holidays and manual
+previews still skip). The failure step sends a separate operational warning at
+most once per Taipei date, using `notifications/prediction_health_<date>` and
+the same confirmed-receipt/uncertain-delivery safeguards. If Firestore is down,
+the warning also fails closed; check the failed Actions run rather than assume
+Telegram was notified. No warning means no guarantee that a scheduler fired.
+Original prediction images remain analysis-day snapshots; hourly prices arrive
+as separate messages, not edits of the original image.
+
+### Delayed post-close recovery
+
+A daily scan that reaches the runner after midnight can start a recovery run
+from **00:00 through 08:29 Taipei time**, for the previous verified scheduled
+session only. Normal post-close scans start at 14:30 on a trading day. The
+benchmark's latest authentic daily bar must match the expected completed date;
+stale provider data is an error, not a successful unchanged scan. Recovery
+writes stop before 09:00 on the recovery day; a normal post-close job crossing
+midnight also expires at 09:00 the following calendar day. Notifications are
+checked against the same deadline before the delivery sequence starts.
+Saved scan/history records retain real generation timestamps and recovery
+metadata; recovered prediction captions explicitly disclose delayed publication.
+An already-open market cannot be used to manufacture yesterday's prediction.
+
+These safeguards prevent silent cross-midnight loss and fabricated catch-up,
+but do not make GitHub's best-effort scheduler punctual. A dedicated scheduler
+is a separate deployment decision; no additional paid service is provisioned
+by these changes.
 
 Prediction titles use the verified 2026 TWSE scheduled-session calendar, including
 settlement-only closures; for example, the September 24 scan predicts September
