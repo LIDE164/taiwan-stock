@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import scanner
 from scan_completion import TPE, completed_source_rows, complete_daily_receipts
+from research_delivery import report_fingerprint
 from tests.test_scanner_telegram import _Database
 
 
@@ -20,11 +21,29 @@ def receipts():
         "daily_tracking_performance": {"date": DAY, "status": "sent", "page_count": 2,
                                        "sent_pages": {"1": 3, "2": 4}},
         "daily_research": {"date": DAY, "status": "sent", "parts": ["part 1", "part 2"],
+                           "fingerprint": report_fingerprint(ROWS, DAY),
                            "part_count": 2, "sent_parts": {"1": 5, "2": 6}, "in_flight": ""},
     }
 
 
 class ScanCompletionTests(unittest.TestCase):
+    def test_safe_window_target_includes_same_day_and_weekend_recovery(self):
+        for stamp, day in (("2026-10-06T21:00:00+08:00", "2026-10-06"),
+                           ("2026-10-07T03:35:00+08:00", "2026-10-06"),
+                           ("2026-10-09T03:35:00+08:00", "2026-10-08"),
+                           ("2026-10-10T03:35:00+08:00", "2026-10-08")):
+            with self.subTest(stamp=stamp):
+                rows = [{"代號": "2330", "Data_Date": day}]
+                self.assertEqual(completed_source_rows({"scan_date": day, "data": rows},
+                                                       {"status": "completed", "trading_date": day},
+                                                       datetime.fromisoformat(stamp)), rows)
+
+    def test_next_postclose_cannot_reuse_previous_day_and_unknown_calendar_stops(self):
+        for now in (NOW.replace(hour=15), NOW.replace(year=2027), NOW.replace(day=9, hour=15)):
+            with self.subTest(now=now):
+                self.assertIsNone(completed_source_rows({"scan_date": DAY, "data": ROWS},
+                                                       {"status": "completed", "trading_date": DAY}, now))
+
     def test_source_requires_completed_prior_session_and_preserves_rows(self):
         manifest = {"scan_date": DAY, "data": deepcopy(ROWS)}
         lock = {"status": "completed", "trading_date": DAY}

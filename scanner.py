@@ -30,6 +30,7 @@ from data_providers import fetch_financial_quality, fetch_institutional_rows, fe
 from entry_readiness import READY_STATUS, build_entry_readiness
 from legacy_entry_readiness import build_legacy_entry_plan
 from ranking_comparison import build_comparison_rows
+from research_delivery import report_fingerprint
 from market_http import call_with_backoff, http_get
 from market_calendar import is_scheduled_session
 from scan_schedule import TPE, delayed_publication_note, ensure_publish_allowed, execution_metadata, scan_window
@@ -575,7 +576,7 @@ def should_run_postclose_scan(now_tpe=None):
 
 
 def _completed_late_backup_rows(now):
-    """Read-only exception to a missed-window error when every artifact is done."""
+    """Read-only completed-backup check, before fetching fallible fresh quotes."""
     if db is None:
         return None
     try:
@@ -585,11 +586,19 @@ def _completed_late_backup_rows(now):
         rows = completed_source_rows(manifest, lock, now)
         if rows is None:
             return None
+        if manifest.get("content_hash") is not None and manifest["content_hash"] != _records_content_hash(rows):
+            return None
         day = manifest["scan_date"]
         receipts = {}
         for kind in ("daily_top10", "daily_executable", "daily_tracking_performance", "daily_research"):
             snapshot = db.collection("notifications").document(f"{kind}_{day}").get()
             receipts[kind] = snapshot.to_dict() if snapshot.exists else {}
+        # Same-date receipts may belong to a superseded forced rescan. The
+        # research fingerprint binds successful delivery to the entire current
+        # saved population and report version, without any market-data fetch.
+        research = receipts["daily_research"]
+        if not isinstance(research, Mapping) or research.get("fingerprint") != report_fingerprint(rows, day):
+            return None
         performance_is_empty = False
         if not complete_performance_receipt(receipts["daily_tracking_performance"], day):
             history = db.collection("top10_tracking_history").document(day).get()
@@ -1553,7 +1562,7 @@ def run_daily_scan(
     if not allow_intraday and not should_run_postclose_scan(started_at):
         if (os.getenv("GITHUB_EVENT_NAME") == "schedule"
                 and is_scheduled_session(started_at.astimezone(TPE).date()) is True):
-            completed_rows = _completed_late_backup_rows(started_at)
+            completed_rows = None if force or resend_telegram else _completed_late_backup_rows(started_at)
             if completed_rows is not None:
                 logging.info("已完成備援延遲，唯讀略過；既有盤後榜單及四類通知收件均已核實。")
                 return completed_rows
@@ -1568,6 +1577,19 @@ def run_daily_scan(
         if window is not None:
             return ensure_publish_allowed(window, clock())
         return clock()
+
+    # Completed backups must not depend on Yahoo's latest response being fresh.
+    # Match the exact calendar target AND all four delivery outcomes first;
+    # missing evidence continues through the normal source-date safeguards.
+    # Explicit rescan/resend requests and offline intraday tests keep their path.
+    if window is not None and not force and not resend_telegram:
+        completed_rows = _completed_late_backup_rows(started_at)
+        if completed_rows is not None:
+            # This is a read-only no-op, not a publication; crossing 09:00
+            # while reading receipts must not turn a completed run into error.
+            logging.info("%s 榜單與四類通知已核實完成，備援唯讀略過；不重新下載行情或重送。",
+                         window.analysis_date.isoformat())
+            return completed_rows
 
     twii_close, twii_ma20, twii_ma60 = 0.0, 0.0, 0.0
     twii_df = None

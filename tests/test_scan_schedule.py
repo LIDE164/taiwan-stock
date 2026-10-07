@@ -132,7 +132,9 @@ class ScannerScheduleIntegrationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "預期 2026-10-05，取得 2026-10-02"):
                 scanner.run_daily_scan(clock=lambda: local("2026-10-05T15:30:00"))
-        load.assert_not_called()
+        # Read-only completion preflight may inspect saved rows first, but an
+        # old benchmark still cannot acquire a lease or publish a new ranking.
+        load.assert_called_once_with()
         lease.assert_not_called()
         send.assert_not_called()
 

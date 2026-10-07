@@ -7,12 +7,18 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from market_calendar import is_scheduled_session, next_scheduled_session
+from scan_schedule import scan_window
 
 TPE = timezone(timedelta(hours=8))
 
 
 def completed_source_rows(manifest: Any, lock: Any, now: datetime) -> list[dict[str, Any]] | None:
-    """Confirm the previous session actually finished; never redate its rows."""
+    """Confirm the expected completed session; never reuse an older day's rows.
+
+    Safe windows use exactly the scan's calendar-derived target, including
+    same-day post-close and pre-open recovery on weekends/holidays. A late
+    daytime backup can only confirm the prior session, never publish it anew.
+    """
     if (not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None
             or not isinstance(manifest, Mapping) or not isinstance(lock, Mapping)):
         return None
@@ -23,8 +29,16 @@ def completed_source_rows(manifest: Any, lock: Any, now: datetime) -> list[dict[
     except ValueError:
         analysis = None
     if (analysis is None or analysis.isoformat() != day or is_scheduled_session(analysis) is not True
-            or is_scheduled_session(today) is not True or next_scheduled_session(analysis) != today
             or lock.get("status") != "completed" or lock.get("trading_date") != day):
+        return None
+    try:
+        window = scan_window(now)
+    except ValueError:
+        return None
+    if window is not None:
+        if analysis != window.analysis_date:
+            return None
+    elif is_scheduled_session(today) is not True or next_scheduled_session(analysis) != today:
         return None
     rows = manifest.get("data")
     if (not isinstance(rows, list) or not rows

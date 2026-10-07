@@ -128,6 +128,15 @@ stale provider data is an error, not a successful unchanged scan. Recovery
 writes stop before 09:00 on the recovery day; a normal post-close job crossing
 midnight also expires at 09:00 the following calendar day. Notifications are
 checked against the same deadline before the delivery sequence starts.
+Before fetching fresh market data, a normal backup checks whether the exact
+calendar-target scan and all four notification outcomes already completed.
+The research receipt must match the current saved rows' fingerprint; a
+same-date receipt for an older forced rescan cannot suppress the new report.
+Confirmed backups skip without downloading quotes, rewriting rankings, or
+re-sending Telegram, including pre-open recovery and same-day post-close retries.
+Missing/ambiguous receipts do not count as success; a missing performance
+history is not an empty report. Explicit force/resend requests bypass this
+shortcut, while normal source-date and publication-window protections remain.
 Saved scan/history records retain real generation timestamps and recovery
 metadata; recovered prediction captions explicitly disclose delayed publication.
 An already-open market cannot be used to manufacture yesterday's prediction.
