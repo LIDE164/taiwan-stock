@@ -32,6 +32,7 @@ from legacy_entry_readiness import build_legacy_entry_plan
 from ranking_comparison import build_comparison_rows
 from research_delivery import report_fingerprint
 from market_http import call_with_backoff, http_get
+from image_delivery import FirestoreImageStore, deliver_images
 from market_calendar import is_scheduled_session
 from scan_schedule import TPE, delayed_publication_note, ensure_publish_allowed, execution_metadata, scan_window
 from scan_completion import completed_source_rows, complete_daily_receipts, complete_performance_receipt
@@ -772,7 +773,9 @@ def _finish_scan_lease(trading_date, status, result_count=0, error=""):
             "finished_at": firestore.SERVER_TIMESTAMP,
         }, merge=True)
     except Exception as e:
-        logging.error("更新掃描鎖狀態失敗: %s", e)
+        logging.error("更新掃描鎖狀態失敗（%s）", type(e).__name__)
+        if status == "completed":
+            raise RuntimeError("無法確認完整掃描已標記完成，停止正式通知") from None
 
 
 def _telegram_credentials() -> tuple[Any, Any]:
@@ -1008,48 +1011,21 @@ def send_daily_top10_notification(scan_results, trading_date, *, resend=False):
         raise RuntimeError("Firestore 未初始化，無法確認 Telegram 通知狀態")
     top10 = select_executable_top10(scan_results)
     fingerprint = _top10_notification_fingerprint(top10, trading_date)
-    notification_ref = db.collection("notifications").document(f"daily_top10_{trading_date}")
-    previous = notification_ref.get()
-    previous_data = (previous.to_dict() or {}) if previous.exists else {}
-    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
-        logging.info("%s 可執行 Top10 Telegram 圖片已發送，略過重複通知。", trading_date)
-        return False
-
-    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
-    notification_ref.set({
-        "date": trading_date,
-        "status": "pending",
-        "fingerprint": fingerprint,
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "attempted_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    token, chat_id = _telegram_credentials()
-    try:
+    def send_pages(skip, before_page, after_page):
+        token, chat_id = _telegram_credentials()
         note = delayed_publication_note(scan_results, str(trading_date), now=datetime.now(TPE))
         note_kwargs: dict[str, Any] = {"publication_note": note} if note else {}
-        message_id = send_top10_photo(top10, trading_date, token, chat_id, **note_kwargs)
-    except Exception as exc:
-        notification_ref.set({
-            "status": "failed",
-            "attempt_count": attempt_count,
-            "last_error": type(exc).__name__,
-            "failed_at": firestore.SERVER_TIMESTAMP,
-        }, merge=True)
-        raise
-    notification_ref.set({
-        "date": trading_date,
-        "status": "sent",
-        "fingerprint": fingerprint,
-        "message_id": message_id,
-        "ranking_count": len(top10),
-        "ranking_type": "executable",
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "sent_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    logging.info("✅ %s 可執行 Top10 圖片已發送至 Telegram（%d 檔，message_id=%s）。", trading_date, len(top10), message_id)
-    return True
+        message_id = send_top10_photo(top10, trading_date, token, chat_id,
+                                     before_send=lambda: before_page(1, 1), **note_kwargs)
+        after_page(1, message_id, 1)
+
+    sent = deliver_images(
+        FirestoreImageStore(db, "daily_top10", trading_date), fingerprint,
+        page_count=1, send_pages=send_pages, resend=resend,
+        metadata={"ranking_count": len(top10), "ranking_type": "executable"},
+    )
+    logging.info("%s 可執行 Top10 圖片：%s（%d 檔）。", trading_date, "已送達" if sent else "已送達或其他工作寄送中", len(top10))
+    return sent
 
 
 def send_daily_executable_notification(scan_results, trading_date, *, resend=False):
@@ -1064,24 +1040,8 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    notification_ref = db.collection("notifications").document(f"daily_executable_{trading_date}")
-    previous = notification_ref.get()
-    previous_data = (previous.to_dict() or {}) if previous.exists else {}
-    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
-        logging.info("%s 可馬上執行 Telegram 圖片已發送，略過重複通知。", trading_date)
-        return False
-
-    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
-    notification_ref.set({
-        "date": trading_date,
-        "status": "pending",
-        "fingerprint": fingerprint,
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "attempted_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    token, chat_id = _telegram_credentials()
-    try:
+    def send_pages(skip, before_page, after_page):
+        token, chat_id = _telegram_credentials()
         note = delayed_publication_note(scan_results, str(trading_date), now=datetime.now(TPE))
         note_kwargs: dict[str, Any] = {"publication_note": note} if note else {}
         message_id = send_executable_photo(
@@ -1091,36 +1051,20 @@ def send_daily_executable_notification(scan_results, trading_date, *, resend=Fal
             chat_id,
             selected_results=selected_top10,
             comparison_results=comparison_results,
+            before_send=lambda: before_page(1, 1),
             **note_kwargs,
         )
-    except Exception as exc:
-        notification_ref.set({
-            "status": "failed",
-            "attempt_count": attempt_count,
-            "last_error": type(exc).__name__,
-            "failed_at": firestore.SERVER_TIMESTAMP,
-        }, merge=True)
-        raise
-    notification_ref.set({
-        "date": trading_date,
-        "status": "sent",
-        "fingerprint": fingerprint,
-        "message_id": message_id,
-        "executable_count": len(selected_top10),
-        "comparison_count": len(executable_rows),
-        "legacy_count": sum("legacy" in row["Execution_Versions"] for row in comparison_results),
-        "ranking_type": "new_legacy_comparison",
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "sent_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    logging.info(
-        "✅ %s 新舊制比較圖片已發送至 Telegram（%d 檔，message_id=%s）。",
-        trading_date,
-        len(executable_rows),
-        message_id,
+        after_page(1, message_id, 1)
+
+    sent = deliver_images(
+        FirestoreImageStore(db, "daily_executable", trading_date), fingerprint,
+        page_count=1, send_pages=send_pages, resend=resend,
+        metadata={"executable_count": len(selected_top10), "comparison_count": len(executable_rows),
+                  "legacy_count": sum("legacy" in row["Execution_Versions"] for row in comparison_results),
+                  "ranking_type": "new_legacy_comparison"},
     )
-    return True
+    logging.info("%s 新舊制比較圖片：%s（%d 檔）。", trading_date, "已送達" if sent else "已送達或其他工作寄送中", len(executable_rows))
+    return sent
 
 
 def _load_tracking_performance_data(trading_date):
@@ -1183,86 +1127,32 @@ def send_daily_tracking_performance_notification(trading_date, *, resend=False):
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    notification_ref = db.collection("notifications").document(f"daily_tracking_performance_{date_text}")
-    previous = notification_ref.get()
-    previous_data = (previous.to_dict() or {}) if previous.exists else {}
-    if not resend and previous_data.get("status") == "sent" and previous_data.get("fingerprint") == fingerprint:
-        logging.info("%s 每日追蹤績效圖片已發送，略過重複通知。", date_text)
-        return False
-
-    attempt_count = int(previous_data.get("attempt_count") or 0) + 1
-    same_payload = not resend and previous_data.get("fingerprint") == fingerprint
-    sent_pages = (
-        dict(previous_data.get("sent_pages") or {})
-        if same_payload and isinstance(previous_data.get("sent_pages"), Mapping)
-        else {}
-    )
-    completed_page_numbers = {
-        int(page_number)
-        for page_number in sent_pages
-        if str(page_number).isdigit() and 1 <= int(page_number) <= report["page_count"]
-    }
-    notification_ref.set({
-        "date": date_text,
-        "status": "pending",
-        "fingerprint": fingerprint,
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "sent_pages": sent_pages,
-        "attempted_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    token, chat_id = _telegram_credentials()
-
-    def record_sent_page(page_number, message_id, page_count):
-        sent_pages[str(page_number)] = message_id
-        notification_ref.set({
-            "sent_pages": dict(sent_pages),
-            "page_count": int(page_count),
-            "last_sent_page": int(page_number),
-            "last_page_sent_at": firestore.SERVER_TIMESTAMP,
-        }, merge=True)
-
-    try:
-        message_id = send_tracking_performance_photo(
+    def send_pages(skip, before_page, after_page):
+        token, chat_id = _telegram_credentials()
+        send_tracking_performance_photo(
             records,
             positions,
             date_text,
             token,
             chat_id,
             cumulative_summary=cumulative_performance,
-            skip_page_numbers=completed_page_numbers,
-            on_page_sent=record_sent_page,
+            skip_page_numbers=skip,
+            on_page_sending=before_page,
+            on_page_sent=after_page,
         )
-    except Exception as exc:
-        notification_ref.set({
-            "status": "failed",
-            "attempt_count": attempt_count,
-            "last_error": type(exc).__name__,
-            "failed_at": firestore.SERVER_TIMESTAMP,
-        }, merge=True)
-        raise
-    notification_ref.set({
-        "date": date_text,
-        "status": "sent",
-        "fingerprint": fingerprint,
-        "message_id": message_id,
-        "tracked_count": report["tracked_count"],
-        "valid_count": report["valid_count"],
-        "missing_count": report["missing_count"],
-        "page_count": report["page_count"],
-        "sent_pages": sent_pages,
-        "attempt_count": attempt_count,
-        "last_error": "",
-        "sent_at": firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    logging.info(
-        "✅ %s 每日追蹤績效圖片已發送至 Telegram（追蹤 %d 檔，%d 張，message_id=%s）。",
-        date_text,
-        report["tracked_count"],
-        report["page_count"],
-        message_id,
+
+    sent = deliver_images(
+        FirestoreImageStore(db, "daily_tracking_performance", date_text), fingerprint,
+        page_count=report["page_count"], send_pages=send_pages, resend=resend,
+        metadata={"tracked_count": report["tracked_count"], "valid_count": report["valid_count"],
+                  "missing_count": report["missing_count"]},
     )
-    return True
+    logging.info(
+        "%s 每日追蹤績效圖片：%s（追蹤 %d 檔，%d 張）。",
+        date_text, "已送達" if sent else "已送達或其他工作寄送中",
+        report["tracked_count"], report["page_count"],
+    )
+    return sent
 
 
 def send_daily_research_notification(scan_results, trading_date, *, resend=False):
@@ -1546,6 +1436,7 @@ def run_daily_scan(
     resend_telegram=False,
     allow_intraday=False,
     clock=None,
+    scheduled=False,
 ):
     """Run the authoritative post-close scan.
 
@@ -1560,7 +1451,7 @@ def run_daily_scan(
     if db is None and not allow_local:
         raise RuntimeError("Firestore 初始化失敗；排程掃描已中止，避免 GitHub Actions 誤判成功")
     if not allow_intraday and not should_run_postclose_scan(started_at):
-        if (os.getenv("GITHUB_EVENT_NAME") == "schedule"
+        if ((scheduled or os.getenv("GITHUB_EVENT_NAME") == "schedule")
                 and is_scheduled_session(started_at.astimezone(TPE).date()) is True):
             completed_rows = None if force or resend_telegram else _completed_late_backup_rows(started_at)
             if completed_rows is not None:
@@ -1623,7 +1514,18 @@ def run_daily_scan(
     publish_guard()
     if not _acquire_scan_lease(scan_date_str, force=force):
         if previous_payload.get("scan_date") == scan_date_str:
-            logging.info("%s 已完成或正在掃描，直接沿用既有結果。", scan_date_str)
+            snapshot = db.collection("system_locks").document("daily_scan").get()
+            lock_data = snapshot.to_dict() or {} if snapshot.exists else {}
+            if (lock_data.get("status") != "completed" or lock_data.get("trading_date") != scan_date_str):
+                logging.info("%s 仍由其他工作寫入完整資料，不提前寄送部分完成榜單。", scan_date_str)
+                return []
+            # Another runner may have just committed a newer manifest. Read it
+            # again after confirming completion, never send an earlier partial
+            # snapshot observed while the scan/tracker was still being written.
+            previous_payload = _load_daily_scan_doc()
+            if previous_payload.get("scan_date") != scan_date_str:
+                raise RuntimeError("備援通知榜單日期與已完成掃描不一致")
+            logging.info("%s 已核實完成，沿用完整結果並僅重試未寄送通知。", scan_date_str)
             if send_telegram:
                 publish_guard()
                 send_daily_notifications(
@@ -1999,9 +1901,11 @@ if __name__ == "__main__":
     parser.add_argument("--allow-local", action="store_true", help="允許無 Firestore 僅輸出本機結果")
     parser.add_argument("--skip-telegram", action="store_true", help="維護時略過 Telegram Top10 圖片")
     parser.add_argument("--resend-telegram", action="store_true", help="即使榜單內容相同仍重新發送圖片")
+    parser.add_argument("--scheduled", action="store_true", help="本機排程；錯過安全時段不得當成成功")
     args = parser.parse_args()
     run_daily_scan(
         allow_local=args.allow_local,
         send_telegram=not args.skip_telegram,
         resend_telegram=args.resend_telegram,
+        scheduled=args.scheduled,
     )

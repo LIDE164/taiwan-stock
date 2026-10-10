@@ -1,12 +1,17 @@
 import io
 import unittest
+from unittest.mock import Mock, patch
 
+import requests
 from PIL import Image
 
+from research_delivery import DeliveryRejected, DeliveryUncertain
 from top10_telegram import (
     EXECUTABLE_GAP_RISK_TEXT,
     EXECUTABLE_RISK_MODEL_TEXT,
     _tracking_strategy_footer,
+    _send_document_bytes,
+    _send_photo_bytes,
     build_executable_display_rows,
     build_tracking_performance_report,
     build_top10_display_rows,
@@ -35,6 +40,193 @@ class _Session:
     def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return _Response()
+
+
+class ImageTransportTests(unittest.TestCase):
+    """Offline transport contract: one intent, one POST, a genuine receipt."""
+
+    PNG = b"\x89PNG\r\n\x1a\ncontent"
+    TRANSPORTS = (_send_photo_bytes, _send_document_bytes)
+
+    def transport(self, sender, session, **kwargs):
+        return sender(self.PNG, "test.png", "caption", "private-token", "chat", session, **kwargs)
+
+    def test_valid_receipt_has_exactly_one_intent_before_single_post(self):
+        for sender in self.TRANSPORTS:
+            with self.subTest(sender=sender.__name__):
+                events = []
+                session = Mock()
+                session.post.side_effect = lambda *args, **kwargs: events.append("post") or _Response()
+                result = self.transport(sender, session, before_send=lambda: events.append("intent"))
+                self.assertEqual(result, 321)
+                self.assertEqual(events, ["intent", "post"])
+                session.post.assert_called_once()
+
+    def test_intent_failure_prevents_post_and_preserves_exception(self):
+        for sender in self.TRANSPORTS:
+            with self.subTest(sender=sender.__name__):
+                session, hook = Mock(), Mock(side_effect=RuntimeError("lease lost"))
+                with self.assertRaisesRegex(RuntimeError, "lease lost"):
+                    self.transport(sender, session, before_send=hook)
+                hook.assert_called_once_with()
+                session.post.assert_not_called()
+
+    def test_preflight_failures_do_not_record_intent_or_post(self):
+        cases = [
+            (self.PNG, "test.png", "caption", "", "chat"),
+            (self.PNG, "test.png", "caption", "token", ""),
+            (b"not PNG", "test.png", "caption", "token", "chat"),
+            (self.PNG, "", "caption", "token", "chat"),
+            (self.PNG, "test.png", "x" * 1025, "token", "chat"),
+        ]
+        for sender in self.TRANSPORTS:
+            for args in cases:
+                with self.subTest(sender=sender.__name__, args=args[:2]):
+                    session, hook = Mock(), Mock()
+                    with self.assertRaises(DeliveryRejected):
+                        sender(*args, session, before_send=hook)
+                    hook.assert_not_called()
+                    session.post.assert_not_called()
+
+    def test_explicit_rejection_is_safe_even_with_error_http_status(self):
+        for sender in self.TRANSPORTS:
+            for status in (200, 400, 429, 500):
+                with self.subTest(sender=sender.__name__, status=status):
+                    response = Mock(status_code=status)
+                    response.json.return_value = {"ok": False, "description": "private-token URL"}
+                    session = Mock()
+                    session.post.return_value = response
+                    with self.assertRaises(DeliveryRejected) as caught:
+                        self.transport(sender, session)
+                    self.assertNotIn("private-token", str(caught.exception))
+                    session.post.assert_called_once()
+
+    def test_ambiguous_receipts_and_http_errors_never_count_as_success(self):
+        cases = [(200, {"ok": True, "result": {"message_id": value}})
+                 for value in (None, False, True, 0, -1, 3.0, 3.5, "3")]
+        cases += [
+            (500, {"ok": True, "result": {"message_id": 321}}),
+            (200, {"ok": 1, "result": {"message_id": 321}}),
+            (200, {"ok": "true", "result": {"message_id": 321}}),
+            (200, {"result": {"message_id": 321}}),
+            (200, []),
+        ]
+        for sender in self.TRANSPORTS:
+            for status, payload in cases:
+                with self.subTest(sender=sender.__name__, status=status, payload=payload):
+                    response = Mock(status_code=status)
+                    response.json.return_value = payload
+                    session = Mock()
+                    session.post.return_value = response
+                    with self.assertRaises(DeliveryUncertain):
+                        self.transport(sender, session)
+                    session.post.assert_called_once()
+
+    def test_timeouts_and_non_json_are_uncertain_and_sanitized(self):
+        for sender in self.TRANSPORTS:
+            for error in (requests.Timeout, requests.ConnectionError, ValueError):
+                with self.subTest(sender=sender.__name__, error=error):
+                    session, hook = Mock(), Mock()
+                    if error is ValueError:
+                        session.post.return_value.json.side_effect = error("private-token /sendPhoto")
+                    else:
+                        session.post.side_effect = error("private-token /sendPhoto")
+                    with self.assertRaises(DeliveryUncertain) as caught:
+                        self.transport(sender, session, before_send=hook)
+                    hook.assert_called_once_with()
+                    session.post.assert_called_once()
+                    self.assertNotIn("private-token", str(caught.exception))
+                    self.assertNotIn("/sendPhoto", str(caught.exception))
+
+    def test_single_image_public_senders_render_before_intent(self):
+        cases = [(send_top10_photo, "render_top10_image"),
+                 (send_executable_photo, "render_executable_image")]
+        for sender, renderer in cases:
+            with self.subTest(sender=sender.__name__):
+                events = []
+                session = Mock()
+                session.post.side_effect = lambda *args, **kwargs: events.append("post") or _Response()
+                with patch(f"top10_telegram.{renderer}", side_effect=lambda *a, **k: events.append("render") or self.PNG):
+                    result = sender([], "2026-10-06", "token", "chat", session=session,
+                                    before_send=lambda: events.append("intent"))
+                self.assertEqual(result, 321)
+                self.assertEqual(events, ["render", "intent", "post"])
+
+    def test_render_failure_never_records_intent_or_posts(self):
+        for sender, renderer in [(send_top10_photo, "render_top10_image"),
+                                 (send_executable_photo, "render_executable_image")]:
+            with self.subTest(sender=sender.__name__):
+                session, hook = Mock(), Mock()
+                with patch(f"top10_telegram.{renderer}", side_effect=RuntimeError("render failed")):
+                    with self.assertRaisesRegex(RuntimeError, "render failed"):
+                        sender([], "2026-10-06", "token", "chat", session=session, before_send=hook)
+                hook.assert_not_called()
+                session.post.assert_not_called()
+
+    def test_performance_hooks_wrap_only_unskipped_pages(self):
+        events = []
+        session = Mock()
+        session.post.side_effect = lambda *a, **k: events.append("post") or _Response()
+        with patch("top10_telegram.render_tracking_performance_images", return_value=[self.PNG] * 3):
+            result = send_tracking_performance_photo(
+                [], [], "2026-10-06", "token", "chat", session=session,
+                skip_page_numbers={2},
+                on_page_sending=lambda page, total: events.append(("intent", page, total)),
+                on_page_sent=lambda page, message, total: events.append(("receipt", page, message, total)),
+            )
+        self.assertEqual(result, 321)
+        self.assertEqual(events, [("intent", 1, 3), "post", ("receipt", 1, 321, 3),
+                                  ("intent", 3, 3), "post", ("receipt", 3, 321, 3)])
+
+    def test_performance_intent_failure_stops_before_post(self):
+        session, receipt = Mock(), Mock()
+        with patch("top10_telegram.render_tracking_performance_images", return_value=[self.PNG] * 2):
+            with self.assertRaisesRegex(RuntimeError, "lease lost"):
+                send_tracking_performance_photo(
+                    [], [], "2026-10-06", "token", "chat", session=session,
+                    on_page_sending=Mock(side_effect=RuntimeError("lease lost")), on_page_sent=receipt,
+                )
+        session.post.assert_not_called()
+        receipt.assert_not_called()
+
+    def test_performance_uncertain_receipt_stops_later_pages(self):
+        session, receipt, intent = Mock(), Mock(), Mock()
+        session.post.side_effect = requests.Timeout("secret URL")
+        with patch("top10_telegram.render_tracking_performance_images", return_value=[self.PNG] * 2):
+            with self.assertRaises(DeliveryUncertain):
+                send_tracking_performance_photo(
+                    [], [], "2026-10-06", "token", "chat", session=session,
+                    on_page_sending=intent, on_page_sent=receipt,
+                )
+        session.post.assert_called_once()
+        intent.assert_called_once_with(1, 2)
+        receipt.assert_not_called()
+
+    def test_performance_receipt_persistence_failure_stops_later_pages(self):
+        session, intent = Mock(), Mock()
+        session.post.return_value = _Response()
+        receipt = Mock(side_effect=RuntimeError("receipt save failed"))
+        with patch("top10_telegram.render_tracking_performance_images", return_value=[self.PNG] * 2):
+            with self.assertRaisesRegex(RuntimeError, "receipt save failed"):
+                send_tracking_performance_photo(
+                    [], [], "2026-10-06", "token", "chat", session=session,
+                    on_page_sending=intent, on_page_sent=receipt,
+                )
+        session.post.assert_called_once()
+        intent.assert_called_once_with(1, 2)
+        receipt.assert_called_once_with(1, 321, 2)
+
+    def test_performance_all_confirmed_pages_are_skipped_without_intent(self):
+        session, intent, receipt = Mock(), Mock(), Mock()
+        with patch("top10_telegram.render_tracking_performance_images", return_value=[self.PNG] * 2):
+            result = send_tracking_performance_photo(
+                [], [], "2026-10-06", "token", "chat", session=session,
+                skip_page_numbers={1, 2}, on_page_sending=intent, on_page_sent=receipt,
+            )
+        self.assertIsNone(result)
+        session.post.assert_not_called()
+        intent.assert_not_called()
+        receipt.assert_not_called()
 
 
 class Top10TelegramTests(unittest.TestCase):

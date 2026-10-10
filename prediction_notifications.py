@@ -171,7 +171,11 @@ def run_prediction_notifications(*, db, load_manifest, load_lock, send_text,
     # One stable key per day/slot, independent of changing quotes, new scores,
     # source restatements, or the unrelated daily-research format version.
     fingerprint = hashlib.sha256(f"{WATCH_SCHEMA}|{day}|{slot}".encode()).hexdigest()
-    store = FirestoreReportStore(db, f"{day}_{slot}", namespace="prediction_prices", format_version=FORMAT_VERSION)
+    # Longer than the 10-minute cloud job timeout, shorter than the 15-minute
+    # backup interval. A killed pre-send fetch must not lock out the whole hour;
+    # persisted in-flight/uncertain POSTs still block automatic retransmission.
+    store = FirestoreReportStore(db, f"{day}_{slot}", namespace="prediction_prices",
+                                 format_version=FORMAT_VERSION, lease_minutes=12)
     try:
         sent = deliver_report(store, [], day, build_messages=build_messages, send_text=guarded_send,
                               fingerprint=fingerprint)
@@ -186,12 +190,13 @@ def run_prediction_notifications(*, db, load_manifest, load_lock, send_text,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--send", action="store_true", help="Send the current slot; default is read-only preview")
+    parser.add_argument("--scheduled", action="store_true", help="Local scheduled run; missed windows fail visibly")
     args = parser.parse_args()
     # A delayed scheduled job is not a successful delivery. Holidays and manual
     # previews still skip quietly; the workflow handles failure alerts separately.
     now = datetime.now(TPE)
     if notification_slot(now) is None:
-        missed = (args.send and os.getenv("GITHUB_EVENT_NAME") == "schedule"
+        missed = (args.send and (args.scheduled or os.getenv("GITHUB_EVENT_NAME") == "schedule")
                   and is_scheduled_session(now.date()) is not False)
         if missed:
             try:

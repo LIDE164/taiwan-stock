@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from collections.abc import Mapping
 from uuid import uuid4
 
 import requests
@@ -23,6 +24,20 @@ class DeliveryUncertain(RuntimeError):
 
 class DeliveryRejected(RuntimeError):
     """Telegram explicitly rejected the request; retrying later is safe."""
+
+
+def _complete_receipts(state, day):
+    parts = state.get("parts")
+    count = state.get("part_count")
+    receipts = state.get("sent_parts")
+    if (state.get("date") != day or not isinstance(parts, list) or not 1 <= len(parts) <= 25
+            or any(not isinstance(part, str) or not part.strip() for part in parts)
+            or not isinstance(count, int) or isinstance(count, bool) or count != len(parts)
+            or not isinstance(receipts, Mapping) or set(receipts) != {str(i) for i in range(1, count + 1)}):
+        return False
+    ids = list(receipts.values())
+    return (all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in ids)
+            and len(set(ids)) == len(ids))
 
 
 def report_fingerprint(records, trading_date):
@@ -60,12 +75,18 @@ def telegram_send_text(token, chat_id, message):
 class FirestoreReportStore:
     """Transactional per-date ownership prevents overlapping jobs from sending."""
 
-    def __init__(self, db, trading_date, *, namespace="daily_research", format_version=FORMAT_VERSION):
+    def __init__(self, db, trading_date, *, namespace="daily_research", format_version=FORMAT_VERSION,
+                 lease_minutes=30):
         from firebase_admin import firestore
 
         self.db = db
         self.firestore = firestore
         self.format_version = format_version
+        # Hourly keys append a slot; receipts still carry the actual Taipei day.
+        self.receipt_day = str(trading_date).split("_", 1)[0]
+        if not isinstance(lease_minutes, int) or isinstance(lease_minutes, bool) or not 1 <= lease_minutes <= 30:
+            raise ValueError("通知鎖期限必須在 1 到 30 分鐘內")
+        self.lease_minutes = lease_minutes
         self.ref = db.collection("notifications").document(f"{namespace}_{trading_date}")
 
     def acquire(self, fingerprint, owner, *, resend=False):
@@ -85,11 +106,13 @@ class FirestoreReportStore:
             if not resend and (previous.get("status") == "uncertain" or previous.get("in_flight")):
                 raise DeliveryUncertain("上一則研究訊息收件狀態不明，暫停自動重送")
             if not resend and same and previous.get("status") == "sent":
+                if not _complete_receipts(previous, self.receipt_day):
+                    raise DeliveryUncertain("通知標示已完成但日期或收件紀錄不完整，停止自動重送")
                 return None
             state = previous if same and not resend else {"sent_parts": {}, "parts": []}
             state.update({
                 "fingerprint": fingerprint, "format": self.format_version,
-                "owner": owner, "lease_until": now + timedelta(minutes=30),
+                "owner": owner, "lease_until": now + timedelta(minutes=self.lease_minutes),
                 "status": "preparing", "in_flight": "", "last_error": "",
                 "attempted_at": now,
                 "attempt_count": int(previous.get("attempt_count") or 0) + 1,
@@ -107,7 +130,7 @@ class FirestoreReportStore:
             if previous.get("owner") != owner:
                 raise RuntimeError("研究通知的寄送鎖已變更，停止寄送")
             payload = dict(values)
-            payload["lease_until"] = datetime.now(timezone.utc) + timedelta(minutes=30)
+            payload["lease_until"] = datetime.now(timezone.utc) + timedelta(minutes=self.lease_minutes)
             if release:
                 payload.update(owner="", lease_until=None)
             transaction.set(self.ref, payload, merge=True)

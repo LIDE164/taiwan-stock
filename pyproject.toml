@@ -39,6 +39,8 @@ source = [
     "prediction_health_checks",
     "scan_schedule",
     "scan_completion",
+    "local_schedule",
+    "image_delivery",
     "research_delivery",
     "market_calendar",
     "market_http",

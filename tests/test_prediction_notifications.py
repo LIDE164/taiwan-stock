@@ -65,6 +65,31 @@ class PredictionNotificationTests(unittest.TestCase):
         self.assertEqual(self.run_task(dry_run=False)["status"], "already_sent_or_busy")
         self.sender.assert_called_once()
 
+    def test_killed_prefetch_releases_in_time_for_next_backup_without_fake_prices(self):
+        self.quotes.side_effect = SystemExit("simulated process termination before any POST")
+        with self.assertRaises(SystemExit):
+            self.run_task(dry_run=False)
+        self.assertEqual(self.state["lease_until"] - self.state["attempted_at"], timedelta(minutes=12))
+        self.assertEqual(self.state["in_flight"], "")
+        self.sender.assert_not_called()
+        self.state["lease_until"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.clock.return_value = moment(10, 20)
+        self.quotes.side_effect = None
+        self.quotes.return_value = quotes(moment(10, 20))
+        self.assertEqual(self.run_task(dry_run=False)["status"], "sent")
+        self.assertEqual(self.quotes.call_args.kwargs["now_tpe"], moment(10, 20))
+        self.sender.assert_called_once()
+
+    def test_short_hourly_lease_never_retries_crash_after_send_intent(self):
+        self.sender.side_effect = SystemExit("simulated termination during POST")
+        with self.assertRaises(SystemExit):
+            self.run_task(dry_run=False)
+        self.state["lease_until"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.clock.return_value = moment(10, 20)
+        with self.assertRaises(DeliveryUncertain):
+            self.run_task(dry_run=False)
+        self.sender.assert_called_once()
+
     def test_next_hour_uses_same_stocks_without_reranking(self):
         self.run_task(dry_run=False)
         frozen = deepcopy(self.db.documents[("prediction_watchlists", "2026-10-05")])
@@ -188,6 +213,18 @@ class PredictionNotificationTests(unittest.TestCase):
 
 
 class PredictionCliTests(unittest.TestCase):
+    def test_local_schedule_flag_uses_same_missed_window_checks(self):
+        with patch("sys.argv", ["prediction_notifications.py", "--send", "--scheduled"]), \
+                patch("prediction_notifications.datetime") as clock, \
+                patch.dict("os.environ", {"GITHUB_EVENT_NAME": ""}), \
+                patch("prediction_notifications.import_module"), \
+                patch("prediction_notifications.has_completed_due_notifications", return_value=False), \
+                patch("builtins.print"):
+            clock.now.return_value = moment(18)
+            with self.assertRaises(SystemExit) as result:
+                main()
+        self.assertEqual(result.exception.code, 1)
+
     def call_main(self, now, *, send=True, event="schedule"):
         with patch("sys.argv", ["prediction_notifications.py", *(["--send"] if send else [])]), \
                 patch("prediction_notifications.datetime") as clock, \

@@ -13,6 +13,21 @@ Never commit `.streamlit/secrets.toml`; it is intentionally ignored by Git.
 
 ## Daily scan
 
+### Local primary and free GitHub backup
+
+Windows Task Scheduler can run the existing scan and price-notification CLIs
+while this computer is on, online and signed in. GitHub's existing schedules
+remain an independent backup when the PC is unavailable. See
+[local scheduling setup and limitations](docs/local_schedule.md).
+No new paid scheduler, AI API, cloud billing, or external credential-sharing
+service is introduced. Existing Firebase/account quotas still apply.
+The cloud backup remains best-effort: it cannot guarantee hourly delivery while
+the PC is off, and missed intraday observations are never backfilled with later
+prices. Both execution paths use the same calendar and delivery ledger.
+`python local_schedule.py --check` only checks local prerequisites; it does not
+send Telegram or write Firestore. Local logs contain bounded status metadata,
+not raw provider responses or secrets. A process exit code is not proof of delivery.
+
 `.github/workflows/daily_scan.yml` targets 15:17 Asia/Taipei on weekdays, with 16:17 and 22:17 recovery runs (GitHub may delay execution). Monday through Thursday use the top 300 stocks by daily trading volume; Friday expands the same run to 500. `SCAN_LIMIT=300` or `SCAN_LIMIT=500` can explicitly override this for a manual run. The scanner requires the latest TWII bar to match the calendar-verified completed trading date, rejects stock bars from a different date, and uses a 45-minute Firestore lease plus a 40-minute job timeout so a crashed primary run cannot block the recovery schedule.
 
 The configured `CORE_TICKERS` (default `2330,2317,2454`) are always retained without increasing the selected universe size. The Streamlit app only reads `market_data/daily_scan`; it never starts a broad scan from a user session. Large scan rows and tracker positions use schema-v2 manifests with bounded documents in `daily_scan_chunks` and `top10_tracker_chunks`; all readers remain compatible with legacy inline documents and reject missing/partial chunks instead of calculating from incomplete data.

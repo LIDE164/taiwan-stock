@@ -78,6 +78,26 @@ def _transactional(function):
 
 
 class ResearchDeliveryTests(unittest.TestCase):
+    def test_lease_duration_defaults_remain_thirty_minutes_and_validate_overrides(self):
+        store = FirestoreReportStore(_Database(), "2026-10-07")
+        self.assertEqual(store.lease_minutes, 30)
+        for value in (0, 31, True, "12"):
+            with self.assertRaises(ValueError):
+                FirestoreReportStore(_Database(), "2026-10-07", lease_minutes=value)
+
+    def test_sent_marker_alone_never_proves_complete_same_day_receipts(self):
+        fingerprint = report_fingerprint(self.records, self.date)
+        valid = {"fingerprint": fingerprint, "date": self.date, "status": "sent",
+                 "parts": ["first", "second"], "part_count": 2, "sent_parts": {"1": 101, "2": 102}}
+        for change in ({"date": "1999-01-01"}, {"sent_parts": {}}, {"sent_parts": {"1": 101}},
+                       {"sent_parts": {"1": 101, "2": 101}}, {"part_count": True},
+                       {"parts": ["", "second"]}, {"sent_parts": {"1": 101, "2": 0}}):
+            self.db.documents[("notifications", f"daily_research_{self.date}")] = {**valid, **change}
+            before = deepcopy(self.state)
+            with self.subTest(change=change), self.assertRaises(DeliveryUncertain):
+                self.store.acquire(fingerprint, "backup")
+            self.assertEqual(self.state, before)
+
     def setUp(self):
         transaction_patch = patch("firebase_admin.firestore.transactional", _transactional)
         transaction_patch.start()

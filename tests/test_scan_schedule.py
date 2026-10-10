@@ -152,8 +152,13 @@ class ScannerScheduleIntegrationTests(unittest.TestCase):
 
     def test_midnight_delay_can_retry_completed_prior_day_notifications(self):
         rows = [{"代號": "2330", "Data_Date": "2026-10-05"}]
+        database = Mock()
+        snapshot = database.collection.return_value.document.return_value.get.return_value
+        snapshot.exists = True
+        snapshot.to_dict.return_value = {"status": "completed", "trading_date": "2026-10-05"}
         with (
-            patch.object(scanner, "db", object()),
+            patch.object(scanner, "db", database),
+            patch.object(scanner, "_completed_late_backup_rows", return_value=None),
             patch.object(scanner, "call_with_backoff", return_value=self.benchmark("2026-10-05")),
             patch.object(scanner, "_load_saved_benchmarks", return_value=[]),
             patch.object(scanner, "_load_daily_scan_doc", return_value={"scan_date": "2026-10-05", "data": rows}),
@@ -164,6 +169,27 @@ class ScannerScheduleIntegrationTests(unittest.TestCase):
         self.assertEqual(result, rows)
         lease.assert_called_once_with("2026-10-05", force=False)
         send.assert_called_once_with(rows, "2026-10-05", resend=False)
+
+    def test_competing_runner_never_sends_manifest_before_tracker_and_scan_complete(self):
+        database = Mock()
+        snapshot = database.collection.return_value.document.return_value.get.return_value
+        snapshot.exists = True
+        snapshot.to_dict.return_value = {"status": "running", "trading_date": "2026-10-05"}
+        with patch.object(scanner, "db", database), \
+                patch.object(scanner, "_completed_late_backup_rows", return_value=None), \
+                patch.object(scanner, "call_with_backoff", return_value=self.benchmark("2026-10-05")), \
+                patch.object(scanner, "_load_saved_benchmarks", return_value=[]), \
+                patch.object(scanner, "_load_daily_scan_doc", return_value={"scan_date": "2026-10-05", "data": []}), \
+                patch.object(scanner, "_acquire_scan_lease", return_value=False), \
+                patch.object(scanner, "send_daily_notifications") as send:
+            self.assertEqual(scanner.run_daily_scan(clock=lambda: local("2026-10-06T00:00:40")), [])
+        send.assert_not_called()
+
+    def test_unconfirmed_completed_marker_stops_before_notifications(self):
+        database = Mock()
+        database.collection.return_value.document.return_value.set.side_effect = OSError("unavailable")
+        with patch.object(scanner, "db", database), self.assertRaisesRegex(RuntimeError, "標記完成"):
+            scanner._finish_scan_lease("2026-10-05", "completed", 300)
 
     def test_force_cannot_bypass_intraday_and_closed_day_daytime_gates(self):
         for moment in ("2026-10-06T10:00:00", "2026-10-09T15:00:00"):
@@ -204,6 +230,15 @@ class ScannerScheduleIntegrationTests(unittest.TestCase):
             patch.object(scanner, "call_with_backoff") as load,
         ):
             self.assertEqual(scanner.run_daily_scan(clock=lambda: local("2026-10-09T15:00:00")), [])
+        load.assert_not_called()
+
+    def test_local_schedule_has_same_missed_window_guard_without_github_env(self):
+        with patch.dict(scanner.os.environ, {"GITHUB_EVENT_NAME": ""}), \
+                patch.object(scanner, "db", object()), \
+                patch.object(scanner, "call_with_backoff") as load, \
+                patch.object(scanner, "_completed_late_backup_rows", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "已錯過安全補掃時段"):
+                scanner.run_daily_scan(scheduled=True, clock=lambda: local("2026-10-06T10:00:00"))
         load.assert_not_called()
 
     def test_publish_deadline_is_rechecked_after_processing_before_first_ranking_write(self):
@@ -373,18 +408,19 @@ class ScannerScheduleIntegrationTests(unittest.TestCase):
             self.assertTrue(manifest["delayed_recovery"])
 
     def test_both_prediction_senders_pass_verified_recovery_note_even_when_new_top10_empty(self):
-        from tests.test_scanner_telegram import _Database
+        from tests.test_scanner_telegram import _Database, _image_sender, _transactional
 
         rows = [{"代號": "2330", "Data_Date": "2026-10-05", "Scan_Delayed_Recovery": True,
                  "Scan_Generated_At": "2026-10-06T00:40:00+08:00"}]
         with (
+            patch("firebase_admin.firestore.transactional", _transactional),
             patch.object(scanner, "db", _Database()),
             patch.object(scanner, "datetime") as clock,
             patch.object(scanner, "select_executable_top10", return_value=[]),
             patch.object(scanner, "build_comparison_rows", return_value=[]),
             patch.object(scanner, "_telegram_credentials", return_value=("test-token", "test-chat")),
-            patch.object(scanner, "send_top10_photo", return_value=1) as top10,
-            patch.object(scanner, "send_executable_photo", return_value=2) as comparison,
+            patch.object(scanner, "send_top10_photo", side_effect=_image_sender(1)) as top10,
+            patch.object(scanner, "send_executable_photo", side_effect=_image_sender(2)) as comparison,
         ):
             clock.now.return_value = local("2026-10-06T01:00:00")
             scanner.send_daily_top10_notification(rows, "2026-10-05")

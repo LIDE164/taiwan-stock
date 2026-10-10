@@ -1,9 +1,13 @@
 import unittest
-from unittest.mock import patch
+from copy import deepcopy
+from functools import wraps
+import threading
+from unittest.mock import ANY, patch
 
 import pandas as pd
 
 import scanner
+from research_delivery import DeliveryRejected, DeliveryUncertain
 
 
 class _Snapshot:
@@ -12,17 +16,18 @@ class _Snapshot:
         self.exists = value is not None
 
     def to_dict(self):
-        return dict(self._value or {})
+        return deepcopy(self._value or {})
 
 
 class _Document:
     def __init__(self):
         self.value = None
 
-    def get(self):
+    def get(self, transaction=None):
         return _Snapshot(self.value)
 
     def set(self, value, merge=False):
+        value = deepcopy(value)
         if merge and self.value:
             self.value.update(value)
         else:
@@ -40,13 +45,51 @@ class _Collection:
 class _Database:
     def __init__(self):
         self.collections = {}
+        self.lock = threading.RLock()
 
     def collection(self, name):
         return self.collections.setdefault(name, _Collection())
 
+    def transaction(self):
+        return _Transaction(self)
+
+
+class _Transaction:
+    def __init__(self, database):
+        self.db = database
+
+    def set(self, ref, values, merge=False):
+        ref.set(values, merge=merge)
+
+
+def _transactional(function):
+    @wraps(function)
+    def wrapped(transaction):
+        with transaction.db.lock:
+            return function(transaction)
+    return wrapped
+
+
+def _image_sender(message_id):
+    def send(*args, **kwargs):
+        kwargs["before_send"]()
+        return message_id
+    return send
+
+
+def _performance_sender(message_id):
+    def send(*args, **kwargs):
+        kwargs["on_page_sending"](1, 1)
+        kwargs["on_page_sent"](1, message_id, 1)
+        return message_id
+    return send
+
 
 class ScannerTelegramTests(unittest.TestCase):
     def setUp(self):
+        transaction_patch = patch("firebase_admin.firestore.transactional", _transactional)
+        transaction_patch.start()
+        self.addCleanup(transaction_patch.stop)
         self.db = _Database()
         self.rows = [{
             "Rank": 1, "代號": "2330", "名稱": "台積電", "Score": 78,
@@ -93,7 +136,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_top10_photo", return_value=99) as send,
+            patch.object(scanner, "send_top10_photo", side_effect=_image_sender(99)) as send,
         ):
             self.assertTrue(scanner.send_daily_top10_notification(self.rows, "2026-08-27"))
             self.assertFalse(scanner.send_daily_top10_notification(self.rows, "2026-08-27"))
@@ -107,7 +150,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_top10_photo", return_value=100) as send,
+            patch.object(scanner, "send_top10_photo", side_effect=_image_sender(100)) as send,
         ):
             scanner.send_daily_top10_notification(self.rows, "2026-08-27")
             scanner.send_daily_top10_notification(changed, "2026-08-27")
@@ -118,10 +161,10 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_top10_photo", return_value=103) as send,
+            patch.object(scanner, "send_top10_photo", side_effect=_image_sender(103)) as send,
         ):
             self.assertTrue(scanner.send_daily_top10_notification(waiting, "2026-08-27"))
-        send.assert_called_once_with([], "2026-08-27", "token", "chat")
+        send.assert_called_once_with([], "2026-08-27", "token", "chat", before_send=ANY)
         saved = self.db.collection("notifications").document("daily_top10_2026-08-27").value
         self.assertEqual(saved["ranking_count"], 0)
         self.assertEqual(saved["ranking_type"], "executable")
@@ -134,7 +177,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_executable_photo", return_value=101) as send,
+            patch.object(scanner, "send_executable_photo", side_effect=_image_sender(101)) as send,
         ):
             self.assertTrue(scanner.send_daily_executable_notification(ready, "2026-08-27"))
             self.assertFalse(scanner.send_daily_executable_notification(ready, "2026-08-27"))
@@ -147,7 +190,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_executable_photo", return_value=102) as send,
+            patch.object(scanner, "send_executable_photo", side_effect=_image_sender(102)) as send,
         ):
             self.assertTrue(scanner.send_daily_executable_notification(waiting, "2026-08-27"))
             self.assertFalse(scanner.send_daily_executable_notification(waiting, "2026-08-27"))
@@ -166,7 +209,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_executable_photo", return_value=105) as send,
+            patch.object(scanner, "send_executable_photo", side_effect=_image_sender(105)) as send,
         ):
             scanner.send_daily_executable_notification(rows, "2026-08-27")
         self.assertEqual(send.call_args.kwargs["selected_results"], expected)
@@ -186,7 +229,7 @@ class ScannerTelegramTests(unittest.TestCase):
         with (
             patch.object(scanner, "db", self.db),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_tracking_performance_photo", return_value=104) as send,
+            patch.object(scanner, "send_tracking_performance_photo", side_effect=_performance_sender(104)) as send,
         ):
             self.assertFalse(scanner.send_daily_tracking_performance_notification("2026-08-27"))
             self.assertTrue(scanner.send_daily_tracking_performance_notification("2026-08-28"))
@@ -225,6 +268,68 @@ class ScannerTelegramTests(unittest.TestCase):
         executable_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
         tracking_sender.assert_called_once_with("2026-08-27", resend=True)
         research_sender.assert_called_once_with(self.rows, "2026-08-27", resend=True)
+
+    def test_performance_pages_resume_confirmed_receipts_after_explicit_rejection(self):
+        notification = self.db.collection("notifications").document("daily_tracking_performance_2026-08-28")
+        delivered = []
+        attempts = []
+
+        def transport(*args, **kwargs):
+            skip = kwargs["skip_page_numbers"]
+            attempts.append(set(skip))
+            for page in range(1, 3):
+                if page in skip:
+                    continue
+                kwargs["on_page_sending"](page, 2)
+                self.assertEqual(notification.value["in_flight"], str(page))
+                self.assertEqual(notification.value["status"], "sending")
+                if page == 2 and len(attempts) == 1:
+                    raise DeliveryRejected("mocked rejection")
+                delivered.append(page)
+                kwargs["on_page_sent"](page, 100 + page, 2)
+
+        report = {"tracked_count": 12, "valid_count": 12, "missing_count": 0, "page_count": 2}
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "_load_tracking_performance_data", return_value=([{}], [], {})),
+            patch.object(scanner, "build_tracking_performance_report", return_value=report),
+            patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
+            patch.object(scanner, "send_tracking_performance_photo", side_effect=transport) as send,
+        ):
+            with self.assertRaises(DeliveryRejected):
+                scanner.send_daily_tracking_performance_notification("2026-08-28")
+            self.assertEqual(notification.value["sent_pages"], {"1": 101})
+            self.assertTrue(scanner.send_daily_tracking_performance_notification("2026-08-28"))
+            self.assertFalse(scanner.send_daily_tracking_performance_notification("2026-08-28"))
+        self.assertEqual(delivered, [1, 2])
+        self.assertEqual(attempts, [set(), {1}])
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual(notification.value["sent_pages"], {"1": 101, "2": 102})
+        self.assertEqual(notification.value["tracked_count"], 12)
+
+    def test_uncertain_top10_still_attempts_other_daily_artifacts_without_resending(self):
+        fingerprint = scanner._top10_notification_fingerprint(
+            scanner.select_executable_top10(self.rows), "2026-08-27",
+        )
+        self.db.collection("notifications").document("daily_top10_2026-08-27").set({
+            "date": "2026-08-27", "fingerprint": fingerprint, "status": "uncertain",
+            "in_flight": "1",
+        })
+        with (
+            patch.object(scanner, "db", self.db),
+            patch.object(scanner, "send_top10_photo") as transport,
+            patch.object(scanner, "send_daily_executable_notification") as executable,
+            patch.object(scanner, "send_daily_tracking_performance_notification") as performance,
+            patch.object(scanner, "send_daily_research_notification") as research,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "可執行 Top10: DeliveryUncertain"):
+                scanner.send_daily_notifications(self.rows, "2026-08-27")
+            with self.assertRaises(DeliveryUncertain):
+                scanner.send_daily_top10_notification(self.rows, "2026-08-27")
+        transport.assert_not_called()
+        executable.assert_called_once_with(self.rows, "2026-08-27", resend=False)
+        performance.assert_called_once_with("2026-08-27", resend=False)
+        research.assert_called_once_with(self.rows, "2026-08-27", resend=False)
 
     def test_research_refuses_running_or_mismatched_scan(self):
         lock = self.db.collection("system_locks").document("daily_scan")

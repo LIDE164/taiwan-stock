@@ -108,14 +108,15 @@ class ComparisonIntegrationTests(unittest.TestCase):
         self.assertEqual(len(scanner.select_executable_top10(rows)), 2)
 
     def test_scanner_sends_comparison_but_keeps_official_selection_empty(self):
-        from test_scanner_telegram import _Database
+        from tests.test_scanner_telegram import _Database, _image_sender, _transactional
 
         database = _Database()
         source = [record()]
         with (
+            patch("firebase_admin.firestore.transactional", _transactional),
             patch.object(scanner, "db", database),
             patch.object(scanner, "_telegram_credentials", return_value=("token", "chat")),
-            patch.object(scanner, "send_executable_photo", return_value=42) as send,
+            patch.object(scanner, "send_executable_photo", side_effect=_image_sender(42)) as send,
         ):
             self.assertTrue(scanner.send_daily_executable_notification(source, "2026-09-21"))
             self.assertFalse(scanner.send_daily_executable_notification(source, "2026-09-21"))

@@ -19,6 +19,11 @@ on:
           - auto
           - '300'
           - '500'
+      force_rescan:
+        description: 明確重新掃描已完成日期（一般備援請維持 false；不會強制重送）
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: taiwan-stock-daily-scan
@@ -65,17 +70,21 @@ jobs:
       - name: 執行每日 300／每週 500 掃描程式
         env:
           INPUT_SCAN_LIMIT: ${{ inputs.scan_limit }}
+          INPUT_FORCE_RESCAN: ${{ inputs.force_rescan }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "$INPUT_FORCE_RESCAN" = "true" ]; then
+              export FORCE_SCAN=1
+            fi
             if [ "$INPUT_SCAN_LIMIT" = "300" ] || [ "$INPUT_SCAN_LIMIT" = "500" ]; then
-              FORCE_SCAN=1 SCAN_LIMIT="$INPUT_SCAN_LIMIT" python scanner.py
+              SCAN_LIMIT="$INPUT_SCAN_LIMIT" python scanner.py --scheduled
             else
-              FORCE_SCAN=1 python scanner.py
+              python scanner.py --scheduled
             fi
           else
-            python scanner.py
+            python scanner.py --scheduled
           fi
 
       - name: 掃描失敗時發送 Telegram 告警

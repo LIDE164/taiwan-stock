@@ -6,7 +6,7 @@ import io
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any
 
 import requests
@@ -20,6 +20,7 @@ from execution_costs import (
 )
 from market_calendar import next_scheduled_session
 from ranking_comparison import comparison_display_record
+from research_delivery import DeliveryRejected, DeliveryUncertain
 
 IMAGE_WIDTH = 1080
 IMAGE_HEIGHT = 1400
@@ -929,7 +930,7 @@ def render_executable_image(
     comparison_mode = comparison_results is not None
     render_source = (
         comparison_results
-        if comparison_mode
+        if comparison_results is not None
         else (selected_results if selected_results is not None else results)
     )
     rows = build_executable_display_rows(render_source, comparison=comparison_mode)
@@ -1345,6 +1346,71 @@ def render_tracking_performance_images(
     ]
 
 
+def _send_png_bytes(
+    png: bytes,
+    filename: str,
+    caption: str,
+    bot_token: Any,
+    chat_id: Any,
+    session: requests.Session | None,
+    *,
+    document: bool = False,
+    before_send: Callable[[], None] | None = None,
+) -> int:
+    """Validate before intent; record intent immediately before the single POST.
+
+    A callback failure propagates unchanged without making a request. Once POST
+    begins, only an explicit Telegram rejection proves that retrying is safe.
+    Never include request URLs, credentials, response bodies or provider errors
+    in raised transport exceptions.
+    """
+    token = str(bot_token or "").strip()
+    target_chat = str(chat_id or "").strip()
+    if not token or not target_chat:
+        raise DeliveryRejected("Telegram 設定缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
+    if (
+        not isinstance(png, bytes) or not png.startswith(b"\x89PNG\r\n\x1a\n")
+        or not isinstance(filename, str) or not filename.strip()
+        or not isinstance(caption, str)
+    ):
+        raise DeliveryRejected("Telegram 圖片內容未通過發送前檢查")
+    try:
+        caption_length = len(caption.encode("utf-16-le")) // 2
+        client = session if session is not None else requests.Session()
+    except Exception:
+        raise DeliveryRejected("Telegram 圖片發送前準備失敗") from None
+    if caption_length > 1024:
+        raise DeliveryRejected("Telegram 圖片說明超出發送長度")
+    method, field = ("sendDocument", "document") if document else ("sendPhoto", "photo")
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = {"chat_id": target_chat, "caption": caption}
+    files = {field: (filename, png, "image/png")}
+    if before_send is not None:
+        before_send()
+    try:
+        response = client.post(
+            url,
+            data=data,
+            files=files,
+            timeout=30,
+        )
+        payload = response.json()
+    except Exception:
+        raise DeliveryUncertain("Telegram 圖片收件狀態不明；請先確認是否已收件") from None
+    if isinstance(payload, Mapping) and payload.get("ok") is False:
+        raise DeliveryRejected("Telegram 明確拒絕本次圖片")
+    result = payload.get("result") if isinstance(payload, Mapping) else None
+    message_id = result.get("message_id") if isinstance(result, Mapping) else None
+    status = getattr(response, "status_code", None)
+    if (
+        not isinstance(status, int) or isinstance(status, bool) or not 200 <= status < 300
+        or not isinstance(payload, Mapping) or payload.get("ok") is not True
+        or not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0
+    ):
+        raise DeliveryUncertain("Telegram 圖片缺少有效收件編號；請先確認是否已收件")
+    return message_id
+
+
 def _send_photo_bytes(
     png: bytes,
     filename: str,
@@ -1352,32 +1418,12 @@ def _send_photo_bytes(
     bot_token: Any,
     chat_id: Any,
     session: requests.Session | None,
-) -> int | None:
-    token = str(bot_token or "").strip()
-    target_chat = str(chat_id or "").strip()
-    if not token or not target_chat:
-        raise RuntimeError("Telegram 設定缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
-    client = session or requests.Session()
-    try:
-        response = client.post(
-            f"https://api.telegram.org/bot{token}/sendPhoto",
-            data={"chat_id": target_chat, "caption": caption},
-            files={"photo": (filename, png, "image/png")},
-            timeout=30,
-        )
-    except Exception as error:
-        raise RuntimeError(f"Telegram 圖片發送連線失敗（{type(error).__name__}）") from None
-    if response.status_code < 200 or response.status_code >= 300:
-        raise RuntimeError(f"Telegram 圖片發送失敗（HTTP {response.status_code}）")
-    try:
-        payload = response.json()
-    except (TypeError, ValueError):
-        raise RuntimeError("Telegram 回應格式錯誤") from None
-    if not isinstance(payload, Mapping) or not payload.get("ok"):
-        raise RuntimeError("Telegram API 未確認圖片發送成功")
-    result = payload.get("result")
-    message_id = result.get("message_id") if isinstance(result, Mapping) else None
-    return int(message_id) if isinstance(message_id, (int, float)) else None
+    *,
+    before_send: Callable[[], None] | None = None,
+) -> int:
+    return _send_png_bytes(
+        png, filename, caption, bot_token, chat_id, session, before_send=before_send,
+    )
 
 
 def _send_document_bytes(
@@ -1387,33 +1433,14 @@ def _send_document_bytes(
     bot_token: Any,
     chat_id: Any,
     session: requests.Session | None,
-) -> int | None:
+    *,
+    before_send: Callable[[], None] | None = None,
+) -> int:
     """Send a PNG as a document so Telegram does not recompress the image."""
-    token = str(bot_token or "").strip()
-    target_chat = str(chat_id or "").strip()
-    if not token or not target_chat:
-        raise RuntimeError("Telegram 設定缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID")
-    client = session or requests.Session()
-    try:
-        response = client.post(
-            f"https://api.telegram.org/bot{token}/sendDocument",
-            data={"chat_id": target_chat, "caption": caption},
-            files={"document": (filename, png, "image/png")},
-            timeout=30,
-        )
-    except Exception as error:
-        raise RuntimeError(f"Telegram 原圖發送連線失敗（{type(error).__name__}）") from None
-    if response.status_code < 200 or response.status_code >= 300:
-        raise RuntimeError(f"Telegram 原圖發送失敗（HTTP {response.status_code}）")
-    try:
-        payload = response.json()
-    except (TypeError, ValueError):
-        raise RuntimeError("Telegram 回應格式錯誤") from None
-    if not isinstance(payload, Mapping) or not payload.get("ok"):
-        raise RuntimeError("Telegram API 未確認原圖發送成功")
-    result = payload.get("result")
-    message_id = result.get("message_id") if isinstance(result, Mapping) else None
-    return int(message_id) if isinstance(message_id, (int, float)) else None
+    return _send_png_bytes(
+        png, filename, caption, bot_token, chat_id, session,
+        document=True, before_send=before_send,
+    )
 
 
 def send_top10_photo(
@@ -1424,8 +1451,9 @@ def send_top10_photo(
     *,
     publication_note: str = "",
     session: requests.Session | None = None,
+    before_send: Callable[[], None] | None = None,
 ) -> int | None:
-    """Send the rendered ranking through Telegram's sendPhoto API."""
+    """Render ranking, then invoke optional intent hook immediately before POST."""
     png = render_top10_image(results, trading_date)
     return _send_photo_bytes(
         png,
@@ -1435,6 +1463,7 @@ def send_top10_photo(
         bot_token,
         chat_id,
         session,
+        before_send=before_send,
     )
 
 
@@ -1448,12 +1477,13 @@ def send_executable_photo(
     comparison_results: Sequence[Mapping[str, Any]] | None = None,
     publication_note: str = "",
     session: requests.Session | None = None,
+    before_send: Callable[[], None] | None = None,
 ) -> int | None:
-    """Send the executable prediction as a lossless PNG document."""
+    """Render lossless prediction; invoke intent only after rendering/preflight."""
     comparison_mode = comparison_results is not None
     render_source = (
         comparison_results
-        if comparison_mode
+        if comparison_results is not None
         else (selected_results if selected_results is not None else results)
     )
     rows = build_executable_display_rows(render_source, comparison=comparison_mode)
@@ -1480,6 +1510,7 @@ def send_executable_photo(
         bot_token,
         chat_id,
         session,
+        before_send=before_send,
     )
 
 
@@ -1494,8 +1525,14 @@ def send_tracking_performance_photo(
     cumulative_summary: Mapping[str, Any] | None = None,
     skip_page_numbers: set[int] | None = None,
     on_page_sent: Callable[[int, int | None, int], None] | None = None,
+    on_page_sending: Callable[[int, int], None] | None = None,
 ) -> int | None:
-    """Send every daily tracking-performance page through Telegram."""
+    """Render all pages before sending; wrap each POST in intent/receipt hooks.
+
+    ``on_page_sending(page, total)`` runs after transport preflight and before
+    each unskipped page's POST. ``on_page_sent(page, message_id, total)`` runs
+    only after a validated receipt. Either hook failure stops later pages.
+    """
     report = build_tracking_performance_report(
         records,
         positions,
@@ -1533,6 +1570,10 @@ def send_tracking_performance_photo(
             bot_token,
             chat_id,
             session,
+            before_send=(
+                partial(on_page_sending, page_number, len(pages))
+                if on_page_sending is not None else None
+            ),
         )
         message_ids.append(message_id)
         if on_page_sent is not None:
