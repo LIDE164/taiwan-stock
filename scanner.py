@@ -26,6 +26,8 @@ from chunked_firestore import (
     load_chunked_items,
     manifest_chunk_ids,
 )
+from completed_daily_bar import daily_bar_complete, merge_completed_daily_bar
+from official_scan_universe import parse_twse_daily_universe
 from data_providers import fetch_financial_quality, fetch_institutional_rows, fetch_revenue_growth
 from entry_readiness import READY_STATUS, build_entry_readiness
 from legacy_entry_readiness import build_legacy_entry_plan
@@ -305,7 +307,23 @@ def institutional_history_complete(
     )
 
 
-def fetch_top_stocks(limit=500):
+def _validate_universe_date(payload, code_field, expected_date):
+    if not expected_date:
+        return
+    for item in payload:
+        code = str(item.get(code_field) or "").strip()
+        if len(code) != 4 or not code.isdigit() or code.startswith("0"):
+            continue
+        raw = str(item.get("Date") or "").strip()
+        try:
+            day = datetime(int(raw[:3]) + 1911, int(raw[3:5]), int(raw[5:7])).date().isoformat() if len(raw) == 7 and raw.isdigit() else ""
+        except ValueError:
+            day = ""
+        if day != expected_date:
+            raise ValueError("成交量宇宙行情日期缺失或不符")
+
+
+def fetch_top_stocks(limit=500, *, expected_date=""):
     limit = max(1, min(1000, int(limit)))
     all_stocks = []
     source_errors: dict[str, str] = {}
@@ -320,6 +338,20 @@ def fetch_top_stocks(limit=500):
         twse_payload = res.json()
         if not isinstance(twse_payload, list) or not twse_payload:
             raise ValueError("上市行情回應為空或格式錯誤")
+        try:
+            _validate_universe_date(twse_payload, "Code", expected_date)
+        except ValueError:
+            # The OpenAPI snapshot may roll over later than the dated official
+            # report. Use actual response date + fields, never retag old rows.
+            dated_response = http_get(
+                "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+                params={"date": expected_date.replace("-", ""), "type": "ALLBUT0999", "response": "json"},
+                timeout=10,
+            )
+            dated_response.raise_for_status()
+            twse_payload = parse_twse_daily_universe(dated_response.json(), expected_date)
+            _validate_universe_date(twse_payload, "Code", expected_date)
+            logging.info("上市 OpenAPI 日期未更新，改用已核對 %s 的官方指定日成交量。", expected_date)
         for item in twse_payload:
             code = str(item.get("Code") or "").strip()
             if code:
@@ -348,6 +380,7 @@ def fetch_top_stocks(limit=500):
         tpex_payload = res2.json()
         if not isinstance(tpex_payload, list) or not tpex_payload:
             raise ValueError("上櫃行情回應為空或格式錯誤")
+        _validate_universe_date(tpex_payload, "SecuritiesCompanyCode", expected_date)
         for item in tpex_payload:
             code = str(item.get("SecuritiesCompanyCode") or "").strip()
             if code:
@@ -427,16 +460,52 @@ def build_scan_pool(ranked_tickers, limit, core_tickers=None):
         pool.append(ticker)
     return pool[:limit]
 
-def get_stock_data(ticker_number):
+def recover_completed_bar(frame, symbol, expected_date, *, now=None, indicators=True):
+    """Fetch a real same-source daily bar only when the long history is stale.
+
+    No source switching, meta quote conversion, date relabeling or multi-day
+    interpolation. The pure merger validates the session, seam and actions.
+    """
+    if frame is None or frame.empty or not expected_date:
+        return frame
+    observed = latest_trading_date(frame.index)
+    if not observed or observed > expected_date:
+        return frame
+    if observed == expected_date and daily_bar_complete(frame.iloc[-1]):
+        return frame
+    try:
+        latest = call_with_backoff(lambda: yf.Ticker(symbol).history(
+            period="1d", interval="1d", auto_adjust=True, actions=True,
+            keepna=True, timeout=10,
+        ), attempts=2)
+        result = merge_completed_daily_bar(
+            frame, latest, expected_date, now=now or datetime.now(TPE),
+            require_actions=symbol != "^TWII",
+        )
+        if indicators:
+            result = apply_technical_indicators(result)
+        logging.info("%s 已以 Yahoo 單日完整日 K 補取 %s 缺值，未更動歷史價格。", symbol, expected_date)
+        return result
+    except Exception as error:
+        logging.warning("%s 最後日 K 備援未通過驗證（%s）；保留原資料日期。", symbol, type(error).__name__)
+        return frame
+
+
+def get_stock_data(ticker_number, *, expected_date=""):
     try:
         preferred_symbol = MARKET_SYMBOL_CACHE.get(str(ticker_number), f"{ticker_number}.TW")
-        df = call_with_backoff(lambda: yf.Ticker(preferred_symbol).history(period="2y"), attempts=2).dropna(subset=['Close'])
+        df = call_with_backoff(lambda: yf.Ticker(preferred_symbol).history(
+            period="2y", auto_adjust=True, actions=True, keepna=True, timeout=10), attempts=2)
         if df.empty and preferred_symbol.endswith(".TW"):
-            df = call_with_backoff(lambda: yf.Ticker(f"{ticker_number}.TWO").history(period="2y"), attempts=2).dropna(subset=['Close'])
+            preferred_symbol = f"{ticker_number}.TWO"
+            df = call_with_backoff(lambda: yf.Ticker(preferred_symbol).history(
+                period="2y", auto_adjust=True, actions=True, keepna=True, timeout=10), attempts=2)
         if df.empty or len(df) < 20: return None
         
         df.index = pd.to_datetime(df.index.strftime('%Y-%m-%d'))
         df = df[~df.index.duplicated(keep='last')]
+        df = recover_completed_bar(df, preferred_symbol, expected_date, indicators=False)
+        df = df.dropna(subset=['Close'])
         return apply_technical_indicators(df)
     except Exception as e:
         logging.warning("股價資料處理失敗 %s: %s", ticker_number, e)
@@ -453,7 +522,7 @@ def fetch_stock_data_batch(tickers, chunk_size=50):
         try:
             raw = call_with_backoff(lambda: yf.download(
                 symbols, period="2y", group_by="ticker", auto_adjust=True,
-                progress=False, threads=True,
+                progress=False, threads=True, actions=True, keepna=True,
             ), attempts=2)
         except Exception as e:
             logging.warning("批次行情下載失敗（%s...）: %s", chunk_codes[0], e)
@@ -472,7 +541,9 @@ def fetch_stock_data_batch(tickers, chunk_size=50):
                         continue
                 else:
                     frame = raw.copy()
-                frame = frame.dropna(subset=['Close'])
+                # Keep the latest partial observation until the merger checks
+                # its non-null fields; dropping it could hide a price conflict.
+                frame = frame[frame['Close'].notna() | (frame.index == frame.index.max())]
                 if len(frame) < 20:
                     continue
                 frame.index = pd.to_datetime(frame.index.strftime('%Y-%m-%d'))
@@ -934,8 +1005,11 @@ def build_benchmark_context(frame: pd.DataFrame | None) -> dict[str, Any]:
         "regime": regime,
     }
     restored = frame.attrs.get("restored_benchmark_observations")
+    if frame.attrs.get("completed_daily_bar_date"):
+        context["source"] = "Yahoo ^TWII history + verified daily bar"
+        context["completed_daily_bar_date"] = frame.attrs["completed_daily_bar_date"]
     if restored:
-        context["source"] = "Yahoo ^TWII + saved benchmark observations"
+        context["source"] = str(context.get("source") or "Yahoo ^TWII") + " + saved benchmark observations"
         context["restored_observations"] = restored
     return context
 
@@ -1002,6 +1076,7 @@ def stock_frame_matches_scan_date(frame, scan_date):
         frame is not None
         and len(frame) >= 2
         and latest_trading_date(frame.index) == str(scan_date)
+        and daily_bar_complete(frame.iloc[-1])
     )
 
 
@@ -1174,7 +1249,8 @@ def send_daily_research_notification(scan_results, trading_date, *, resend=False
 
     def build_messages():
         report = build_daily_research_report(
-            scan_results, str(trading_date), load_history=get_stock_data,
+            scan_results, str(trading_date),
+            load_history=lambda ticker: get_stock_data(ticker, expected_date=str(trading_date)),
             load_news=lambda ticker, cutoff: fetch_company_events(ticker, as_of=cutoff),
         )
         return format_research_messages(report), {
@@ -1329,7 +1405,7 @@ def update_top10_tracker(top10_results, trading_date=None, *, benchmark=None, ex
             ticker = str(position.get("ticker", ""))
             if position.get("status") not in {"OPEN", "PENDING"} or ticker in top10_tickers:
                 continue
-            frame = get_stock_data(ticker)
+            frame = get_stock_data(ticker, expected_date=date_str)
             if frame is not None and not frame.empty:
                 latest = frame.iloc[-1]
                 quote_date = pd.Timestamp(frame.index[-1]).strftime("%Y-%m-%d")
@@ -1485,9 +1561,14 @@ def run_daily_scan(
     twii_close, twii_ma20, twii_ma60 = 0.0, 0.0, 0.0
     twii_df = None
     try:
-        twii_df = call_with_backoff(lambda: yf.Ticker("^TWII").history(period="4mo"), attempts=3)
+        twii_df = call_with_backoff(lambda: yf.Ticker("^TWII").history(
+            period="4mo", auto_adjust=True, actions=True, keepna=True, timeout=10), attempts=3)
     except Exception as e:
         logging.error("雷達獲取大盤加權指數失敗: %s", e)
+
+    if window is not None:
+        twii_df = recover_completed_bar(twii_df, "^TWII", window.analysis_date.isoformat(),
+                                        now=started_at, indicators=False)
 
     scan_date_str = latest_trading_date(twii_df.index) if twii_df is not None and not twii_df.empty else ""
     if not scan_date_str:
@@ -1544,7 +1625,7 @@ def run_daily_scan(
         logging.warning("延遲盤前補掃：分析日 %s，實際開始 %s；不回填分析日晚間的可用時間。",
                         scan_date_str, window.started_at.isoformat())
     try:
-        ranked_tickers = fetch_top_stocks(universe_limit)
+        ranked_tickers = fetch_top_stocks(universe_limit, expected_date=scan_date_str if window is not None else "")
         if len(ranked_tickers) < universe_limit:
             raise RuntimeError(
                 f"成交量排行僅取得 {len(ranked_tickers)}/{universe_limit} 檔，已中止以避免產生不完整榜單"
@@ -1564,7 +1645,10 @@ def run_daily_scan(
     def process_stock(stock):
         df = price_data.get(stock)
         if df is None:
-            df = get_stock_data(stock)
+            df = get_stock_data(stock, expected_date=scan_date_str if window is not None else "")
+        elif window is not None:
+            df = recover_completed_bar(df, MARKET_SYMBOL_CACHE.get(str(stock), f"{stock}.TW"),
+                                       scan_date_str, now=clock())
         if df is not None and len(df) >= 2:
             stock_data_date = latest_trading_date(df.index)
             if not stock_frame_matches_scan_date(df, scan_date_str):
@@ -1733,6 +1817,8 @@ def run_daily_scan(
                     **backtest_record_fields(backtest),
                     "代號": stock, "名稱": INDUSTRY_CACHE.get(stock, stock),
                     "Data_Date": scan_date_str,
+                    "Price_Source": df.attrs.get("price_source", "Yahoo history"),
+                    "Price_Completed_Bar_Date": df.attrs.get("completed_daily_bar_date", ""),
                     "Score": sc, "評級": label, "產業": f_data['Industry'], 
                     "開盤價": round(t_open, 2), "最高價": round(t_high, 2), "最低價": round(t_low, 2),
                     "收盤價": round(t_close, 2), "WinRate": backtest["win_rate"], "Whale_Net": whale_net,

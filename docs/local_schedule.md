@@ -68,3 +68,9 @@ Get-ScheduledTask -TaskName 'TaiwanStock-DailyScan','TaiwanStock-PredictionPrice
 若電腦關機，GitHub 備援仍可能執行；若當日所有排程都錯過交易時段，保留缺失紀錄，不捏造補發。程式測試通过、任務註冊成功、任務確實啟動、Telegram 確認收件是四件不同的事。
 
 Windows 任務行為參考：[Microsoft ScheduledTasks 設定文件](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasksettingsset?view=windowsserver2025-ps)。
+
+## Yahoo 最後交易日缺值
+
+若長期歷史查詢漏掉最後一天，掃描會另查相同 Yahoo 來源的單日完整日 K，而不是把舊收盤或即時報價改成指定日期。只允許補最後一個已完成的交易日；日期、OHLC、成交量、交易日連續性及除權息／拆股接合處皆需通過驗證，再重算技術指標。日期過期、盤中、缺多日或公司行動無法確認時仍拒絕補接。上市及上櫃的成交量排行也核對分析日。榜單記錄補取來源與日期；不改評分、樣本計算或可執行門檻。
+
+上市 OpenAPI 更新較晚時，只切換至證交所官方指定日 MI_INDEX 報表取得當日成交量掃描範圍，核對回應日期、報表欄位與資料完整性；不拿昨日成交量排行當今日，也不把官方原始股價混入 Yahoo 調整後歷史。若備援仍過期或格式異常，保留舊榜並等待下一次排程。

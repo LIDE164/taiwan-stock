@@ -7,7 +7,7 @@ before any fresh provider lookup. No fixture is written to an external service.
 from copy import deepcopy
 from datetime import datetime
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pandas as pd
 
@@ -121,8 +121,11 @@ class CompletedBackupPreflightTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, f"預期 {expected_day}，取得 {provider_day}"):
                 scanner.run_daily_scan(clock=lambda: local(moment))
-        yahoo.assert_called_once_with("^TWII")
-        provider.history.assert_called_once_with(period="4mo")
+        self.assertEqual(yahoo.call_args_list, [call("^TWII"), call("^TWII")])
+        self.assertEqual(provider.history.call_args_list, [
+            call(period="4mo", auto_adjust=True, actions=True, keepna=True, timeout=10),
+            call(period="1d", interval="1d", auto_adjust=True, actions=True, keepna=True, timeout=10),
+        ])
         for operation in (lease, write, send, database.batch, database.transaction):
             operation.assert_not_called()
 
@@ -184,7 +187,8 @@ class CompletedBackupPreflightTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "無法確認最新實際交易日"):
                         scanner.run_daily_scan(clock=lambda: local("2026-10-07T03:35:00"), **options)
                 yahoo.assert_called_once_with("^TWII")
-                provider.history.assert_called_once_with(period="4mo")
+                provider.history.assert_called_once_with(
+                    period="4mo", auto_adjust=True, actions=True, keepna=True, timeout=10)
                 lease.assert_not_called()
                 send.assert_not_called()
 

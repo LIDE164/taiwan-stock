@@ -37,7 +37,8 @@ class BatchMarketDataTests(unittest.TestCase):
 
     def test_stock_frame_must_match_the_confirmed_scan_date(self):
         frame = pd.DataFrame(
-            {"Close": [100.0, 101.0]},
+            {"Open": [99.0, 100.0], "High": [102.0, 102.0], "Low": [98.0, 99.0],
+             "Close": [100.0, 101.0], "Volume": [1000, 1000]},
             index=pd.to_datetime(["2026-09-03", "2026-09-04"]),
         )
         self.assertTrue(scanner.stock_frame_matches_scan_date(frame, "2026-09-04"))
