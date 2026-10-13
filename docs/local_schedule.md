@@ -7,6 +7,7 @@
 - 電腦在工作日相關時段開機、連網，Windows 時區為 `Taipei Standard Time`。
 - 使用目前使用者、一般權限、**保持登入**。鎖定畫面不等於登出；此方案不儲存 Windows 密碼，不提供登出後執行。電腦關機、睡眠或離線時不會工作；腳本不改全機電源設定，也不自動喚醒。使用預設電池限制，筆電請接電源。
 - 已安裝專案所需 Python 3.14 與依賴，現有 `.streamlit/secrets.toml` 已具備 Firebase、Telegram 設定。金鑰不放入任務參數、不提交、不顯示。
+- 若 Telegram 設定只在目前終端機環境中，先以 `python local_credentials.py --store-from-environment` 存入目前 Windows 使用者的認證管理員；只讀狀態檢查可用 `python local_credentials.py`。設定依專案路徑隔離，不另存明文檔案、不傳給新服務。排程從認證管理員取用並僅在子程序環境中使用；換使用者或搬移專案後需重新設定。
 - 任務直接使用安裝時解析出的 **Python 完整路徑**，工作目錄固定為本專案。不依賴工作排程器的 PATH，也不自動 `git pull`。修改或搬移程式／Python 後，應重新預覽及安裝。
 - 本機和 GitHub 共用原 Firestore 掃描／投遞鎖與收件紀錄。不要以強制重掃或強制重送取代正常備援；送達不明須先核對，不能盲目再發。
 
@@ -56,7 +57,7 @@ GitHub 的手動補跑預設也不強制重掃。只有明確選取 `force_resca
 
 不啟用錯過排程後自動補跑；當下已過時段時不能用現在價格補造早前通知。程式仍依台北當下時間核對安全掃描窗口、發布截止、預測名單適用日與收件紀錄。
 
-檢查「工作排程器」中的最後執行時間／結果，以及 `logs/local_schedule.jsonl` 的固定欄位摘要；日誌不保留原始子程序輸出或金鑰。也可使用只讀命令：
+檢查「工作排程器」中的最後執行時間／結果，以及 `logs/local_schedule.jsonl` 的固定欄位摘要；若環境未就緒，`failed_checks` 只列出失敗項目名稱。日誌不保留原始子程序輸出或金鑰。也可使用只讀命令：
 
 ```powershell
 Get-ScheduledTask -TaskName 'TaiwanStock-DailyScan','TaiwanStock-PredictionPrices' | Get-ScheduledTaskInfo

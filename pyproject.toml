@@ -40,6 +40,7 @@ source = [
     "scan_schedule",
     "scan_completion",
     "local_schedule",
+    "local_credentials",
     "image_delivery",
     "research_delivery",
     "market_calendar",

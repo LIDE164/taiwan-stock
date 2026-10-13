@@ -22,6 +22,7 @@ import tomllib
 from typing import Any
 
 from market_calendar import is_scheduled_session
+from local_credentials import load_local_credentials
 from scan_schedule import TPE
 
 ROOT = Path(__file__).resolve().parent
@@ -51,9 +52,10 @@ def check_environment(root: Path = ROOT) -> dict[str, Any]:
     )
     nested = config.get("telegram", {})
     nested = nested if isinstance(nested, dict) else {}
+    stored = load_local_credentials(root)
 
     def secret(name: str) -> Any:
-        return config.get(name) or os.getenv(name)
+        return config.get(name) or os.getenv(name) or stored.get(name)
 
     checks["telegram_configured"] = bool(
         (secret("TELEGRAM_BOT_TOKEN") or secret("TELEGRAM_TOKEN") or nested.get("bot_token") or nested.get("token"))
@@ -73,7 +75,7 @@ def child_command(job: str, root: Path = ROOT) -> list[str]:
     raise ValueError("Unknown local job")
 
 
-def scheduled_environment() -> dict[str, str]:
+def scheduled_environment(root: Path = ROOT) -> dict[str, str]:
     environment = dict(os.environ)
     # A developer shell's manual maintenance flag must not force a scheduled
     # rescan. Use explicit --scheduled, not a fabricated GitHub event/run ID.
@@ -81,6 +83,10 @@ def scheduled_environment() -> dict[str, str]:
         environment.pop(name, None)
     environment["PYTHONUTF8"] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
+    stored = load_local_credentials(root)
+    for name, alias in (("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"), ("TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID")):
+        if not environment.get(name) and not environment.get(alias) and stored.get(name):
+            environment[name] = stored[name]
     return environment
 
 
@@ -170,10 +176,10 @@ def _bounded_run(command: list[str], *, timeout: float, check: bool = False, **k
 def run_job(job: str, *, root: Path = ROOT, runner: Any = _bounded_run) -> dict[str, Any]:
     command = child_command(job, root)
     try:
-        result = runner(command, cwd=root, env=scheduled_environment(), timeout=TIMEOUTS[job],
+        result = runner(command, cwd=root, env=scheduled_environment(root), timeout=TIMEOUTS[job],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
                         encoding="utf-8", errors="replace", check=False,
-                        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+                        **({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}))
         # Exit zero can mean a holiday, completed backup or a busy lease. It is
         # not evidence of Telegram delivery; only the cloud receipt proves that.
         return {"job": job, "status": "process_ok" if result.returncode == 0 else "process_failed",
@@ -188,7 +194,7 @@ def write_summary(result: dict[str, Any], root: Path = ROOT) -> None:
     directory = root / "logs"
     directory.mkdir(exist_ok=True)
     # Store only fixed status/exit metadata, never raw child output or secrets.
-    value: dict[str, Any] = {key: result[key] for key in ("job", "status", "exit_code") if key in result}
+    value: dict[str, Any] = {key: result[key] for key in ("job", "status", "exit_code", "failed_checks") if key in result}
     value["checked_at"] = datetime.now(TPE).isoformat()
     handler = RotatingFileHandler(directory / "local_schedule.jsonl", maxBytes=100_000,
                                   backupCount=3, encoding="utf-8")
@@ -214,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(readiness, ensure_ascii=False))
         return 0 if readiness["status"] == "ready" else 1
     if readiness["status"] != "ready":
-        result: dict[str, Any] = {"job": args.job, "status": "not_ready", "exit_code": 1}
+        result: dict[str, Any] = {"job": args.job, "status": "not_ready", "exit_code": 1,
+                                  "failed_checks": [name for name, valid in readiness.get("checks", {}).items() if not valid]}
     else:
         result = run_job(args.job)
     write_summary(result)

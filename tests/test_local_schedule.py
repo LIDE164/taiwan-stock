@@ -9,6 +9,32 @@ import local_schedule as local
 
 
 class LocalScheduleTests(unittest.TestCase):
+    def setUp(self):
+        credential_patch = patch.object(local, "load_local_credentials", return_value={})
+        self.credentials = credential_patch.start()
+        self.addCleanup(credential_patch.stop)
+
+    def test_scheduler_loads_protected_credentials_without_overwriting_current_environment(self):
+        self.credentials.return_value = {"TELEGRAM_BOT_TOKEN": "stored-token", "TELEGRAM_CHAT_ID": "stored-chat"}
+        with patch.dict(local.os.environ, {"TELEGRAM_BOT_TOKEN": "current-token"}, clear=True):
+            env = local.scheduled_environment()
+        self.assertEqual(env["TELEGRAM_BOT_TOKEN"], "current-token")
+        self.assertEqual(env["TELEGRAM_CHAT_ID"], "stored-chat")
+
+    def test_protected_store_does_not_override_explicit_legacy_environment_aliases(self):
+        self.credentials.return_value = {"TELEGRAM_BOT_TOKEN": "stored-token", "TELEGRAM_CHAT_ID": "stored-chat"}
+        with patch.dict(local.os.environ, {"TELEGRAM_TOKEN": "current-token", "TELEGRAM_USER_ID": "current-chat"}, clear=True):
+            env = local.scheduled_environment()
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", env)
+        self.assertNotIn("TELEGRAM_CHAT_ID", env)
+
+    def test_readiness_uses_protected_store_when_scheduler_environment_is_empty(self):
+        self.credentials.return_value = {"TELEGRAM_BOT_TOKEN": "stored-token", "TELEGRAM_CHAT_ID": "stored-chat"}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(local.os.environ, {}, clear=True):
+            result = local.check_environment(Path(directory))
+        self.assertTrue(result["checks"]["telegram_configured"])
+        self.assertNotIn("stored-token", json.dumps(result))
+
     def test_commands_have_explicit_schedule_context_and_never_force(self):
         for job in ("scan", "prices"):
             command = local.child_command(job)

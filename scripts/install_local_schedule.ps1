@@ -30,6 +30,20 @@ function Quote-TaskArgument([string]$Value) {
     return '"' + $Value + '"'
 }
 
+function Test-OwnedTask($Task, [string]$Description, [string]$OwnerSid) {
+    if ($Task.Description -ne $Description) { return $false }
+    try {
+        # Windows may normalize LOUIS\user to just user in the stored task.
+        # Compare the resolved SID, never relax ownership to a name suffix.
+        $taskUser = [string]$Task.Principal.UserId
+        if ($taskUser -eq $OwnerSid) { return $true }
+        $account = New-Object System.Security.Principal.NTAccount($taskUser)
+        return $account.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $OwnerSid
+    } catch {
+        return $false
+    }
+}
+
 function Resolve-PythonExecutable([string]$Requested) {
     $candidate = $null
     if ($Requested) {
@@ -136,9 +150,7 @@ foreach ($definition in $definitions) {
     if ($existing.Count -gt 1) {
         throw ('Ambiguous task ownership: ' + $definition.Name)
     }
-    if ($existing.Count -eq 1 -and (
-            $existing[0].Description -ne $ownership -or
-            $existing[0].Principal.UserId -notin @($ownerSid, $ownerName))) {
+    if ($existing.Count -eq 1 -and -not (Test-OwnedTask $existing[0] $ownership $ownerSid)) {
         throw ('Refusing to overwrite a task not owned by this installer and user: ' + $definition.Name)
     }
 }
@@ -182,8 +194,7 @@ foreach ($definition in $definitions) {
     $existing = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop |
         Where-Object { $_.TaskName -eq $definition.Name })
     if ($existing.Count -eq 1) {
-        if ($existing[0].Description -ne $ownership -or
-                $existing[0].Principal.UserId -notin @($ownerSid, $ownerName)) {
+        if (-not (Test-OwnedTask $existing[0] $ownership $ownerSid)) {
             throw ('Task ownership changed; stopping without overwrite: ' + $definition.Name)
         }
         $null = Register-ScheduledTask -TaskName $definition.Name -TaskPath '\' -InputObject $task -Force
