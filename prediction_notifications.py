@@ -15,7 +15,7 @@ import os
 from app_security import normalize_ticker
 from market_calendar import is_scheduled_session, next_scheduled_session
 from prediction_health_checks import has_completed_due_notifications
-from prediction_quotes import fetch_prediction_quotes
+from prediction_quotes import fetch_market_index_quote, fetch_prediction_quotes
 from prediction_watch import notification_slot, select_prediction_rows, format_prediction_messages
 from research_delivery import DeliveryRejected, FirestoreReportStore, deliver_report, telegram_send_text
 
@@ -117,9 +117,10 @@ def load_watchlist(db, now, *, load_manifest, load_lock, persist):
 
 
 def run_prediction_notifications(*, db, load_manifest, load_lock, send_text,
-                                 load_quotes=fetch_prediction_quotes, clock=None, dry_run=True):
+                                 load_quotes=fetch_prediction_quotes, load_market_quote=None, clock=None, dry_run=True):
     """Send only the current slot, at most once; no historical hourly backfill."""
     clock = clock or (lambda: datetime.now(TPE))
+    load_market_quote = load_market_quote if load_market_quote is not None else fetch_market_index_quote
     now = clock()
     slot = notification_slot(now)
     if slot is None:
@@ -154,8 +155,14 @@ def run_prediction_notifications(*, db, load_manifest, load_lock, send_text,
         if (not dry_run and slot != "close" and current.minute < wait_until
                 and not any(isinstance(value, Mapping) and value.get("status") == "ok" for value in quotes.values())):
             raise QuotesPending("尚無當日有效行情，等待本時段備援")
+        try:
+            market_quote = load_market_quote(now_tpe=current, closing=slot == "close")
+        except Exception:
+            # A benchmark outage must not suppress a valid stock-price notice.
+            market_quote = None
+        current = still_current()
         messages = format_prediction_messages(rows, quotes, analysis_date=watchlist["analysis_date"],
-                                               trading_date=day, slot=slot, now=current)
+                                               trading_date=day, slot=slot, now=current, market_quote=market_quote)
         return messages, {"analysis_date": watchlist["analysis_date"], "trading_date": day,
                           "slot": slot, "stock_count": len(rows), "quoted_at": current.isoformat(),
                           "all_closes_confirmed": all_final if slot == "close" else None}

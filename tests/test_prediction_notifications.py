@@ -34,6 +34,7 @@ class PredictionNotificationTests(unittest.TestCase):
         self.lock = Mock(return_value={"status": "completed", "trading_date": "2026-10-02"})
         self.clock = Mock(return_value=moment())
         self.quotes = Mock(return_value=quotes())
+        self.market = patch("prediction_notifications.fetch_market_index_quote", return_value=None).start()
         self.sender = Mock(return_value=101)
         self.selector = patch("prediction_notifications.select_prediction_rows", return_value=rows()).start()
         patch("firebase_admin.firestore.transactional", _transactional).start()
@@ -62,8 +63,42 @@ class PredictionNotificationTests(unittest.TestCase):
         self.assertEqual(set(key[0] for key in self.db.documents), {"notifications", "prediction_watchlists"})
         self.manifest.side_effect = AssertionError("do not replace a frozen list")
         self.quotes.side_effect = AssertionError("do not fetch quotes for a sent slot")
+        self.market.side_effect = AssertionError("do not fetch index for a sent slot")
         self.assertEqual(self.run_task(dry_run=False)["status"], "already_sent_or_busy")
         self.sender.assert_called_once()
+        self.market.assert_called_once()
+
+    def test_market_index_is_included_without_changing_stock_count_or_watchlist(self):
+        self.market.return_value = {**quotes()["2330"], "symbol": "^TWII", "price": 20100,
+                                    "previous_close": 20000, "previous_close_date": "2026-10-02"}
+        result = self.run_task()
+        self.assertIn("加權指數", result["messages"][0])
+        self.assertIn("+100.00 點（+0.50%）", result["messages"][0])
+        self.assertEqual(result["metadata"]["stock_count"], 1)
+        self.market.assert_called_once_with(now_tpe=moment(), closing=False)
+
+    def test_market_outage_does_not_block_or_repeat_stock_notification(self):
+        self.market.side_effect = RuntimeError("private provider detail must not appear")
+        self.assertEqual(self.run_task(dry_run=False)["status"], "sent")
+        text = self.sender.call_args.args[0]
+        self.assertIn("2330", text)
+        self.assertIn("指數 --", text)
+        self.assertNotIn("private provider", text)
+        self.assertEqual(self.run_task(dry_run=False)["status"], "already_sent_or_busy")
+        self.sender.assert_called_once()
+
+    def test_slot_expiring_during_index_fetch_sends_nothing(self):
+        self.clock.side_effect = [moment(10, 59)] * 3 + [moment(11, 0)]
+        self.assertEqual(self.run_task(dry_run=False)["status"], "slot_expired")
+        self.market.assert_called_once()
+        self.sender.assert_not_called()
+
+    def test_empty_list_never_fetches_index_or_sends_a_substitute_notice(self):
+        self.selector.return_value = []
+        self.assertEqual(self.run_task(dry_run=False)["status"], "empty_prediction")
+        self.market.assert_not_called()
+        self.quotes.assert_not_called()
+        self.sender.assert_not_called()
 
     def test_killed_prefetch_releases_in_time_for_next_backup_without_fake_prices(self):
         self.quotes.side_effect = SystemExit("simulated process termination before any POST")

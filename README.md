@@ -112,6 +112,13 @@ are skipped; emergency closures yield no fabricated prices.
 
 Each stock shows that day's reported open, latest/confirmed closing price,
 change from open and (when verified) previous close, with its source and timestamp.
+Each message page also shows TAIEX (`^TWII`): its reported open, latest or
+confirmed closing index, and point/percentage change from the verified previous
+session. The free public source can be delayed (around twenty minutes was
+observed); the index has its own timestamp and delay label. An unavailable index
+is shown as missing without blocking stock notices. It is not a selected stock,
+does not change rankings or entry conditions, and does not generate a separate
+notice when the prediction list is empty. Existing sent slots are not resent.
 No prior close, bid/ask midpoint, or predicted price substitutes for missing
 market data. Delayed observations are labeled. Each day/slot has a separate
 `notifications/prediction_prices_<date>_<slot>` receipt record and transactional

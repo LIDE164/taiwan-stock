@@ -6,7 +6,7 @@ feed.  A daily candle alone never proves either freshness or a closing price.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timezone
 import math
@@ -21,6 +21,7 @@ from market_calendar import next_scheduled_session
 TPE = ZoneInfo("Asia/Taipei")
 SOURCE = "Yahoo Chart 1d（未調整；可能延遲）"
 MAX_WORKERS = 4
+MARKET_INDEX_SYMBOL = "^TWII"
 
 
 def _number(value: Any) -> float | None:
@@ -175,6 +176,43 @@ def _symbols(record: Mapping[str, Any], ticker: str) -> tuple[str, ...]:
     if "twse" in provenance and "tpex" not in provenance:
         return (f"{ticker}.TW",)
     return (f"{ticker}.TW", f"{ticker}.TWO")
+
+
+def fetch_market_index_quote(
+    *,
+    now_tpe: datetime,
+    closing: bool = False,
+    http_get: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Fetch TAIEX with the same dated, unadjusted safeguards as stock quotes.
+
+    The index is independent of the stock ticker normalizer and venue fallback.
+    A same-day delayed observation retains its actual timestamp so notices can
+    label it as delayed. Missing, future or previous-day observations are never
+    substituted, and a provider failure cannot interrupt stock quote delivery.
+    """
+    if now_tpe.tzinfo is None or now_tpe.utcoffset() is None:
+        raise ValueError("now_tpe must be timezone-aware")
+    unavailable = _unavailable(MARKET_INDEX_SYMBOL, "加權指數公開行情暫時無法取得")
+    get = http_get if http_get is not None else requests.get
+    try:
+        response = get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII",
+            params={"range": "5d", "interval": "1d", "includePrePost": "false"},
+            headers={"User-Agent": "taiwan-stock-radar/1.0"}, timeout=(3, 8),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        chart = payload.get("chart") if isinstance(payload, Mapping) else None
+        results = chart.get("result") if isinstance(chart, Mapping) else None
+        if not isinstance(results, list) or len(results) != 1:
+            return unavailable
+        return quote_from_chart_result(
+            results[0], symbol=MARKET_INDEX_SYMBOL, now_tpe=now_tpe, closing=closing,
+        )
+    except Exception:
+        # Public errors may contain URLs or provider response text; do not log.
+        return unavailable
 
 
 def fetch_prediction_quotes(

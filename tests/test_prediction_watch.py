@@ -32,6 +32,75 @@ def messages(rows=None, quotes=None, **changes):
                                       {"2330": quote()} if quotes is None else quotes, **options)
 
 
+def market(**changes):
+    return quote(**{"symbol": "^TWII", "open": 20000, "price": 19800,
+                                    "previous_close": 20100, "previous_close_date": "2026-10-02", **changes})
+
+
+class MarketIndexMessagesTests(unittest.TestCase):
+    def test_index_open_level_points_percent_and_timestamp(self):
+        text = messages(market_quote=market())[0]
+        for expected in ("大盤｜加權指數（TAIEX）", "開盤 20,000.00｜現值 19,800.00",
+                         "較昨收 -300.00 點（-1.49%）", "行情 10:04:00", "2330 台積電"):
+            self.assertIn(expected, text)
+        self.assertLess(text.index("加權指數"), text.index("2330 台積電"))
+
+    def test_missing_or_wrong_index_does_not_replace_stock_quotes(self):
+        for value in (None, {}, market(symbol="^TWOII"), market(date="2026-10-02"),
+                      market(observed_at="2026-10-05T10:06:00+08:00"), market(status="unavailable")):
+            with self.subTest(value=value):
+                text = messages(market_quote=value)[0]
+                self.assertIn("加權指數", text)
+                self.assertNotIn("現值 19,800.00", text)
+                self.assertIn("較昨收 -- 點（--）", text)
+                self.assertIn("2330 台積電", text)
+                self.assertIn("開盤 100｜現價 103", text)
+
+    def test_index_requires_dated_previous_session_for_change(self):
+        for changes in ({"previous_close_date": None}, {"previous_close_date": "2026-10-01"},
+                        {"previous_close": None}):
+            text = messages(market_quote=market(**changes))[0]
+            self.assertIn("現值 19,800.00", text)
+            self.assertIn("較昨收 -- 點（--）", text)
+        missing = market()
+        del missing["previous_close_date"]
+        self.assertIn("較昨收 -- 點（--）", messages(market_quote=missing)[0])
+
+    def test_delayed_index_is_independently_labeled(self):
+        text = messages(market_quote=market(observed_at="2026-10-05T09:44:00+08:00"))[0]
+        benchmark, stock = text.split("2330 台積電")
+        self.assertIn("延遲／舊報價", benchmark)
+        self.assertIn("09:44:00", benchmark)
+        self.assertIn("非逐筆即時", stock)
+
+    def test_close_confirmation_and_unavailable_index_are_honest(self):
+        options = {"slot": "close", "now": now("14:05:00")}
+        closing = market(final=True, observed_at="2026-10-05T13:30:00+08:00")
+        text = messages(market_quote=closing, **options)[0].split("2330 台積電")[0]
+        self.assertIn("收盤 19,800.00", text)
+        self.assertIn("當日收盤已確認", text)
+        self.assertNotIn("延遲／舊報價", text)
+        for changes in ({"final": False}, {"observed_at": "2026-10-05T13:29:00+08:00"},
+                        {"status": "unavailable", "price": None}):
+            text = messages(market_quote={**closing, **changes}, **options)[0].split("2330 台積電")[0]
+            self.assertIn("收盤待確認", text)
+            self.assertNotIn("當日收盤已確認", text)
+
+    def test_each_page_includes_index_and_keeps_all_stocks_within_limits(self):
+        rows = [row(str(1000 + i), 名稱="🧪" * 1000) for i in range(20)]
+        quotes = {r["代號"]: quote(source="🧪" * 1000) for r in rows}
+        benchmark = market(source="🧪" * 1000)
+        original = deepcopy((rows, quotes, benchmark))
+        parts = messages(rows, quotes, market_quote=benchmark)
+        for part in parts:
+            self.assertIn("加權指數", part)
+            self.assertIn("-300.00 點（-1.49%）", part)
+            self.assertLess(len(part.encode("utf-16-le")) // 2, MAX_MESSAGE_UNITS)
+        for r in rows:
+            self.assertEqual("\n".join(parts).count(r["代號"] + " "), 1)
+        self.assertEqual((rows, quotes, benchmark), original)
+
+
 class PredictionSlotTests(unittest.TestCase):
     def test_slot_boundaries_do_not_backfill_previous_hour(self):
         expected = {

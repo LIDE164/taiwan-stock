@@ -177,9 +177,42 @@ def _stock_lines(row: Mapping[str, Any], quote: Any, day: date, slot: str, now: 
     )
 
 
+def _market_lines(quote: Any, day: date, slot: str, now: datetime) -> str:
+    """A dated benchmark, never an extra candidate or a substitute stock price."""
+    title = "大盤｜加權指數（TAIEX）"
+    if not isinstance(quote, Mapping) or quote.get("symbol") != "^TWII":
+        return f"{title}\n指數 --｜較昨收 -- 點（--）；行情無法取得，不影響個股通知。"
+    # Unlike legacy stock fixtures, a new index quote must date its baseline.
+    values, reason = _quote_values({**quote, "previous_close_date": quote.get("previous_close_date")}, day, now)
+    if values is None:
+        return f"{title}\n指數 --｜較昨收 -- 點（--）；{reason}。"
+    price, opening, previous = values["price"], values["open"], values["previous_close"]
+
+    def points(value: float | None) -> str:
+        return f"{value:,.2f}" if value is not None and value < 1e9 else _price(value)
+
+    change = price - previous if price is not None and previous is not None else None
+    change_text = f"{change:+,.2f}" if change is not None and math.isfinite(change) and abs(change) < 1e9 else "--"
+    label = "現值"
+    if slot == "close":
+        label = "收盤" if values["final"] else "收盤待確認（最新已知值）" if price is not None else "收盤待確認"
+    if values["final"]:
+        state = "當日收盤已確認"
+    elif price is None:
+        state = reason + "；不以昨日指數代替"
+    else:
+        state = "延遲／舊報價" if values["delayed"] else "最新取得報價，非逐筆即時"
+    return (
+        f"{title}\n開盤 {points(opening)}｜{label} {points(price)}\n"
+        f"較昨收 {change_text} 點（{_change(price, previous)}）\n"
+        f"行情 {values['observed']:%H:%M:%S}｜{values['source']}｜{state}"
+    )
+
+
 def format_prediction_messages(
     rows: Sequence[Mapping[str, Any]], quotes: Mapping[str, Any], *,
     analysis_date: str, trading_date: str, slot: str, now: datetime,
+    market_quote: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Build bounded, self-contained notices, preserving every watchlist stock."""
     local = _local_now(now)
@@ -196,6 +229,7 @@ def format_prediction_messages(
         f"來源：{analysis_date} 盤後預測名單｜適用：{trading_date}\n"
         f"取得時間：{local:%Y-%m-%d %H:%M:%S}（台北）；行情時間逐檔列示"
     )
+    header += "\n\n" + _market_lines(market_quote, trading, slot, local)
     footer = "原榜單交易資格及風控不變；股價通知不是進場訊號，不自動下單。"
     if not rows:
         return [f"{header}\n\n本日沒有預測名單股票，不另補股票。\n\n{footer}"]
